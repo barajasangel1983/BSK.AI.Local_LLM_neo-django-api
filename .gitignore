@@ -1,0 +1,19 @@
+# Environment variables — never commit secrets
+.env
+
+# Django
+*.pyc
+__pycache__/
+db.sqlite3
+*.sqlite3
+
+# Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/

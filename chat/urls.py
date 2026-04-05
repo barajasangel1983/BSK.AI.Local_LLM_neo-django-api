@@ -1,0 +1,31 @@
+# chat/urls.py
+
+# URL patterns for the chat app.
+# These are all mounted under /api/ in the project-level urls.py, so:
+#
+# - /api/ping/
+# - /api/chat/
+# - /api/conversations/
+# - /api/conversations/<uuid>/
+# - /api/models/
+
+
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    # Simple health check
+    path("ping/", views.ping, name="ping"),
+
+    # Main chat endpoint (create/continue a conversation)
+    path("chat/", views.chat_view, name="chat"),
+
+    # Conversation list and detail
+    path("conversations/", views.list_conversations, name="conversation-list"),
+    path("conversations/<uuid:pk>/", views.conversation_detail, name="conversation-detail"),
+
+    # Static list of models/backends
+    path("models/", views.list_models, name="models-list"),
+    path("rag/query/", views.rag_query, name="rag-query"),
+    path("rag/upload/", views.rag_upload, name="rag-upload"),
+]
