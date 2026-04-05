@@ -30,4 +30,9 @@ urlpatterns = [
     path("rag/docs/<str:name>/", views.rag_delete_doc, name="rag-delete-doc"),
     path("rag/query/", views.rag_query, name="rag-query"),
     path("rag/upload/", views.rag_upload, name="rag-upload"),
+
+    # Health monitoring
+    path("health/status/", views.health_status, name="health-status"),
+    path("health/check/<str:endpoint_id>/", views.health_check_one, name="health-check-one"),
+    path("health/restart/<str:endpoint_id>/", views.health_restart, name="health-restart"),
 ]

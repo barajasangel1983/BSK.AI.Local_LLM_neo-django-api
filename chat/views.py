@@ -12,7 +12,10 @@
 # - DELETE /api/rag/docs/<name>/
 
 import os
+import time
 import requests
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.db.models import Max
 from django.http import JsonResponse
@@ -569,3 +572,174 @@ def rag_query(request):
     ]
 
     return Response({"query": query, "results": results})
+
+
+# ---------------------------------------------------------------------
+# Health monitoring
+# ---------------------------------------------------------------------
+
+# In-memory uptime tracker: {endpoint_id: {"total": int, "ok": int}}
+_uptime_tracker: dict = defaultdict(lambda: {"total": 0, "ok": 0})
+
+TRACKED_ENDPOINTS = [
+    {
+        "id": "neo-django-api",
+        "name": "Neo Django API",
+        "url": "http://127.0.0.1:8000/api/ping/",
+        "model": "backend",
+        "can_restart": False,
+    },
+    {
+        "id": "dgx-vllm",
+        "name": "DGX vLLM (gpt-oss-20b)",
+        "url": "http://100.74.225.3:8000/v1/models",
+        "model": "dgx-gpt-oss-20b",
+        "can_restart": False,
+    },
+    {
+        "id": "grok-xai",
+        "name": "Grok / xAI",
+        "url": "https://api.x.ai/v1/models",
+        "model": "external-gpt",
+        "can_restart": False,
+    },
+    {
+        "id": "lm-studio",
+        "name": "LM Studio (Local)",
+        "url": "http://100.111.50.52:1234/v1/models",
+        "model": "lm-studio",
+        "can_restart": False,
+    },
+    {
+        "id": "rag-chroma",
+        "name": "RAG / Chroma",
+        "url": "",
+        "model": "rag",
+        "can_restart": True,
+    },
+]
+
+
+def _check_single_endpoint(ep: dict) -> dict:
+    """Ping one endpoint and return its status dict."""
+    from django.conf import settings
+
+    ep_id = ep["id"]
+
+    if ep_id == "rag-chroma":
+        start = time.time()
+        try:
+            from rag.retrieval import get_collection
+            col = get_collection()
+            col.count()
+            latency = round((time.time() - start) * 1000)
+            status_val = "online"
+        except Exception:
+            latency = 0
+            status_val = "offline"
+    else:
+        url = ep["url"]
+        headers = {}
+        if ep_id == "grok-xai":
+            api_key = getattr(settings, "GROK_API_KEY", "")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+        start = time.time()
+        try:
+            resp = requests.get(url, headers=headers, timeout=5)
+            latency = round((time.time() - start) * 1000)
+            status_val = "online" if resp.status_code < 500 and latency < 2000 else "degraded"
+        except requests.exceptions.ConnectionError:
+            status_val = "offline"
+            latency = 0
+        except requests.exceptions.Timeout:
+            status_val = "degraded"
+            latency = 5000
+        except Exception:
+            status_val = "offline"
+            latency = 0
+
+    tracker = _uptime_tracker[ep_id]
+    tracker["total"] += 1
+    if status_val == "online":
+        tracker["ok"] += 1
+    uptime = round(tracker["ok"] / tracker["total"] * 100, 1) if tracker["total"] > 0 else 100.0
+
+    return {
+        "id": ep_id,
+        "name": ep["name"],
+        "url": ep.get("url", ""),
+        "model": ep["model"],
+        "status": status_val,
+        "latency": latency,
+        "uptime": uptime,
+        "last_checked": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "can_restart": ep["can_restart"],
+    }
+
+
+@api_view(["GET"])
+def health_status(request):
+    """GET /api/health/status/ — check all tracked endpoints in parallel."""
+    results = []
+    with ThreadPoolExecutor(max_workers=len(TRACKED_ENDPOINTS)) as executor:
+        futures = {executor.submit(_check_single_endpoint, ep): ep for ep in TRACKED_ENDPOINTS}
+        for future in as_completed(futures):
+            ep = futures[future]
+            try:
+                results.append(future.result())
+            except Exception:
+                results.append({
+                    "id": ep["id"],
+                    "name": ep["name"],
+                    "url": ep.get("url", ""),
+                    "model": ep["model"],
+                    "status": "offline",
+                    "latency": 0,
+                    "uptime": 0.0,
+                    "last_checked": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "can_restart": ep["can_restart"],
+                })
+
+    order = {ep["id"]: i for i, ep in enumerate(TRACKED_ENDPOINTS)}
+    results.sort(key=lambda x: order.get(x["id"], 99))
+    return Response(results)
+
+
+@api_view(["POST"])
+def health_check_one(request, endpoint_id: str):
+    """POST /api/health/check/<endpoint_id>/ — re-check a single endpoint."""
+    ep = next((e for e in TRACKED_ENDPOINTS if e["id"] == endpoint_id), None)
+    if ep is None:
+        return Response({"error": f"Unknown endpoint: {endpoint_id}"}, status=status.HTTP_404_NOT_FOUND)
+    return Response(_check_single_endpoint(ep))
+
+
+@api_view(["POST"])
+def health_restart(request, endpoint_id: str):
+    """POST /api/health/restart/<endpoint_id>/ — attempt restart of a service."""
+    ep = next((e for e in TRACKED_ENDPOINTS if e["id"] == endpoint_id), None)
+    if ep is None:
+        return Response({"error": f"Unknown endpoint: {endpoint_id}"}, status=status.HTTP_404_NOT_FOUND)
+
+    restart_message = "Restart not supported — re-checking connectivity"
+
+    if endpoint_id == "rag-chroma":
+        try:
+            import chromadb
+            from rag.config import CHROMA_DIR
+            from chromadb.config import Settings as ChromaSettings
+            client = chromadb.PersistentClient(
+                path=str(CHROMA_DIR),
+                settings=ChromaSettings(anonymized_telemetry=False),
+            )
+            col = client.get_or_create_collection(name="bsk_rag")
+            count = col.count()
+            restart_message = f"Chroma reconnected — {count} chunks indexed"
+        except Exception as exc:
+            restart_message = f"Chroma reconnect failed: {exc}"
+
+    result = _check_single_endpoint(ep)
+    result["restart_message"] = restart_message
+    return Response(result)
