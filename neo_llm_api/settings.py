@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 from dotenv import load_dotenv
+from django.core.exceptions import ImproperlyConfigured
 
 load_dotenv()
 
@@ -24,7 +25,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", 'django-insecure-mn+m*xt#ayh62@g_98g(ck5bjpfdrydjemy=x7row6lh1%2@rs')
+# Must be set via DJANGO_SECRET_KEY in .env — never hardcode here.
+_secret_key = os.getenv("DJANGO_SECRET_KEY")
+if not _secret_key:
+    raise ImproperlyConfigured(
+        "DJANGO_SECRET_KEY is not set. Add it to your .env file.\n"
+        "Generate one with: python -c \"from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())\""
+    )
+SECRET_KEY = _secret_key
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
