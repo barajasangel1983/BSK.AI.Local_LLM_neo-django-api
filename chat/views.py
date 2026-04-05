@@ -8,6 +8,8 @@
 # - DELETE /api/conversations/<uuid>/
 # - GET  /api/models/
 # - POST /api/rag/query/
+# - GET  /api/rag/docs/
+# - DELETE /api/rag/docs/<name>/
 
 import os
 import requests
@@ -443,8 +445,64 @@ def list_models(request):
 
 
 # ---------------------------------------------------------------------
-# RAG query endpoint (Chroma-backed)
+# RAG docs listing + delete + query endpoint (Chroma-backed)
 # ---------------------------------------------------------------------
+
+
+@api_view(["GET"])
+
+def rag_docs(request):
+    """GET /api/rag/docs/
+
+    Return a simple listing of raw RAG documents based on files in
+    RAG_UPLOAD_BASE. This is used by the RAG Lab UI to show the corpus.
+    """
+
+    RAG_UPLOAD_BASE.mkdir(parents=True, exist_ok=True)
+
+    docs = []
+    for p in sorted(RAG_UPLOAD_BASE.iterdir()):
+        if not p.is_file():
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        docs.append({"name": p.name, "size": size})
+
+    return Response({"documents": docs})
+
+
+@api_view(["DELETE"])
+
+def rag_delete_doc(request, name: str):
+    """DELETE /api/rag/docs/<name>/
+
+    Delete a raw RAG document file and its associated chunks from Chroma.
+    """
+
+    # Remove the file from disk (if it exists)
+    path = RAG_UPLOAD_BASE / name
+    if path.exists() and path.is_file():
+      try:
+        path.unlink()
+      except OSError as exc:
+        return Response({"error": f"Failed to delete file: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # Best-effort delete from Chroma based on "source" metadata
+    try:
+      import chromadb
+      from rag.config import CHROMA_DIR
+      from chromadb.config import Settings
+
+      client = chromadb.PersistentClient(path=str(CHROMA_DIR), settings=Settings(anonymized_telemetry=False))
+      collection = client.get_or_create_collection(name="bsk_rag")
+      collection.delete(where={"source": name})
+    except Exception as exc:
+      # Log but do not fail hard; at worst, stale chunks remain.
+      print(f"Chroma delete failed for {name}: {exc}")
+
+    return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @api_view(["POST"])
