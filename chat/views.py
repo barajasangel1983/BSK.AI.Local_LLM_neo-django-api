@@ -161,6 +161,37 @@ def call_dgx_gpt_oss_20b(message: str, system_prompt: str | None = None) -> str:
     return data["choices"][0]["message"]["content"]
 
 
+def call_ollama_qwen3_8b(message: str, system_prompt: str | None = None) -> str:
+    """Call local Ollama running qwen3:8b on the bsk-ai machine.
+
+    This uses the Ollama chat API at http://100.111.50.52:11434/api/chat.
+    """
+
+    base_url = "http://100.111.50.52:11434"
+    url = f"{base_url}/api/chat"
+
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "model": "qwen3:8b",
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt
+                or "You are Neo running on Ollama (Qwen3 8B) on Angel's local PC.",
+            },
+            {"role": "user", "content": message},
+        ],
+        "stream": False,
+    }
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+
+    # Ollama chat API returns the final message under data["message"]["content"]
+    return data["message"]["content"]
+
+
 def generate_reply_backend(
     message: str,
     model_id: str,
@@ -185,6 +216,10 @@ def generate_reply_backend(
     if model_id == "external-gpt":
         # Optional: also allow Grok to use RAG context when available.
         return call_grok_chat(message, system_prompt=system_prompt)
+
+    if model_id == "ollama-qwen3-8b":
+        # Local small model hosted via Ollama on the bsk-ai machine.
+        return call_ollama_qwen3_8b(message, system_prompt=system_prompt)
 
     # Default: dummy echo
     return generate_dummy_reply(message, model_id, use_rag)
@@ -449,8 +484,13 @@ def list_models(request):
     data = [
         {
             "id": "local-small",
-            "label": "Local Small",
+            "label": "Local Small (Dummy)",
             "description": "Placeholder local model for development.",
+        },
+        {
+            "id": "ollama-qwen3-8b",
+            "label": "Ollama Qwen3 8B (Local)",
+            "description": "Qwen3:8B served via Ollama on the bsk-ai machine.",
         },
         {
             "id": "dgx-gpt-oss-20b",
@@ -702,10 +742,10 @@ TRACKED_ENDPOINTS = [
         "can_restart": False,
     },
     {
-        "id": "lm-studio",
-        "name": "LM Studio (Local)",
-        "url": "http://100.111.50.52:1234/v1/models",
-        "model": "lm-studio",
+        "id": "ollama-qwen3-8b",
+        "name": "Ollama Qwen3 8B (Local)",
+        "url": "http://100.111.50.52:11434/api/tags",
+        "model": "ollama-qwen3-8b",
         "can_restart": False,
     },
     {
