@@ -26,6 +26,11 @@ urlpatterns = [
 
     # Static list of models/backends
     path("models/", views.list_models, name="models-list"),
+
+    # Usage analytics
+    path("usage/summary/", views.usage_summary, name="usage-summary"),
+
+    # RAG
     path("rag/docs/", views.rag_docs, name="rag-docs"),
     path("rag/docs/<str:name>/", views.rag_delete_doc, name="rag-delete-doc"),
     path("rag/query/", views.rag_query, name="rag-query"),

@@ -10,6 +10,7 @@
 # - POST /api/rag/query/
 # - GET  /api/rag/docs/
 # - DELETE /api/rag/docs/<name>/
+# - GET  /api/usage/summary/
 
 import os
 import time
@@ -17,7 +18,7 @@ import requests
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from django.db.models import Max
+from django.db.models import Max, Count
 from django.http import JsonResponse
 from django.contrib.auth.models import User
 from rest_framework import status
@@ -201,7 +202,7 @@ def rag_upload(request):
     """
 
     files = request.FILES.getlist("files")
-    visibility = request.data.get("visibility", "private")  # reserved for future use
+    visibility = request.data.get("visibility", "private")  # "private" or "public"
 
     if not files:
         return Response(
@@ -238,8 +239,16 @@ def rag_upload(request):
         try:
             from rag.ingestion import ingest_files
 
+            owner = get_current_user()
             paths = [f["path"] for f in saved]
-            chunks_added = ingest_files(paths)
+            # For now we record owner_user_id + visibility in metadata;
+            # retrieval is still global, but metadata prepares us for
+            # per-user / visibility-aware filtering.
+            chunks_added = ingest_files(
+                paths,
+                owner_user_id=str(owner.id),
+                visibility=str(visibility),
+            )
         except Exception as e:
             # Log the error but don't fail the upload
             print(f"Auto-ingestion failed: {e}")
@@ -350,10 +359,16 @@ def chat_view(request):
         system_prompt=system_prompt,
     )
 
-    # Append simple sources footer when RAG was used and we have sources
+    # Append a compact, deduplicated sources footer when RAG was used.
     if use_rag and rag_sources:
-        sources_str = ", ".join(rag_sources)
-        assistant_reply = f"{assistant_reply}\n\n---\nSources: {sources_str}"
+        unique_sources = list(dict.fromkeys(rag_sources))  # preserve order, remove dups
+        max_sources = 3
+        shown = unique_sources[:max_sources]
+        remaining = len(unique_sources) - len(shown)
+        sources_str = ", ".join(shown)
+        if remaining > 0:
+            sources_str = f"{sources_str}, +{remaining} more"
+        assistant_reply = f"{assistant_reply}\n\n---\nSources (RAG): {sources_str}"
 
     # --- Save assistant message ---
 
@@ -362,6 +377,10 @@ def chat_view(request):
         role="assistant",
         content=assistant_reply,
     )
+
+    # Track the model used on the conversation for basic analytics
+    conversation.model_id = model_id
+    conversation.save(update_fields=["model_id", "updated_at"])
 
     serializer = ConversationDetailSerializer(conversation)
     return Response(serializer.data, status=status.HTTP_200_OK)
@@ -463,6 +482,35 @@ def rag_docs(request):
 
     RAG_UPLOAD_BASE.mkdir(parents=True, exist_ok=True)
 
+    # Optional: enrich with chunk/token stats from Chroma when available.
+    stats_by_source: dict[str, dict[str, int]] = {}
+    try:  # pragma: no cover - best-effort enrichment
+        import chromadb
+        from chromadb.config import Settings as ChromaSettings
+        from rag.config import CHROMA_DIR
+
+        client = chromadb.PersistentClient(
+            path=str(CHROMA_DIR), settings=ChromaSettings(anonymized_telemetry=False)
+        )
+        collection = client.get_or_create_collection(name="bsk_rag")
+        data = collection.get(include=["documents", "metadatas"], limit=None)
+        documents = data.get("documents", []) or []
+        metadatas = data.get("metadatas", []) or []
+
+        for doc_text, meta in zip(documents, metadatas):
+            meta = meta or {}
+            source = str(meta.get("source") or "")
+            if not source:
+                continue
+            bucket = stats_by_source.setdefault(source, {"chunks": 0, "tokens": 0})
+            bucket["chunks"] += 1
+            text = doc_text or ""
+            # Rough token estimate: 4 characters ≈ 1 token (good enough for UI stats).
+            bucket["tokens"] += max(1, len(text) // 4) if text else 0
+    except Exception as exc:
+        # If anything goes wrong, we still return the basic docs list.
+        print(f"rag_docs: failed to compute Chroma stats: {exc}")
+
     docs = []
     for p in sorted(RAG_UPLOAD_BASE.iterdir()):
         if not p.is_file():
@@ -471,7 +519,15 @@ def rag_docs(request):
             size = p.stat().st_size
         except OSError:
             size = 0
-        docs.append({"name": p.name, "size": size})
+        stats = stats_by_source.get(p.name, {"chunks": 0, "tokens": 0})
+        docs.append(
+            {
+                "name": p.name,
+                "size": size,
+                "chunks": stats.get("chunks", 0),
+                "tokens": stats.get("tokens", 0),
+            }
+        )
 
     return Response({"documents": docs})
 
@@ -572,6 +628,48 @@ def rag_query(request):
     ]
 
     return Response({"query": query, "results": results})
+
+
+# ---------------------------------------------------------------------
+# Usage analytics (simple summary)
+# ---------------------------------------------------------------------
+
+
+@api_view(["GET"])
+def usage_summary(request):
+    """GET /api/usage/summary/
+
+    Return a very simple usage summary for the Analytics page.
+
+    For now we only report per-model conversation counts and total
+    conversations, scoped to the current owner. Later we can extend
+    this with token counts and latency when we start logging them.
+    """
+
+    owner = get_current_user()
+
+    # Per-model conversation counts
+    per_model = (
+        Conversation.objects.filter(owner=owner)
+        .values("model_id")
+        .annotate(count=Count("id"))
+        .order_by("model_id")
+    )
+
+    total_conversations = sum(row["count"] for row in per_model)
+
+    data = {
+        "total_conversations": total_conversations,
+        "per_model": [
+            {
+                "model_id": row["model_id"] or "unknown",
+                "conversations": row["count"],
+            }
+            for row in per_model
+        ],
+    }
+
+    return Response(data)
 
 
 # ---------------------------------------------------------------------

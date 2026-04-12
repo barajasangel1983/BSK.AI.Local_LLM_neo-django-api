@@ -15,6 +15,9 @@ class Conversation(models.Model):
     # Optional human-readable title (can be empty at first).
     title = models.CharField(max_length=255, blank=True)
 
+    # Model that was used for this conversation's last turn (optional)
+    model_id = models.CharField(max_length=64, blank=True)
+
     # Auto timestamps: set when created, and each time updated.
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
