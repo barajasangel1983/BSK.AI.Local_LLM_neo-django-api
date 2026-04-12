@@ -56,7 +56,9 @@ INSTALLED_APPS = [
     ## Third party
     "rest_framework",
     "corsheaders",
+    # Local apps
     "chat",
+    "historian",
 ]
 
 MIDDLEWARE = [
@@ -97,9 +99,17 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
-    }
-}
+    },
 
+     "historian": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.getenv("HIST_DB_NAME", "plc_1_historian"),
+        "USER": os.getenv("HIST_DB_USER", "plc_1_historian_user"),
+        "PASSWORD": os.getenv("HIST_DB_PASSWORD", "test1234"),
+        "HOST": os.getenv("HIST_DB_HOST", "127.0.0.1"),
+        "PORT": os.getenv("HIST_DB_PORT", "5432"),
+    },
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
@@ -139,7 +149,10 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-
+# Database routers
+DATABASE_ROUTERS = [
+    "neo_llm_api.db_routers.HistorianRouter",
+]
 
 
 # === External GPT (Grok / xAI) config ===
