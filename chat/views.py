@@ -378,7 +378,7 @@ def chat_view(request):
                 hist_chunks = query_chunks(
                     query=user_message,
                     top_k=5,
-                    where={"source": "plc_historian", "extruder_id": "EXTR01"},
+                    where={"source": "plc_historian"},
                 )
                 rag_chunks.extend(hist_chunks)
 
