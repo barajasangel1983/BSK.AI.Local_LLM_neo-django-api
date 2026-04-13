@@ -31,7 +31,7 @@ from os import getenv
 from .models import Conversation, Message
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
 
-FACTORY_KEYWORDS = ["extruder", "shift", "oee", "throughput", "downtime", "alarm"]
+FACTORY_KEYWORDS = ["extruder", "extr01", "extr1", "shift", "oee", "throughput", "downtime", "alarm"]
 
 
 def is_factory_question(text: str) -> bool:
@@ -378,7 +378,7 @@ def chat_view(request):
                 hist_chunks = query_chunks(
                     query=user_message,
                     top_k=5,
-                    where={"source": "plc_historian"},
+                    where={"source": "plc_historian", "extruder_id": "EXTR01"},
                 )
                 rag_chunks.extend(hist_chunks)
 
