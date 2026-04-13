@@ -31,6 +31,13 @@ from os import getenv
 from .models import Conversation, Message
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
 
+FACTORY_KEYWORDS = ["extruder", "shift", "oee", "throughput", "downtime", "alarm"]
+
+
+def is_factory_question(text: str) -> bool:
+    t = text.lower()
+    return any(k in t for k in FACTORY_KEYWORDS)
+
 # RAG lab (vector-only, Chroma) – imported from GraphRAG repo.
 # NOTE: this assumes the BSK.AI.Local_LLM_neo4j-graphrag repo is on PYTHONPATH
 # when running Django (we can adjust PYTHONPATH in manage.py or venv later).
@@ -364,13 +371,30 @@ def chat_view(request):
     rag_sources: list[str] = []
     if use_rag and query_chunks is not None:
         try:
-            rag_chunks = query_chunks(query=user_message, top_k=3)
+            rag_chunks: list = []
+
+            if is_factory_question(user_message):
+                # Historian-first query: focus on plc_historian summaries.
+                hist_chunks = query_chunks(
+                    query=user_message,
+                    top_k=5,
+                    where={"source": "plc_historian"},
+                )
+                rag_chunks.extend(hist_chunks)
+
+                # Optionally grab a few general doc chunks as secondary context.
+                doc_chunks = query_chunks(query=user_message, top_k=3)
+                rag_chunks.extend(doc_chunks)
+            else:
+                # Default behavior: general RAG over all documents.
+                rag_chunks = query_chunks(query=user_message, top_k=5)
+
             if rag_chunks:
                 context_lines = [
-                    "You are Neo, an assistant helping with Django / RAG / DGX questions.",
+                    "You are Neo, an assistant helping with Django / RAG / DGX and factory analytics questions.",
                     "\nHere is relevant context from the knowledge base:",
                 ]
-                for idx, c in enumerate(rag_chunks, start=1):
+                for idx, c in enumerate(rag_chunks[:8], start=1):
                     context_lines.append(
                         f"[{idx}] (source: {c.source})\n{c.text.strip()}\n"
                     )
