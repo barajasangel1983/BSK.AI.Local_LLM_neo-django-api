@@ -755,12 +755,20 @@ TRACKED_ENDPOINTS = [
         "model": "rag",
         "can_restart": True,
     },
+    {
+        "id": "historian-db",
+        "name": "Historian Postgres (plc_1_historian)",
+        "url": "",
+        "model": "historian",
+        "can_restart": False,
+    },
 ]
 
 
 def _check_single_endpoint(ep: dict) -> dict:
     """Ping one endpoint and return its status dict."""
     from django.conf import settings
+    from django.db import connections
 
     ep_id = ep["id"]
 
@@ -770,6 +778,17 @@ def _check_single_endpoint(ep: dict) -> dict:
             from rag.retrieval import get_collection
             col = get_collection()
             col.count()
+            latency = round((time.time() - start) * 1000)
+            status_val = "online"
+        except Exception:
+            latency = 0
+            status_val = "offline"
+    elif ep_id == "historian-db":
+        start = time.time()
+        try:
+            with connections["historian"].cursor() as cursor:
+                cursor.execute("SELECT 1;")
+                cursor.fetchone()
             latency = round((time.time() - start) * 1000)
             status_val = "online"
         except Exception:
