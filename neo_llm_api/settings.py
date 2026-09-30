@@ -160,6 +160,11 @@ GROK_API_BASE = os.getenv("GROK_API_BASE", "https://api.x.ai/v1")
 GROK_API_KEY = os.getenv("GROK_API_KEY", "")
 GROK_CHAT_MODEL = os.getenv("GROK_CHAT_MODEL", "grok-4-fast-reasoning")
 
-# === DGX Spark / vLLM backend (openai/gpt-oss-20b) ===
-DGX_API_BASE = os.getenv("DGX_API_BASE", "http://100.74.225.3:8000")
-DGX_CHAT_MODEL = os.getenv("DGX_CHAT_MODEL", "openai/gpt-oss-20b")
+# === DGX Spark / vLLM backend (Qwen3.8-27B-FP8, main LLM :8004) ===
+DGX_API_BASE = os.getenv("DGX_API_BASE", "http://100.74.225.3:8004")
+DGX_CHAT_MODEL = os.getenv("DGX_CHAT_MODEL", "qwen38-27b-fp8")
+# RAG shared infra on DGX (Tailscale IP 100.74.225.3 = spark-ec99)
+DGX_EMBED_URL = os.getenv("DGX_EMBED_URL", "http://100.74.225.3:8010/v1/embeddings")
+DGX_EMBED_MODEL = os.getenv("DGX_EMBED_MODEL", "nemotron-3-embed-1b")
+DGX_RERANK_URL = os.getenv("DGX_RERANK_URL", "http://100.74.225.3:8011/rerank")
+DGX_RERANK_MODEL = os.getenv("DGX_RERANK_MODEL", "llama-nemotron-rerank-1b-v2")

@@ -171,10 +171,10 @@ def call_dgx_gpt_oss_20b(message: str, system_prompt: str | None = None) -> str:
 def call_ollama_qwen3_8b(message: str, system_prompt: str | None = None) -> str:
     """Call local Ollama running qwen3:8b on the bsk-ai machine.
 
-    This uses the Ollama chat API at http://100.111.50.52:11434/api/chat.
+    Uses Ollama chat API over Tailscale. Override with OLLAMA_BASE_URL env var.
     """
 
-    base_url = "http://100.111.50.52:11434"
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://100.76.107.3:11434")
     url = f"{base_url}/api/chat"
 
     headers = {"Content-Type": "application/json"}
@@ -209,14 +209,14 @@ def generate_reply_backend(
     """Central routing for model calls.
 
     - 'external-gpt' -> Grok / xAI backend.
-    - 'dgx-gpt-oss-20b' -> DGX Spark vLLM backend.
+    - 'dgx-qwen38-27b-fp8' (or legacy 'dgx-gpt-oss-20b') -> DGX Spark vLLM backend.
     - anything else -> dummy echo backend for now.
 
     When `use_rag` is True, callers can pass a `system_prompt` that already
     includes RAG context; backends that support system prompts will use it.
     """
 
-    if model_id == "dgx-gpt-oss-20b":
+    if model_id in ("dgx-gpt-oss-20b", "dgx-qwen38-27b-fp8"):
         # DGX is the primary RAG target; apply system_prompt when provided.
         return call_dgx_gpt_oss_20b(message, system_prompt=system_prompt)
 
@@ -517,9 +517,9 @@ def list_models(request):
             "description": "Qwen3:8B served via Ollama on the bsk-ai machine.",
         },
         {
-            "id": "dgx-gpt-oss-20b",
-            "label": "DGX gpt-oss-20b",
-            "description": "DGX Spark vLLM backend for openai/gpt-oss-20b.",
+            "id": "dgx-qwen38-27b-fp8",
+            "label": "DGX Qwen3.8-27B-FP8",
+            "description": "DGX Spark vLLM backend for Qwen3.8-27B-FP8.",
         },
         {
             "id": "external-gpt",
@@ -753,9 +753,9 @@ TRACKED_ENDPOINTS = [
     },
     {
         "id": "dgx-vllm",
-        "name": "DGX vLLM (gpt-oss-20b)",
-        "url": "http://100.74.225.3:8000/v1/models",
-        "model": "dgx-gpt-oss-20b",
+        "name": "DGX vLLM (Qwen3.8-27B-FP8)",
+        "url": "http://100.74.225.3:8004/v1/models",
+        "model": "dgx-qwen38-27b-fp8",
         "can_restart": False,
     },
     {
@@ -768,7 +768,7 @@ TRACKED_ENDPOINTS = [
     {
         "id": "ollama-qwen3-8b",
         "name": "Ollama Qwen3 8B (Local)",
-        "url": "http://100.111.50.52:11434/api/tags",
+        "url": "http://100.76.107.3:11434/api/tags",
         "model": "ollama-qwen3-8b",
         "can_restart": False,
     },
