@@ -30,8 +30,8 @@ def test_embedder_batches_and_prefix():
         assert "passage: hello" in str(call_args)
 
 
-def test_vector_store_idempotency():
-    store = VectorStore(chroma_path=":memory:", collection_name="test_v2")
+def test_vector_store_idempotency(tmp_path):
+    store = VectorStore(chroma_path=str(tmp_path / "chroma"), collection_name="test_v2")
     chunks = ["chunk one", "chunk two"]
     embs = [[0.1] * 2048, [0.2] * 2048]
     metas = [{"page": 1}, {"page": 2}]
