@@ -22,3 +22,4 @@ venv/
 data/
 !data/incoming/.gitkeep
 !data/processed/.gitkeep
+:memory:/
