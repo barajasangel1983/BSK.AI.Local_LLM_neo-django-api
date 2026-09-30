@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     # Local apps
     "chat",
     "historian",
+    "ingestion",
 ]
 
 MIDDLEWARE = [
@@ -168,3 +169,18 @@ DGX_EMBED_URL = os.getenv("DGX_EMBED_URL", "http://100.74.225.3:8010/v1/embeddin
 DGX_EMBED_MODEL = os.getenv("DGX_EMBED_MODEL", "nemotron-3-embed-1b")
 DGX_RERANK_URL = os.getenv("DGX_RERANK_URL", "http://100.74.225.3:8011/rerank")
 DGX_RERANK_MODEL = os.getenv("DGX_RERANK_MODEL", "llama-nemotron-rerank-1b-v2")
+
+# === BSK Ingestion (Phase 4) ===
+# Docling Serve on the BSK ingestion desktop (Tailscale, single-worker).
+DOCLING_URL = os.getenv("DOCLING_URL", "http://100.86.26.4:5001")
+# Raw uploads land in incoming/; parsed outputs are archived to processed/.
+INGESTION_RAW_BASE = os.getenv(
+    "INGESTION_RAW_BASE", str(BASE_DIR / "data" / "incoming")
+)
+INGESTION_OUTPUT_BASE = os.getenv(
+    "INGESTION_OUTPUT_BASE", str(BASE_DIR / "data" / "processed")
+)
+# Bump whenever chunker/embedding config changes — part of the idempotency key.
+INGESTION_CONFIG_VERSION = os.getenv("INGESTION_CONFIG_VERSION", "v1-2026-09-29")
+# Clean-start Chroma collection for v2 ingestion.
+RAG_COLLECTION_V2 = os.getenv("RAG_COLLECTION_V2", "bsk_rag_v2")
