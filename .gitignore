@@ -19,7 +19,8 @@ venv/
 .idea/
 
 # Ingestion data (raw uploads, processed outputs)
-data/
+data/**
+!data/**/
 !data/incoming/.gitkeep
 !data/processed/.gitkeep
 :memory:/
