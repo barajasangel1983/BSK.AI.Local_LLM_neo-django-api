@@ -147,7 +147,9 @@ class ChatViewRagTests(TestCase):
         self.assertEqual(sources[0]["asset_id"], "PAPER-1")
         self.assertEqual(sources[0]["section_path"], ["Paper", "S0"])
         self.assertEqual(sources[0]["rerank_score"], 0.9)
-        self.assertEqual(Message.objects.get(role="assistant").sources, sources)
+        assistant = Message.objects.get(role="assistant")
+        self.assertEqual(assistant.sources, sources)
+        self.assertEqual(assistant.content, "answer")  # citations not appended as text
         system = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
         self.assertIn("chunk0", system)
         self.assertIn("(source: paper.pdf — S0, p.1)", system)
