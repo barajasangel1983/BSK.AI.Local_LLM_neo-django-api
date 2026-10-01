@@ -197,25 +197,14 @@ DEFAULT_SYSTEM_PROMPTS = {
     "ollama-qwen3-8b": "You are Neo running on Ollama (Qwen3 8B) on Angel's local PC.",
 }
 
-# Display-only footer appended to assistant replies that used RAG. Kept in one
-# place so the format can change without breaking strip_rag_footer().
+# Plain-text sources footer that assistant replies carried before citations
+# moved to Message.sources. No longer written, but older stored replies still
+# contain it, so it is stripped from history.
 RAG_FOOTER_SEPARATOR = "\n\n---\nSources (RAG): "
 
 
-def format_rag_footer(sources: list[str], max_sources: int = 3) -> str:
-    """Return the compact, deduplicated sources footer for a reply."""
-
-    unique_sources = list(dict.fromkeys(sources))  # preserve order, remove dups
-    shown = unique_sources[:max_sources]
-    remaining = len(unique_sources) - len(shown)
-    sources_str = ", ".join(shown)
-    if remaining > 0:
-        sources_str = f"{sources_str}, +{remaining} more"
-    return f"{RAG_FOOTER_SEPARATOR}{sources_str}"
-
-
 def strip_rag_footer(content: str) -> str:
-    """Remove the RAG sources footer so it is not fed back to the model."""
+    """Remove the legacy RAG sources footer so it is not fed back to the model."""
 
     idx = content.rfind(RAG_FOOTER_SEPARATOR)
     return content[:idx] if idx != -1 else content
@@ -604,11 +593,6 @@ def chat_view(request):
         conversation.id, model_id, use_rag, history_sent, len(history),
         len(system_prompt or ""), [c["source"] for c in citations], round((time.time() - start) * 1000),
     )
-
-    # Append a compact, deduplicated sources footer when RAG was used.
-    # TODO(phase5 PR B/C): drop once the UI renders Message.sources.
-    if citations:
-        assistant_reply = f"{assistant_reply}{format_rag_footer([citation_label(c) for c in citations])}"
 
     # --- Save assistant message ---
 

@@ -6,7 +6,7 @@ from rest_framework.test import APIClient
 from .models import Conversation
 from .views import (
     build_chat_messages,
-    format_rag_footer,
+    RAG_FOOTER_SEPARATOR,
     strip_rag_footer,
 )
 
@@ -59,16 +59,14 @@ class BuildChatMessagesTests(SimpleTestCase):
         self.assertEqual([m["content"] for m in msgs[1:-1]], ["u1", "a1"])
 
     def test_strips_rag_footer_from_assistant_history(self):
-        reply = "answer" + format_rag_footer(["a.txt", "b.txt"])
+        reply = f"answer{RAG_FOOTER_SEPARATOR}a.txt, b.txt"
         msgs = build([("user", "q"), ("assistant", reply)])
         self.assertEqual(msgs[2]["content"], "answer")
 
 
 class RagFooterTests(SimpleTestCase):
-    def test_round_trip_and_truncation(self):
-        footer = format_rag_footer(["a", "b", "a", "c", "d"])
-        self.assertTrue(footer.endswith("a, b, c, +1 more"))
-        self.assertEqual(strip_rag_footer("text" + footer), "text")
+    def test_strips_legacy_footer(self):
+        self.assertEqual(strip_rag_footer(f"text{RAG_FOOTER_SEPARATOR}a, b, +1 more"), "text")
         self.assertEqual(strip_rag_footer("no footer"), "no footer")
 
 
