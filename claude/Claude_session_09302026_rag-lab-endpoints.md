@@ -8,7 +8,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | v2 document list, chunk browser, delete by asset, read-only config | `chat/rag_lab_views.py` (new), `chat/urls.py`, `chat/views.py`, `neo_llm_api/settings.py`, `chat/test_rag_lab.py` (new) | _not committed yet_ |
+| 1 | v2 document list, chunk browser, delete by asset, read-only config | `chat/rag_lab_views.py` (new), `chat/urls.py`, `chat/views.py`, `neo_llm_api/settings.py`, `chat/test_rag_lab.py` (new) | `ff7d4bb` — PR [#3](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/3) |
 
 ## Details
 
