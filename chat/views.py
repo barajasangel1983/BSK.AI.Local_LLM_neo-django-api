@@ -12,6 +12,7 @@
 # - DELETE /api/rag/docs/<name>/
 # - GET  /api/usage/summary/
 
+import logging
 import os
 import time
 import requests
@@ -30,6 +31,8 @@ from os import getenv
 
 from .models import Conversation, Message
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
+
+logger = logging.getLogger("chat")
 
 FACTORY_KEYWORDS = ["extruder", "extr01", "extr1", "shift", "oee", "throughput", "downtime", "alarm"]
 
@@ -96,7 +99,7 @@ def generate_dummy_reply(message: str, model: str, use_rag: bool) -> str:
     return f"[{model}{rag_text}] Echo: {message}"
 
 
-def call_grok_chat(message: str, system_prompt: str | None = None) -> str:
+def call_grok_chat(messages: list[dict]) -> str:
     """Call xAI Grok chat completions and return the reply text.
 
     Uses GROK_* settings from neo_llm_api.settings.
@@ -119,14 +122,7 @@ def call_grok_chat(message: str, system_prompt: str | None = None) -> str:
 
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-                or "You are Neo, an AI assistant helping build and debug a local LLM stack.",
-            },
-            {"role": "user", "content": message},
-        ],
+        "messages": messages,
     }
 
     resp = requests.post(url, headers=headers, json=payload, timeout=30)
@@ -137,7 +133,7 @@ def call_grok_chat(message: str, system_prompt: str | None = None) -> str:
     return data["choices"][0]["message"]["content"]
 
 
-def call_dgx_gpt_oss_20b(message: str, system_prompt: str | None = None) -> str:
+def call_dgx_gpt_oss_20b(messages: list[dict]) -> str:
     """Call DGX vLLM server hosting openai/gpt-oss-20b and return reply text."""
 
     from django.conf import settings
@@ -150,14 +146,7 @@ def call_dgx_gpt_oss_20b(message: str, system_prompt: str | None = None) -> str:
 
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-                or "You are Neo, an assistant running on the DGX Spark box.",
-            },
-            {"role": "user", "content": message},
-        ],
+        "messages": messages,
         "max_tokens": 2048,
     }
 
@@ -168,7 +157,7 @@ def call_dgx_gpt_oss_20b(message: str, system_prompt: str | None = None) -> str:
     return data["choices"][0]["message"]["content"]
 
 
-def call_ollama_qwen3_8b(message: str, system_prompt: str | None = None) -> str:
+def call_ollama_qwen3_8b(messages: list[dict]) -> str:
     """Call local Ollama running qwen3:8b on the bsk-ai machine.
 
     Uses Ollama chat API over Tailscale. Override with OLLAMA_BASE_URL env var.
@@ -180,14 +169,7 @@ def call_ollama_qwen3_8b(message: str, system_prompt: str | None = None) -> str:
     headers = {"Content-Type": "application/json"}
     payload = {
         "model": "qwen3:8b",
-        "messages": [
-            {
-                "role": "system",
-                "content": system_prompt
-                or "You are Neo running on Ollama (Qwen3 8B) on Angel's local PC.",
-            },
-            {"role": "user", "content": message},
-        ],
+        "messages": messages,
         "stream": False,
     }
 
@@ -199,37 +181,140 @@ def call_ollama_qwen3_8b(message: str, system_prompt: str | None = None) -> str:
     return data["message"]["content"]
 
 
+# ---------------------------------------------------------------------
+# Chat context: history window + RAG sources footer
+# ---------------------------------------------------------------------
+
+DGX_MODEL_IDS = ("dgx-gpt-oss-20b", "dgx-qwen38-27b-fp8")
+
+DEFAULT_SYSTEM_PROMPTS = {
+    "dgx": "You are Neo, an assistant running on the DGX Spark box.",
+    "external-gpt": "You are Neo, an AI assistant helping build and debug a local LLM stack.",
+    "ollama-qwen3-8b": "You are Neo running on Ollama (Qwen3 8B) on Angel's local PC.",
+}
+
+# Display-only footer appended to assistant replies that used RAG. Kept in one
+# place so the format can change without breaking strip_rag_footer().
+RAG_FOOTER_SEPARATOR = "\n\n---\nSources (RAG): "
+
+
+def format_rag_footer(sources: list[str], max_sources: int = 3) -> str:
+    """Return the compact, deduplicated sources footer for a reply."""
+
+    unique_sources = list(dict.fromkeys(sources))  # preserve order, remove dups
+    shown = unique_sources[:max_sources]
+    remaining = len(unique_sources) - len(shown)
+    sources_str = ", ".join(shown)
+    if remaining > 0:
+        sources_str = f"{sources_str}, +{remaining} more"
+    return f"{RAG_FOOTER_SEPARATOR}{sources_str}"
+
+
+def strip_rag_footer(content: str) -> str:
+    """Remove the RAG sources footer so it is not fed back to the model."""
+
+    idx = content.rfind(RAG_FOOTER_SEPARATOR)
+    return content[:idx] if idx != -1 else content
+
+
+def context_budget_chars(model_id: str) -> int:
+    """Total prompt budget (characters) for a model's context window."""
+
+    from django.conf import settings
+
+    if model_id == "ollama-qwen3-8b":
+        return settings.CHAT_CONTEXT_MAX_CHARS_OLLAMA
+    return settings.CHAT_CONTEXT_MAX_CHARS
+
+
+def build_chat_messages(
+    history: list[tuple[str, str]],
+    user_message: str,
+    system_prompt: str,
+    max_messages: int,
+    max_chars: int,
+) -> list[dict]:
+    """Build an OpenAI-style messages list: system + recent history + user.
+
+    `history` is (role, content) pairs, oldest first, NOT including the
+    current user message. History fills whatever budget is left after the
+    system prompt and current message; the oldest messages are dropped first,
+    whole messages only. User messages that never got a reply (e.g. the model
+    call failed) are skipped so turns stay user/assistant alternating, and the
+    window never starts with an assistant message.
+    """
+
+    turns = [(r, c) for r, c in history if r in ("user", "assistant")]
+    # Drop user messages not followed by an assistant reply.
+    turns = [
+        (r, c)
+        for i, (r, c) in enumerate(turns)
+        if r != "user" or (i + 1 < len(turns) and turns[i + 1][0] == "assistant")
+    ]
+
+    budget = max_chars - len(system_prompt) - len(user_message)
+    selected: list[dict] = []
+    for role, content in reversed(turns):
+        if len(selected) >= max_messages:
+            break
+        if role == "assistant":
+            content = strip_rag_footer(content)
+        if len(content) > budget:
+            break
+        selected.append({"role": role, "content": content})
+        budget -= len(content)
+
+    selected.reverse()
+    while selected and selected[0]["role"] == "assistant":
+        selected.pop(0)
+
+    return [
+        {"role": "system", "content": system_prompt},
+        *selected,
+        {"role": "user", "content": user_message},
+    ]
+
+
 def generate_reply_backend(
     message: str,
     model_id: str,
     use_rag: bool,
-    conversation: Conversation,
+    history: list[tuple[str, str]],
     system_prompt: str | None = None,
-) -> str:
+) -> tuple[str, int]:
     """Central routing for model calls.
 
     - 'external-gpt' -> Grok / xAI backend.
     - 'dgx-qwen38-27b-fp8' (or legacy 'dgx-gpt-oss-20b') -> DGX Spark vLLM backend.
+    - 'ollama-qwen3-8b' -> Ollama on the bsk-ai machine.
     - anything else -> dummy echo backend for now.
 
-    When `use_rag` is True, callers can pass a `system_prompt` that already
-    includes RAG context; backends that support system prompts will use it.
+    `history` is the conversation's prior (role, content) messages, oldest
+    first. When `use_rag` is True, callers can pass a `system_prompt` that
+    already includes RAG context; otherwise each backend's default is used.
+
+    Returns (reply_text, history_messages_sent).
     """
 
-    if model_id in ("dgx-gpt-oss-20b", "dgx-qwen38-27b-fp8"):
-        # DGX is the primary RAG target; apply system_prompt when provided.
-        return call_dgx_gpt_oss_20b(message, system_prompt=system_prompt)
+    from django.conf import settings
 
-    if model_id == "external-gpt":
-        # Optional: also allow Grok to use RAG context when available.
-        return call_grok_chat(message, system_prompt=system_prompt)
+    if model_id in DGX_MODEL_IDS:
+        backend, default_prompt = call_dgx_gpt_oss_20b, DEFAULT_SYSTEM_PROMPTS["dgx"]
+    elif model_id in ("external-gpt", "ollama-qwen3-8b"):
+        backend = call_grok_chat if model_id == "external-gpt" else call_ollama_qwen3_8b
+        default_prompt = DEFAULT_SYSTEM_PROMPTS[model_id]
+    else:
+        # Default: dummy echo
+        return generate_dummy_reply(message, model_id, use_rag), 0
 
-    if model_id == "ollama-qwen3-8b":
-        # Local small model hosted via Ollama on the bsk-ai machine.
-        return call_ollama_qwen3_8b(message, system_prompt=system_prompt)
-
-    # Default: dummy echo
-    return generate_dummy_reply(message, model_id, use_rag)
+    messages = build_chat_messages(
+        history=history,
+        user_message=message,
+        system_prompt=system_prompt or default_prompt,
+        max_messages=settings.CHAT_HISTORY_MAX_MESSAGES,
+        max_chars=context_budget_chars(model_id),
+    )
+    return backend(messages), len(messages) - 2
 
 
 @api_view(["POST"])
@@ -293,7 +378,7 @@ def rag_upload(request):
             )
         except Exception as e:
             # Log the error but don't fail the upload
-            print(f"Auto-ingestion failed: {e}")
+            logger.exception("Auto-ingestion failed: %s", e)
 
     return Response(
         {
@@ -357,6 +442,15 @@ def chat_view(request):
     else:
         conversation = Conversation.objects.create(owner=owner, title="New Conversation")
 
+    # --- Prior messages (before saving this one), oldest first ---
+    from django.conf import settings
+
+    # Fetch a little more than the window so orphaned user messages can be skipped.
+    recent = conversation.messages.order_by("-created_at").values_list("role", "content")[
+        : settings.CHAT_HISTORY_MAX_MESSAGES * 2
+    ]
+    history = list(reversed(recent))
+
     # --- Save user message ---
 
     Message.objects.create(
@@ -402,32 +496,43 @@ def chat_view(request):
                         rag_sources.append(c.source)
                 context_lines.append("---\nUse this context when answering the user.")
                 system_prompt = "\n".join(context_lines)
-        except Exception as exc:
+        except Exception:
             # If RAG fails for any reason, fall back to normal behavior.
-            print(f"RAG context generation failed: {exc}")
+            logger.exception("RAG context generation failed conversation=%s", conversation.id)
             system_prompt = None
             rag_sources = []
 
     # --- Generate assistant reply ---
 
-    assistant_reply = generate_reply_backend(
-        message=user_message,
-        model_id=model_id,
-        use_rag=use_rag,
-        conversation=conversation,
-        system_prompt=system_prompt,
+    start = time.time()
+    try:
+        assistant_reply, history_sent = generate_reply_backend(
+            message=user_message,
+            model_id=model_id,
+            use_rag=use_rag,
+            history=history,
+            system_prompt=system_prompt,
+        )
+    except Exception as exc:
+        logger.exception(
+            "chat failed conversation=%s model=%s latency_ms=%d",
+            conversation.id, model_id, round((time.time() - start) * 1000),
+        )
+        return Response(
+            {"error": f"Model backend failed: {exc}"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    logger.info(
+        "chat ok conversation=%s model=%s use_rag=%s history_sent=%d/%d "
+        "rag_context_chars=%d rag_sources=%s latency_ms=%d",
+        conversation.id, model_id, use_rag, history_sent, len(history),
+        len(system_prompt or ""), rag_sources, round((time.time() - start) * 1000),
     )
 
     # Append a compact, deduplicated sources footer when RAG was used.
     if use_rag and rag_sources:
-        unique_sources = list(dict.fromkeys(rag_sources))  # preserve order, remove dups
-        max_sources = 3
-        shown = unique_sources[:max_sources]
-        remaining = len(unique_sources) - len(shown)
-        sources_str = ", ".join(shown)
-        if remaining > 0:
-            sources_str = f"{sources_str}, +{remaining} more"
-        assistant_reply = f"{assistant_reply}\n\n---\nSources (RAG): {sources_str}"
+        assistant_reply = f"{assistant_reply}{format_rag_footer(rag_sources)}"
 
     # --- Save assistant message ---
 
@@ -573,7 +678,7 @@ def rag_docs(request):
             bucket["tokens"] += max(1, len(text) // 4) if text else 0
     except Exception as exc:
         # If anything goes wrong, we still return the basic docs list.
-        print(f"rag_docs: failed to compute Chroma stats: {exc}")
+        logger.warning("rag_docs: failed to compute Chroma stats: %s", exc)
 
     docs = []
     for p in sorted(RAG_UPLOAD_BASE.iterdir()):
@@ -623,7 +728,7 @@ def rag_delete_doc(request, name: str):
       collection.delete(where={"source": name})
     except Exception as exc:
       # Log but do not fail hard; at worst, stale chunks remain.
-      print(f"Chroma delete failed for {name}: {exc}")
+      logger.warning("Chroma delete failed for %s: %s", name, exc)
 
     return Response(status=status.HTTP_204_NO_CONTENT)
 
