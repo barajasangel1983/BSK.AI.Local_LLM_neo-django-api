@@ -7,13 +7,16 @@ The Docling sync endpoint returns:
 {
   "document": {
     "filename": "...",
-    "md_content": "# Heading\\n\\nParagraph text...",
+    "md_content": "# Heading\\n\\nParagraph text...\\n<!-- page-break -->\\n...",
     "json_content": null,
     ...
   },
   "status": "success",
   "errors": []
 }
+
+The client asks Docling to put PAGE_BREAK between pages in md_content, so the
+chunker can track page numbers (formats without pages stay on page 1).
 
 Chunking rules (per Phase 4 plan):
 - Target 600–1000 tokens, hard max 1200–1500 (tiktoken cl100k_base)
@@ -25,7 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import tiktoken
 
@@ -33,6 +36,10 @@ ENC = tiktoken.get_encoding("cl100k_base")
 TARGET_TOKENS = 600
 MAX_TOKENS = 800  # Must be well under 4096 to account for "passage: " prefix + overhead
 OVERLAP_SENTENCES = 1
+# Passed to Docling as `md_page_break_placeholder`; must not occur in real text.
+PAGE_BREAK = "<!-- page-break -->"
+
+_LIST_ITEM = re.compile(r"^\s*([-*+\u2022]|\d+[.)])\s+")
 
 
 @dataclass
@@ -41,7 +48,7 @@ class Chunk:
     section_path: List[str]
     page_start: int
     page_end: int
-    content_type: str  # heading | paragraph | table | list | procedure | mixed
+    content_type: str  # paragraph | table | list
     tables_or_figure_refs: List[str] = field(default_factory=list)
     token_count: int = 0
 
@@ -69,42 +76,77 @@ def _strip_embedded_images(md_content: str) -> str:
     return md_content
 
 
-def _extract_sections_from_markdown(md_content: str) -> List[Dict[str, Any]]:
-    """Parse markdown into sections based on headings."""
-    lines = md_content.split("\n")
-    sections = []
-    current_section = []
-    current_heading = "Document"
-    current_path = []
+def _lines_with_pages(md_content: str) -> List[Tuple[str, int]]:
+    """Split markdown into (line, page) pairs, consuming PAGE_BREAK markers."""
+    page = 1
+    out: List[Tuple[str, int]] = []
+    for line in md_content.split("\n"):
+        breaks = line.count(PAGE_BREAK)
+        if breaks:
+            line = line.replace(PAGE_BREAK, "")
+            if not line.strip():
+                page += breaks
+                continue
+        out.append((line, page))
+        page += breaks
+    return out
 
-    for line in lines:
+
+def _extract_sections_from_markdown(md_content: str) -> List[Dict[str, Any]]:
+    """Parse markdown into sections based on headings.
+
+    Each section keeps its lines as (line, page) pairs.
+    """
+    sections = []
+    current_lines: List[Tuple[str, int]] = []
+    current_heading = "Document"
+    current_path: List[str] = []
+
+    for line, page in _lines_with_pages(md_content):
         # Check for markdown headings (# ## ### etc.)
         heading_match = re.match(r"^(#{1,6})\s+(.+)$", line)
         if heading_match:
             # Save previous section
-            if current_section:
-                sections.append({
-                    "heading": current_heading,
-                    "path": current_path,
-                    "content": "\n".join(current_section).strip()
-                })
+            if current_lines:
+                sections.append({"heading": current_heading, "path": current_path, "lines": current_lines})
             # Start new section
             level = len(heading_match.group(1))
             current_heading = heading_match.group(2).strip()
             current_path = current_path[:level-1] + [current_heading]
-            current_section = []
+            current_lines = []
         else:
-            current_section.append(line)
+            current_lines.append((line, page))
 
     # Don't forget the last section
-    if current_section:
-        sections.append({
-            "heading": current_heading,
-            "path": current_path,
-            "content": "\n".join(current_section).strip()
-        })
+    if current_lines:
+        sections.append({"heading": current_heading, "path": current_path, "lines": current_lines})
 
     return sections
+
+
+def _paragraphs(lines: List[Tuple[str, int]]) -> List[Tuple[str, int, int]]:
+    """Group (line, page) pairs into (text, page_start, page_end) paragraphs at blank lines."""
+    paragraphs = []
+    buf: List[Tuple[str, int]] = []
+    for line, page in lines + [("", 0)]:
+        if line.strip():
+            buf.append((line, page))
+        elif buf:
+            paragraphs.append(("\n".join(l for l, _ in buf).strip(), buf[0][1], buf[-1][1]))
+            buf = []
+    return paragraphs
+
+
+def _content_type(text: str) -> str:
+    """Classify a paragraph as table (markdown table rows), list, or paragraph."""
+    lines = [l for l in text.split("\n") if l.strip()]
+    if not lines:
+        return "paragraph"
+    if sum(l.lstrip().startswith("|") for l in lines) * 2 > len(lines):
+        return "table"
+    if sum(bool(_LIST_ITEM.match(l)) for l in lines) * 2 > len(lines):
+        return "list"
+    return "paragraph"
 
 
 def chunk_document(doc: Dict[str, Any]) -> List[Chunk]:
@@ -124,43 +166,41 @@ def chunk_document(doc: Dict[str, Any]) -> List[Chunk]:
     if not md_content:
         return chunks
 
-    # Strip embedded base64 images (95%+ of content for figure-heavy PDFs)
+    # Strip embedded base64 images (safety net; the client asks Docling for placeholders)
     md_content = _strip_embedded_images(md_content)
 
     # Parse into sections
     sections = _extract_sections_from_markdown(md_content)
 
     for section in sections:
-        text = section["content"]
-        if not text or len(text) < 50:
+        paragraphs = _paragraphs(section["lines"])
+        if sum(len(text) for text, _, _ in paragraphs) < 50:
             continue
 
         path = section["path"]
-        heading = section["heading"]
 
-        # Split the section into paragraphs first
-        paragraphs = re.split(r'\n\s*\n', text)
-
-        for para in paragraphs:
-            para = para.strip()
-            if not para or len(para) < 20:
+        for para, page_start, page_end in paragraphs:
+            if len(para) < 20:
                 continue
+            content_type = _content_type(para)
+
+            def make_chunk(text: str) -> Chunk:
+                # Pages come from the paragraph; the overlap prefix is ignored.
+                return Chunk(
+                    text=text,
+                    section_path=path,
+                    page_start=page_start,
+                    page_end=page_end,
+                    content_type=content_type,
+                    token_count=_count_tokens(text),
+                )
 
             # Merge with overlap from previous chunk
             candidate = (overlap_buffer + " " + para).strip() if overlap_buffer else para
-            tok_count = _count_tokens(candidate)
 
-            if tok_count <= MAX_TOKENS:
+            if _count_tokens(candidate) <= MAX_TOKENS:
                 # Fits comfortably
-                chunk = Chunk(
-                    text=candidate,
-                    section_path=path,
-                    page_start=1,
-                    page_end=1,
-                    content_type="paragraph" if len(path) == 0 else "heading",
-                    token_count=tok_count,
-                )
-                chunks.append(chunk)
+                chunks.append(make_chunk(candidate))
 
                 # Prepare overlap for next chunk
                 sents = _split_sentences(candidate)
@@ -173,46 +213,18 @@ def chunk_document(doc: Dict[str, Any]) -> List[Chunk]:
                     trial = (buf + " " + sent).strip() if buf else sent
                     if _count_tokens(trial) > MAX_TOKENS and buf:
                         # Flush current buf as a chunk
-                        chunks.append(
-                            Chunk(
-                                text=buf,
-                                section_path=path,
-                                page_start=1,
-                                page_end=1,
-                                content_type="paragraph",
-                                token_count=_count_tokens(buf),
-                            )
-                        )
+                        chunks.append(make_chunk(buf))
                         buf = sent
                     else:
                         buf = trial
                 if buf:
                     overlap_buffer = " ".join(_split_sentences(buf)[-OVERLAP_SENTENCES:])
                     if _count_tokens(buf) <= MAX_TOKENS:
-                        chunks.append(
-                            Chunk(
-                                text=buf,
-                                section_path=path,
-                                page_start=1,
-                                page_end=1,
-                                content_type="paragraph",
-                                token_count=_count_tokens(buf),
-                            )
-                        )
+                        chunks.append(make_chunk(buf))
                     else:
                         # Last resort: hard split by token count (no sentence boundary found)
-                        hard_chunks = _hard_split_by_tokens(buf, MAX_TOKENS)
-                        for hc in hard_chunks:
-                            chunks.append(
-                                Chunk(
-                                    text=hc,
-                                    section_path=path,
-                                    page_start=1,
-                                    page_end=1,
-                                    content_type="paragraph",
-                                    token_count=_count_tokens(hc),
-                                )
-                            )
+                        for hc in _hard_split_by_tokens(buf, MAX_TOKENS):
+                            chunks.append(make_chunk(hc))
 
     # Final cleanup: drop any empty or tiny chunks
     chunks = [c for c in chunks if c.token_count >= 20]

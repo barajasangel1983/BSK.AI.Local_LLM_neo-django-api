@@ -3,7 +3,8 @@
 Sync conversion flow against the live Docling Serve v1 API:
 
     POST {base}/v1/convert/source
-    body: {"sources": [{"kind": "file", "filename": ..., "base64_string": ...}]}
+    body: {"sources": [{"kind": "file", "filename": ..., "base64_string": ...}],
+           "options": CONVERT_OPTIONS}
     -> Conversion result (inbody target)
 
 The sync endpoint is more reliable than the async endpoint for our use case
@@ -20,6 +21,16 @@ from typing import Optional
 
 import requests
 from django.conf import settings
+
+from .chunker import PAGE_BREAK
+
+# Markdown with page-break markers (the chunker derives page numbers from them)
+# and image placeholders instead of embedded base64 figures.
+CONVERT_OPTIONS = {
+    "to_formats": ["md"],
+    "md_page_break_placeholder": PAGE_BREAK,
+    "image_export_mode": "placeholder",
+}
 
 
 class DoclingError(Exception):
@@ -60,6 +71,7 @@ class DoclingClient:
                     "base64_string": base64.b64encode(file_bytes).decode("ascii"),
                 }
             ],
+            "options": CONVERT_OPTIONS,
         }
         resp = requests.post(
             url,

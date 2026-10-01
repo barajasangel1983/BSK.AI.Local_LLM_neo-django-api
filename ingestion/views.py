@@ -10,13 +10,32 @@ Endpoints:
 import hashlib
 import os
 import threading
+from datetime import timedelta
 
 from django.conf import settings
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 
 from .models import IngestionJob
+
+
+IN_FLIGHT_STATUSES = (
+    IngestionJob.Status.QUEUED,
+    IngestionJob.Status.PARSING,
+    IngestionJob.Status.CHUNKING,
+    IngestionJob.Status.EMBEDDING,
+    IngestionJob.Status.STORED,
+)
+
+
+def should_retry(job: IngestionJob) -> bool:
+    """A failed job, or an in-flight one whose worker thread is presumably dead."""
+    if job.status == IngestionJob.Status.FAILED:
+        return True
+    stale_before = timezone.now() - timedelta(minutes=settings.INGESTION_STALE_MINUTES)
+    return job.status in IN_FLIGHT_STATUSES and job.created_at < stale_before
 
 
 @require_http_methods(["POST"])
@@ -39,13 +58,14 @@ def ingest_document(request):
         sha256.update(chunk)
     source_sha256 = sha256.hexdigest()
 
-    # Idempotency: return existing job if same hash + revision + config
+    # Idempotency: return existing job if same hash + revision + config,
+    # unless it failed or got stuck — then re-run it below.
     existing = IngestionJob.objects.filter(
         source_sha256=source_sha256,
         document_revision=document_revision,
         config_version=settings.INGESTION_CONFIG_VERSION,
     ).first()
-    if existing:
+    if existing and not should_retry(existing):
         return JsonResponse(
             {
                 "job_id": str(existing.id),
@@ -62,15 +82,30 @@ def ingest_document(request):
         for chunk in file.chunks():
             dest.write(chunk)
 
-    # Create job record
-    job = IngestionJob.objects.create(
-        source_filename=file.name,
-        source_sha256=source_sha256,
-        document_revision=document_revision,
-        asset_id=asset_id,
-        status=IngestionJob.Status.QUEUED,
-        config_version=settings.INGESTION_CONFIG_VERSION,
-    )
+    if existing:
+        # Retry: reuse the row (unique per sha/revision/config). created_at is
+        # reset to the start of this attempt so the stale check measures from now.
+        job = existing
+        job.source_filename = file.name
+        job.asset_id = asset_id
+        job.status = IngestionJob.Status.QUEUED
+        job.error = None
+        job.chunk_count = None
+        job.completed_at = None
+        job.created_at = timezone.now()
+        job.save()
+        message = "Retrying previous job"
+    else:
+        # Create job record
+        job = IngestionJob.objects.create(
+            source_filename=file.name,
+            source_sha256=source_sha256,
+            document_revision=document_revision,
+            asset_id=asset_id,
+            status=IngestionJob.Status.QUEUED,
+            config_version=settings.INGESTION_CONFIG_VERSION,
+        )
+        message = "Ingestion started"
 
     # Launch background processing
     from .pipeline import process_job
@@ -82,7 +117,7 @@ def ingest_document(request):
         {
             "job_id": str(job.id),
             "status": job.status,
-            "message": "Ingestion started",
+            "message": message,
         },
         status=202,
     )
