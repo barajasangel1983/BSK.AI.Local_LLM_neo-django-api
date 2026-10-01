@@ -11,7 +11,7 @@
 
 
 from django.urls import path
-from . import views
+from . import rag_lab_views, views
 
 urlpatterns = [
     # Simple health check
@@ -31,8 +31,10 @@ urlpatterns = [
     path("usage/summary/", views.usage_summary, name="usage-summary"),
 
     # RAG
-    path("rag/docs/", views.rag_docs, name="rag-docs"),
-    path("rag/docs/<str:name>/", views.rag_delete_doc, name="rag-delete-doc"),
+    path("rag/docs/", rag_lab_views.rag_docs, name="rag-docs"),
+    path("rag/docs/<str:asset_id>/", rag_lab_views.rag_delete_doc, name="rag-delete-doc"),
+    path("rag/chunks/", rag_lab_views.rag_chunks, name="rag-chunks"),
+    path("rag/config/", rag_lab_views.rag_config, name="rag-config"),
     path("rag/query/", views.rag_query, name="rag-query"),
     path("rag/upload/", views.rag_upload, name="rag-upload"),
 

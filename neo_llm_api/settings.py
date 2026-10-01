@@ -232,6 +232,8 @@ CHROMA_DIR = os.getenv(
 RAG_V2_CANDIDATES = int(os.getenv("RAG_V2_CANDIDATES", "20"))
 # Chunks kept after reranking for chat context (before the context budget cap).
 RAG_CHAT_TOP_N = int(os.getenv("RAG_CHAT_TOP_N", "5"))
+# Default top_k on /api/rag/query/ (RAG Lab Top-K slider marker).
+RAG_QUERY_DEFAULT_TOP_K = int(os.getenv("RAG_QUERY_DEFAULT_TOP_K", "5"))
 # Upper bound for top_k on /api/rag/query/ (RAG Lab Top-K slider).
 RAG_QUERY_MAX_TOP_K = int(os.getenv("RAG_QUERY_MAX_TOP_K", "10"))
 # Share of the model's CHAT_CONTEXT_MAX_CHARS* budget that RAG context may use;

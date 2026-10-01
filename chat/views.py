@@ -8,9 +8,10 @@
 # - DELETE /api/conversations/<uuid>/
 # - GET  /api/models/
 # - POST /api/rag/query/
-# - GET  /api/rag/docs/
-# - DELETE /api/rag/docs/<name>/
+# - POST /api/rag/upload/   (legacy; RAG Lab now uploads via /api/rag/ingest/)
 # - GET  /api/usage/summary/
+# - GET  /api/health/...
+# RAG Lab document/chunk/config endpoints live in chat/rag_lab_views.py.
 
 import logging
 import os
@@ -716,99 +717,6 @@ def list_models(request):
 # ---------------------------------------------------------------------
 
 
-@api_view(["GET"])
-
-def rag_docs(request):
-    """GET /api/rag/docs/
-
-    Return a simple listing of raw RAG documents based on files in
-    RAG_UPLOAD_BASE. This is used by the RAG Lab UI to show the corpus.
-    """
-
-    RAG_UPLOAD_BASE.mkdir(parents=True, exist_ok=True)
-
-    # Optional: enrich with chunk/token stats from Chroma when available.
-    stats_by_source: dict[str, dict[str, int]] = {}
-    try:  # pragma: no cover - best-effort enrichment
-        import chromadb
-        from chromadb.config import Settings as ChromaSettings
-        from rag.config import CHROMA_DIR
-
-        client = chromadb.PersistentClient(
-            path=str(CHROMA_DIR), settings=ChromaSettings(anonymized_telemetry=False)
-        )
-        collection = client.get_or_create_collection(name="bsk_rag")
-        data = collection.get(include=["documents", "metadatas"], limit=None)
-        documents = data.get("documents", []) or []
-        metadatas = data.get("metadatas", []) or []
-
-        for doc_text, meta in zip(documents, metadatas):
-            meta = meta or {}
-            source = str(meta.get("source") or "")
-            if not source:
-                continue
-            bucket = stats_by_source.setdefault(source, {"chunks": 0, "tokens": 0})
-            bucket["chunks"] += 1
-            text = doc_text or ""
-            # Rough token estimate: 4 characters ≈ 1 token (good enough for UI stats).
-            bucket["tokens"] += max(1, len(text) // 4) if text else 0
-    except Exception as exc:
-        # If anything goes wrong, we still return the basic docs list.
-        logger.warning("rag_docs: failed to compute Chroma stats: %s", exc)
-
-    docs = []
-    for p in sorted(RAG_UPLOAD_BASE.iterdir()):
-        if not p.is_file():
-            continue
-        try:
-            size = p.stat().st_size
-        except OSError:
-            size = 0
-        stats = stats_by_source.get(p.name, {"chunks": 0, "tokens": 0})
-        docs.append(
-            {
-                "name": p.name,
-                "size": size,
-                "chunks": stats.get("chunks", 0),
-                "tokens": stats.get("tokens", 0),
-            }
-        )
-
-    return Response({"documents": docs})
-
-
-@api_view(["DELETE"])
-
-def rag_delete_doc(request, name: str):
-    """DELETE /api/rag/docs/<name>/
-
-    Delete a raw RAG document file and its associated chunks from Chroma.
-    """
-
-    # Remove the file from disk (if it exists)
-    path = RAG_UPLOAD_BASE / name
-    if path.exists() and path.is_file():
-      try:
-        path.unlink()
-      except OSError as exc:
-        return Response({"error": f"Failed to delete file: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-    # Best-effort delete from Chroma based on "source" metadata
-    try:
-      import chromadb
-      from rag.config import CHROMA_DIR
-      from chromadb.config import Settings
-
-      client = chromadb.PersistentClient(path=str(CHROMA_DIR), settings=Settings(anonymized_telemetry=False))
-      collection = client.get_or_create_collection(name="bsk_rag")
-      collection.delete(where={"source": name})
-    except Exception as exc:
-      # Log but do not fail hard; at worst, stale chunks remain.
-      logger.warning("Chroma delete failed for %s: %s", name, exc)
-
-    return Response(status=status.HTTP_204_NO_CONTENT)
-
-
 @api_view(["POST"])
 
 def rag_query(request):
@@ -820,7 +728,7 @@ def rag_query(request):
     Request body (JSON):
     {
       "query": "user question",
-      "top_k": 5   # optional, clamped to 1..RAG_QUERY_MAX_TOP_K
+      "top_k": 5   # optional (default RAG_QUERY_DEFAULT_TOP_K), clamped to 1..RAG_QUERY_MAX_TOP_K
     }
 
     Response body:
@@ -846,7 +754,7 @@ def rag_query(request):
 
     query = str(request.data.get("query", ""))
     try:
-        top_k = int(request.data.get("top_k", 5))
+        top_k = int(request.data.get("top_k", settings.RAG_QUERY_DEFAULT_TOP_K))
     except (TypeError, ValueError):
         return Response({"error": "top_k must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
     top_k = max(1, min(top_k, settings.RAG_QUERY_MAX_TOP_K))
