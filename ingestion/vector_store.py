@@ -4,7 +4,7 @@ Idempotency key = (source_sha256, document_revision, config_version).
 Before writing, we check if a document with the same key already exists.
 If so, we skip (or optionally replace).
 
-Collection: bsk_rag_v2 (created on first use).
+Collection: bsk_rag_v2 (created on first use, cosine distance).
 """
 
 from __future__ import annotations
@@ -39,9 +39,11 @@ class VectorStore:
                 path=self.chroma_path,
                 settings=ChromaSettings(anonymized_telemetry=False),
             )
+            # Chroma 1.x reads the distance space from `configuration`; the old
+            # metadata={"hnsw:space": ...} form is ignored (collections ended up L2).
             self._collection = self._client.get_or_create_collection(
                 name=self.collection_name,
-                metadata={"hnsw:space": "cosine"},
+                configuration={"hnsw": {"space": "cosine"}},
             )
         return self._collection
 

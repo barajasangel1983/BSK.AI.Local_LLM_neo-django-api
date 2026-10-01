@@ -181,7 +181,11 @@ INGESTION_OUTPUT_BASE = os.getenv(
     "INGESTION_OUTPUT_BASE", str(BASE_DIR / "data" / "processed")
 )
 # Bump whenever chunker/embedding config changes — part of the idempotency key.
-INGESTION_CONFIG_VERSION = os.getenv("INGESTION_CONFIG_VERSION", "v1-2026-09-29")
+# v2: real page numbers, paragraph/table/list content types, Docling image placeholders.
+INGESTION_CONFIG_VERSION = os.getenv("INGESTION_CONFIG_VERSION", "v2-2026-10-01")
+# In-flight jobs older than this are treated as dead (e.g. the worker thread was
+# killed by a runserver reload) and re-run on re-upload.
+INGESTION_STALE_MINUTES = int(os.getenv("INGESTION_STALE_MINUTES", "30"))
 # Clean-start Chroma collection for v2 ingestion.
 RAG_COLLECTION_V2 = os.getenv("RAG_COLLECTION_V2", "bsk_rag_v2")
 
