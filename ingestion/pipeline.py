@@ -18,6 +18,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from .chunker import chunk_document
+from .docling_client import convert_file
 from .docling_client import DoclingClient, DoclingError
 from .embedder import Embedder
 from .models import IngestionJob
@@ -49,14 +50,12 @@ def _run_pipeline(job_id) -> None:
         with open(file_path, "rb") as f:
             file_bytes = f.read()
 
-        # 2. Parse with Docling
+        # 2. Parse with Docling (sync)
         job.status = IngestionJob.Status.PARSING
         job.save(update_fields=["status"])
 
-        client = DoclingClient()
-        task_id = client.submit_file(file_bytes, job.source_filename)
-        status = client.poll_status(task_id, timeout_s=600)
-        doc_json = client.fetch_result(task_id)
+        result = convert_file(file_bytes, job.source_filename)
+        doc_json = result
 
         # 3. Chunk
         job.status = IngestionJob.Status.CHUNKING
