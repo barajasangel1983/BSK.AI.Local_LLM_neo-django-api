@@ -80,6 +80,10 @@ def _ok_response(content):
 class ChatViewHistoryTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        # Titles have their own tests; keep them out of these LLM-call assertions.
+        patcher = patch("chat.views.generate_title", return_value=("Title", "llm"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _chat(self, message, conversation_id=None, model="dgx-qwen38-27b-fp8"):
         return self.client.post(

@@ -126,6 +126,10 @@ def _llm_response(content="answer"):
 class ChatViewRagTests(TestCase):
     def setUp(self):
         self.client = APIClient()
+        # Titles have their own tests; keep them out of these LLM-call assertions.
+        patcher = patch("chat.views.generate_title", return_value=("Title", "llm"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _chat(self, message, **extra):
         body = {"conversation_id": None, "message": message, "model": "dgx-qwen38-27b-fp8", **extra}
