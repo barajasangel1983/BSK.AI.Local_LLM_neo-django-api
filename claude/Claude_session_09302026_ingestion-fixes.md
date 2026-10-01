@@ -8,7 +8,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | Real page numbers, content types, Docling options, cosine collections, retry failed/stale jobs, rebuild command, fixed ingestion tests | `ingestion/chunker.py`, `ingestion/docling_client.py`, `ingestion/vector_store.py`, `ingestion/views.py`, `ingestion/management/commands/rebuild_rag_v2.py` (new), `neo_llm_api/settings.py`, `ingestion/tests/test_chunker.py`, `ingestion/tests/test_docling_client.py`, `ingestion/tests/tests_retry_rebuild.py` (new), `conftest.py` (new) | _not committed yet_ |
+| 1 | Real page numbers, content types, Docling options, cosine collections, retry failed/stale jobs, rebuild command, fixed ingestion tests | `ingestion/chunker.py`, `ingestion/docling_client.py`, `ingestion/vector_store.py`, `ingestion/views.py`, `ingestion/management/commands/rebuild_rag_v2.py` (new), `neo_llm_api/settings.py`, `ingestion/tests/test_chunker.py`, `ingestion/tests/test_docling_client.py`, `ingestion/tests/tests_retry_rebuild.py` (new), `conftest.py` (new) | `451390d` — PR [#5](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/5) |
 
 ## Details
 
