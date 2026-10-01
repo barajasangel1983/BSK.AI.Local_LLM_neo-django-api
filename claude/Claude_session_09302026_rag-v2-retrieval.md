@@ -8,7 +8,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | Chat + RAG Lab retrieval from `bsk_rag_v2` with DGX reranker, RAG budget, stored citations | `chat/retrieval.py` (new), `chat/views.py`, `chat/models.py`, `chat/serializers.py`, `chat/migrations/0005_message_sources.py`, `neo_llm_api/settings.py`, `chat/test_rag_v2.py` (new) | _not committed yet_ |
+| 1 | Chat + RAG Lab retrieval from `bsk_rag_v2` with DGX reranker, RAG budget, stored citations | `chat/retrieval.py` (new), `chat/views.py`, `chat/models.py`, `chat/serializers.py`, `chat/migrations/0005_message_sources.py`, `neo_llm_api/settings.py`, `chat/test_rag_v2.py` (new) | `f855850` — PR [#2](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/2) |
 
 ## Details
 
