@@ -249,3 +249,9 @@ RAG_RERANK_TIMEOUT = float(os.getenv("RAG_RERANK_TIMEOUT", "10"))
 # unrelated text, 0.6+ for relevant). Not applied when the reranker fell back,
 # nor to the RAG Lab debugger.
 RAG_MIN_RERANK_SCORE = float(os.getenv("RAG_MIN_RERANK_SCORE", "0.1"))
+
+
+# === Conversation titles ===
+# Timeout (seconds) for the one-off DGX call that titles a new conversation;
+# on timeout the title falls back to the start of the first message.
+CHAT_TITLE_TIMEOUT = float(os.getenv("CHAT_TITLE_TIMEOUT", "6"))

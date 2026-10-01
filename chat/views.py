@@ -5,6 +5,7 @@
 # - POST /api/chat/
 # - GET  /api/conversations/
 # - GET  /api/conversations/<uuid>/
+# - PATCH /api/conversations/<uuid>/   (rename: {"title": ...})
 # - DELETE /api/conversations/<uuid>/
 # - GET  /api/models/
 # - POST /api/rag/query/
@@ -33,6 +34,7 @@ from os import getenv
 from .models import Conversation, Message
 from .retrieval import search_v2
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
+from .titles import DEFAULT_TITLE, RENAME_MAX_CHARS, generate_title, normalize_title
 
 logger = logging.getLogger("chat")
 
@@ -506,7 +508,7 @@ def chat_view(request):
                 status=status.HTTP_404_NOT_FOUND,
             )
     else:
-        conversation = Conversation.objects.create(owner=owner, title="New Conversation")
+        conversation = Conversation.objects.create(owner=owner, title=DEFAULT_TITLE)
 
     # --- Prior messages (before saving this one), oldest first ---
     from django.conf import settings
@@ -605,7 +607,17 @@ def chat_view(request):
 
     # Track the model used on the conversation for basic analytics
     conversation.model_id = model_id
-    conversation.save(update_fields=["model_id", "updated_at"])
+    update_fields = ["model_id", "updated_at"]
+
+    # Title the conversation from its first exchange. Only untitled conversations
+    # without an earlier reply qualify, so a user's rename is never overwritten.
+    first_exchange = not any(role == "assistant" for role, _ in history)
+    if first_exchange and conversation.title in ("", DEFAULT_TITLE):
+        conversation.title, title_source = generate_title(user_message, assistant_reply)
+        update_fields.append("title")
+        logger.info("title conversation=%s source=%s title=%r", conversation.id, title_source, conversation.title)
+
+    conversation.save(update_fields=update_fields)
 
     serializer = ConversationDetailSerializer(conversation)
     return Response(serializer.data, status=status.HTTP_200_OK)
@@ -636,10 +648,13 @@ def list_conversations(request):
     return Response(serializer.data)
 
 
-@api_view(["GET", "DELETE"])
+@api_view(["GET", "PATCH", "DELETE"])
 
 def conversation_detail(request, pk):
-    """GET/DELETE /api/conversations/<uuid:pk>/"""
+    """GET/PATCH/DELETE /api/conversations/<uuid:pk>/
+
+    PATCH body: {"title": "new name"} — renames the conversation.
+    """
 
     owner = get_current_user()
     try:
@@ -653,6 +668,14 @@ def conversation_detail(request, pk):
     if request.method == "DELETE":
         conversation.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    if request.method == "PATCH":
+        title = normalize_title(str(request.data.get("title", "")))
+        if not title:
+            return Response({"error": "title must not be empty"}, status=status.HTTP_400_BAD_REQUEST)
+        conversation.title = title[:RENAME_MAX_CHARS]
+        conversation.save(update_fields=["title"])
+        return Response(ConversationSummarySerializer(conversation).data)
 
     serializer = ConversationDetailSerializer(conversation)
     return Response(serializer.data)
