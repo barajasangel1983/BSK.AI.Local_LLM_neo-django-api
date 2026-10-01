@@ -9,7 +9,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | Send conversation history to the LLM + structured chat logging | `chat/views.py`, `chat/tests.py`, `neo_llm_api/settings.py`, `.gitignore` | _not committed yet_ |
+| 1 | Send conversation history to the LLM + structured chat logging | `chat/views.py`, `chat/tests.py`, `neo_llm_api/settings.py`, `.gitignore` | `ac5db0a` — PR [#1](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/1) |
 
 ## Details
 
