@@ -8,7 +8,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | Stop appending the plain-text "Sources (RAG)" footer to replies; citations are only in `Message.sources` | `chat/views.py`, `chat/tests.py`, `chat/test_rag_v2.py` | _not committed yet_ |
+| 1 | Stop appending the plain-text "Sources (RAG)" footer to replies; citations are only in `Message.sources` | `chat/views.py`, `chat/tests.py`, `chat/test_rag_v2.py` | `f17062f` — PR [#4](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/4) |
 
 ## Details
 
