@@ -23,3 +23,6 @@ data/
 !data/incoming/.gitkeep
 !data/processed/.gitkeep
 :memory:/
+
+# Logs
+logs/

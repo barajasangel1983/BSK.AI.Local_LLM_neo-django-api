@@ -184,3 +184,40 @@ INGESTION_OUTPUT_BASE = os.getenv(
 INGESTION_CONFIG_VERSION = os.getenv("INGESTION_CONFIG_VERSION", "v1-2026-09-29")
 # Clean-start Chroma collection for v2 ingestion.
 RAG_COLLECTION_V2 = os.getenv("RAG_COLLECTION_V2", "bsk_rag_v2")
+
+# === Chat context window ===
+# Max prior messages (user + assistant) sent to the model with each turn.
+CHAT_HISTORY_MAX_MESSAGES = int(os.getenv("CHAT_HISTORY_MAX_MESSAGES", "20"))
+# Total prompt budget in characters (~4 chars per token): system prompt (incl.
+# RAG context) + history + current message. History gets what is left after
+# the system prompt and current message, oldest messages dropped first.
+CHAT_CONTEXT_MAX_CHARS = int(os.getenv("CHAT_CONTEXT_MAX_CHARS", "24000"))
+# Ollama defaults to a ~4k-token context and silently truncates the start of
+# the prompt on overflow, so keep its budget small.
+CHAT_CONTEXT_MAX_CHARS_OLLAMA = int(os.getenv("CHAT_CONTEXT_MAX_CHARS_OLLAMA", "6000"))
+
+
+# === Logging ===
+LOG_DIR = Path(os.getenv("LOG_DIR", str(BASE_DIR / "logs")))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {"format": "%(asctime)s %(levelname)s %(name)s %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "standard"},
+        "chat_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(LOG_DIR / "chat.log"),
+            "maxBytes": 5 * 1024 * 1024,
+            "backupCount": 5,
+            "formatter": "standard",
+        },
+    },
+    "loggers": {
+        "chat": {"handlers": ["console", "chat_file"], "level": "INFO", "propagate": False},
+    },
+}
