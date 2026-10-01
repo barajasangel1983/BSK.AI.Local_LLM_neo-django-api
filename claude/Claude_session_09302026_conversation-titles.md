@@ -9,7 +9,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | Auto-title on first exchange (DGX + fallback), `PATCH` rename, backfill command | `chat/titles.py` (new), `chat/views.py`, `neo_llm_api/settings.py`, `chat/management/commands/backfill_conversation_titles.py` (new), `chat/test_titles.py` (new), `chat/tests.py`, `chat/test_rag_v2.py` | _not committed yet_ |
+| 1 | Auto-title on first exchange (DGX + fallback), `PATCH` rename, backfill command | `chat/titles.py` (new), `chat/views.py`, `neo_llm_api/settings.py`, `chat/management/commands/backfill_conversation_titles.py` (new), `chat/test_titles.py` (new), `chat/tests.py`, `chat/test_rag_v2.py` | `54d896d` — PR [#7](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/7) |
 
 ## Details
 
