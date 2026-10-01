@@ -221,3 +221,25 @@ LOGGING = {
         "chat": {"handlers": ["console", "chat_file"], "level": "INFO", "propagate": False},
     },
 }
+
+
+# === RAG v2 retrieval (bsk_rag_v2 + DGX reranker) ===
+# Chroma persistent dir shared with the GraphRAG repo (VectorStore reads this too).
+CHROMA_DIR = os.getenv(
+    "CHROMA_DIR", "/home/barajas_angel/repos/BSK.AI.Local_LLM_neo4j-graphrag/data/chroma_index"
+)
+# Vector-search candidates passed to the reranker.
+RAG_V2_CANDIDATES = int(os.getenv("RAG_V2_CANDIDATES", "20"))
+# Chunks kept after reranking for chat context (before the context budget cap).
+RAG_CHAT_TOP_N = int(os.getenv("RAG_CHAT_TOP_N", "5"))
+# Upper bound for top_k on /api/rag/query/ (RAG Lab Top-K slider).
+RAG_QUERY_MAX_TOP_K = int(os.getenv("RAG_QUERY_MAX_TOP_K", "10"))
+# Share of the model's CHAT_CONTEXT_MAX_CHARS* budget that RAG context may use;
+# history gets what is left.
+RAG_CONTEXT_SHARE = float(os.getenv("RAG_CONTEXT_SHARE", "0.5"))
+# Reranker request timeout (seconds); on timeout we fall back to vector order.
+RAG_RERANK_TIMEOUT = float(os.getenv("RAG_RERANK_TIMEOUT", "10"))
+# Chat drops reranked chunks scoring below this (reranker scores are ~0.0 for
+# unrelated text, 0.6+ for relevant). Not applied when the reranker fell back,
+# nor to the RAG Lab debugger.
+RAG_MIN_RERANK_SCORE = float(os.getenv("RAG_MIN_RERANK_SCORE", "0.1"))

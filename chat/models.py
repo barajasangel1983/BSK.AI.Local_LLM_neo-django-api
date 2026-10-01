@@ -45,6 +45,9 @@ class Message(models.Model):
     )
     role = models.CharField(max_length=16, choices=ROLE_CHOICES)
     content = models.TextField()
+    # RAG citations for assistant messages: [{source, asset_id, section_path,
+    # page_start, page_end, snippet, score, vector_score, rerank_score}, ...]
+    sources = models.JSONField(default=list, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     # Default ordering: oldest → newest.

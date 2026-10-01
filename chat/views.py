@@ -30,6 +30,7 @@ from pathlib import Path
 from os import getenv
 
 from .models import Conversation, Message
+from .retrieval import search_v2
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
 
 logger = logging.getLogger("chat")
@@ -41,7 +42,9 @@ def is_factory_question(text: str) -> bool:
     t = text.lower()
     return any(k in t for k in FACTORY_KEYWORDS)
 
-# RAG lab (vector-only, Chroma) – imported from GraphRAG repo.
+# Legacy retrieval over the old `bsk_rag` collection – imported from GraphRAG repo.
+# Only used for plc_historian shift summaries (factory questions); documents
+# are retrieved from bsk_rag_v2 via chat.retrieval.search_v2.
 # NOTE: this assumes the BSK.AI.Local_LLM_neo4j-graphrag repo is on PYTHONPATH
 # when running Django (we can adjust PYTHONPATH in manage.py or venv later).
 try:  # pragma: no cover - defensive import
@@ -227,6 +230,77 @@ def context_budget_chars(model_id: str) -> int:
     return settings.CHAT_CONTEXT_MAX_CHARS
 
 
+RAG_CONTEXT_HEADER = (
+    "You are Neo, an assistant helping with Django / RAG / DGX and factory analytics questions.\n"
+    "\nHere is relevant context from the knowledge base:"
+)
+RAG_CONTEXT_FOOTER = "---\nUse this context when answering the user."
+# Smallest useful slice when the top chunk alone exceeds the RAG budget.
+RAG_MIN_CHUNK_CHARS = 200
+
+
+def citation_label(entry: dict) -> str:
+    """Human-readable source label, e.g. 'paper.pdf — 3 Model Architecture, p.3'."""
+
+    label = entry.get("source") or "unknown"
+    section_path = entry.get("section_path") or []
+    # The first element is usually the document title; show the section below it.
+    section = section_path[-1] if len(section_path) > 1 else ""
+    if section:
+        label = f"{label} — {section}"
+    if entry.get("page_start"):
+        label = f"{label}, p.{entry['page_start']}"
+    return label
+
+
+def to_citation(entry: dict) -> dict:
+    """Citation stored on the assistant Message and returned to the UI."""
+
+    return {
+        "source": entry.get("source", ""),
+        "asset_id": entry.get("asset_id", ""),
+        "section_path": entry.get("section_path") or [],
+        "page_start": entry.get("page_start"),
+        "page_end": entry.get("page_end"),
+        "snippet": (entry.get("text") or "").strip()[:200],
+        "score": entry.get("score"),
+        "vector_score": entry.get("vector_score"),
+        "rerank_score": entry.get("rerank_score"),
+    }
+
+
+def build_rag_context(entries: list[dict], budget_chars: int) -> tuple[str | None, list[dict]]:
+    """Build the RAG system prompt from ranked entries within `budget_chars`.
+
+    Entries are added in order; ones that don't fit are skipped. If even the
+    top entry doesn't fit, it is truncated so RAG still contributes context.
+    Returns (system_prompt or None, entries actually used).
+    """
+
+    remaining = budget_chars - len(RAG_CONTEXT_HEADER) - len(RAG_CONTEXT_FOOTER) - 2
+    blocks: list[str] = []
+    used: list[dict] = []
+    for entry in entries:
+        label = f"[{len(used) + 1}] (source: {citation_label(entry)})\n"
+        text = (entry.get("text") or "").strip()
+        cost = len(label) + len(text) + 2
+        if cost > remaining:
+            if used:
+                continue
+            room = remaining - len(label) - 2
+            if room < RAG_MIN_CHUNK_CHARS:
+                break
+            text = text[:room]
+            cost = len(label) + len(text) + 2
+        blocks.append(f"{label}{text}\n")
+        used.append(entry)
+        remaining -= cost
+
+    if not used:
+        return None, []
+    return "\n".join([RAG_CONTEXT_HEADER, *blocks, RAG_CONTEXT_FOOTER]), used
+
+
 def build_chat_messages(
     history: list[tuple[str, str]],
     user_message: str,
@@ -405,21 +479,23 @@ def chat_view(request):
       "conversation_id": "uuid or null",
       "message": "user text",
       "model": "local-small",
-      "use_rag": true/false
+      "use_rag": true/false   (default true)
     }
 
     Behavior:
     - If conversation_id is null -> create a new Conversation.
     - Else -> load existing Conversation (404 if not found).
     - Save a user Message.
-    - Generate a dummy assistant reply and save it.
-    - Return the full Conversation (with messages[]).
+    - With RAG: retrieve from bsk_rag_v2 (plus plc_historian summaries from the
+      legacy bsk_rag for factory questions) within the model's RAG budget.
+    - Generate the assistant reply and save it with its RAG citations.
+    - Return the full Conversation (with messages[] incl. sources).
     """
 
     conversation_id = request.data.get("conversation_id")
     user_message = request.data.get("message")
     model_id = request.data.get("model", "local-small")
-    use_rag = bool(request.data.get("use_rag", False))
+    use_rag = bool(request.data.get("use_rag", True))
 
     if not user_message:
         return Response(
@@ -462,45 +538,43 @@ def chat_view(request):
     # --- Optional RAG context ---
 
     system_prompt: str | None = None
-    rag_sources: list[str] = []
-    if use_rag and query_chunks is not None:
+    citations: list[dict] = []
+    if use_rag:
+        rag_start = time.time()
+        entries: list[dict] = []
+        v2_top_n = settings.RAG_CHAT_TOP_N
+
+        if is_factory_question(user_message) and query_chunks is not None:
+            # Historian-first: plc_historian shift summaries live in the legacy
+            # bsk_rag collection; documents come second from v2.
+            try:
+                for c in query_chunks(query=user_message, top_k=5, where={"source": "plc_historian"}):
+                    entries.append({"text": c.text, "source": c.source})
+            except Exception:
+                logger.exception("historian retrieval failed conversation=%s", conversation.id)
+            v2_top_n = 3
+
+        reranker = "error"
         try:
-            rag_chunks: list = []
-
-            if is_factory_question(user_message):
-                # Historian-first query: focus on plc_historian summaries.
-                hist_chunks = query_chunks(
-                    query=user_message,
-                    top_k=5,
-                    where={"source": "plc_historian"},
-                )
-                rag_chunks.extend(hist_chunks)
-
-                # Optionally grab a few general doc chunks as secondary context.
-                doc_chunks = query_chunks(query=user_message, top_k=3)
-                rag_chunks.extend(doc_chunks)
-            else:
-                # Default behavior: general RAG over all documents.
-                rag_chunks = query_chunks(query=user_message, top_k=5)
-
-            if rag_chunks:
-                context_lines = [
-                    "You are Neo, an assistant helping with Django / RAG / DGX and factory analytics questions.",
-                    "\nHere is relevant context from the knowledge base:",
-                ]
-                for idx, c in enumerate(rag_chunks[:8], start=1):
-                    context_lines.append(
-                        f"[{idx}] (source: {c.source})\n{c.text.strip()}\n"
-                    )
-                    if c.source and c.source not in rag_sources:
-                        rag_sources.append(c.source)
-                context_lines.append("---\nUse this context when answering the user.")
-                system_prompt = "\n".join(context_lines)
+            result = search_v2(user_message, top_n=v2_top_n)
+            entries.extend(
+                c.to_dict()
+                for c in result.chunks
+                if c.rerank_score is None or c.rerank_score >= settings.RAG_MIN_RERANK_SCORE
+            )
+            reranker = result.reranker
         except Exception:
-            # If RAG fails for any reason, fall back to normal behavior.
-            logger.exception("RAG context generation failed conversation=%s", conversation.id)
-            system_prompt = None
-            rag_sources = []
+            logger.exception("v2 retrieval failed conversation=%s", conversation.id)
+
+        rag_budget = int(context_budget_chars(model_id) * settings.RAG_CONTEXT_SHARE)
+        system_prompt, used = build_rag_context(entries, rag_budget)
+        citations = [to_citation(e) for e in used]
+        logger.info(
+            "rag conversation=%s model=%s retrieved=%d used=%d reranker=%s "
+            "rag_chars=%d/%d latency_ms=%d",
+            conversation.id, model_id, len(entries), len(used), reranker,
+            len(system_prompt or ""), rag_budget, round((time.time() - rag_start) * 1000),
+        )
 
     # --- Generate assistant reply ---
 
@@ -527,12 +601,13 @@ def chat_view(request):
         "chat ok conversation=%s model=%s use_rag=%s history_sent=%d/%d "
         "rag_context_chars=%d rag_sources=%s latency_ms=%d",
         conversation.id, model_id, use_rag, history_sent, len(history),
-        len(system_prompt or ""), rag_sources, round((time.time() - start) * 1000),
+        len(system_prompt or ""), [c["source"] for c in citations], round((time.time() - start) * 1000),
     )
 
     # Append a compact, deduplicated sources footer when RAG was used.
-    if use_rag and rag_sources:
-        assistant_reply = f"{assistant_reply}{format_rag_footer(rag_sources)}"
+    # TODO(phase5 PR B/C): drop once the UI renders Message.sources.
+    if citations:
+        assistant_reply = f"{assistant_reply}{format_rag_footer([citation_label(c) for c in citations])}"
 
     # --- Save assistant message ---
 
@@ -540,6 +615,7 @@ def chat_view(request):
         conversation=conversation,
         role="assistant",
         content=assistant_reply,
+        sources=citations,
     )
 
     # Track the model used on the conversation for basic analytics
@@ -738,38 +814,42 @@ def rag_delete_doc(request, name: str):
 def rag_query(request):
     """POST /api/rag/query/
 
-    Simple RAG query endpoint backed by the Chroma collection.
+    Retrieval debugger for the RAG Lab: same path as chat (bsk_rag_v2 vector
+    search + DGX rerank, falling back to vector order if the reranker is down).
 
     Request body (JSON):
     {
       "query": "user question",
-      "top_k": 5   # optional
+      "top_k": 5   # optional, clamped to 1..RAG_QUERY_MAX_TOP_K
     }
 
     Response body:
     {
-      "query": "...",
+      "query": "...", "top_k": 5,
+      "reranker": "ok" | "fallback", "candidates": 20, "latency_ms": 123,
       "results": [
         {
-          "id": "chunk-id",
-          "text": "chunk text",
-          "document_path": "path/to/file.txt",
-          "source": "file.txt",
-          "score": 0.123
+          "id": "chunk-id", "text": "chunk text",
+          "source": "file.pdf", "document_path": "file.pdf",
+          "asset_id": "...", "section_path": ["Title", "Section"],
+          "page_start": 3, "page_end": 3, "content_type": "paragraph",
+          "score": 0.98,          # rerank_score if available, else vector_score
+          "vector_score": 0.71,   # cosine similarity (higher is better)
+          "rerank_score": 0.98    # null when the reranker fell back
         },
         ...
       ]
     }
     """
 
-    if query_chunks is None:
-        return Response(
-            {"error": "RAG backend not available (query_chunks import failed)"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
+    from django.conf import settings
 
-    query = request.data.get("query", "")
-    top_k = int(request.data.get("top_k", 5))
+    query = str(request.data.get("query", ""))
+    try:
+        top_k = int(request.data.get("top_k", 5))
+    except (TypeError, ValueError):
+        return Response({"error": "top_k must be an integer"}, status=status.HTTP_400_BAD_REQUEST)
+    top_k = max(1, min(top_k, settings.RAG_QUERY_MAX_TOP_K))
 
     if not query.strip():
         return Response(
@@ -778,25 +858,28 @@ def rag_query(request):
         )
 
     try:
-        chunks = query_chunks(query=query, top_k=top_k)
-    except Exception as exc:  # pragma: no cover - simple safety net
+        result = search_v2(query, top_n=top_k)
+    except Exception as exc:
+        logger.exception("rag_query failed")
         return Response(
             {"error": f"RAG query failed: {exc}"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status=status.HTTP_502_BAD_GATEWAY,
         )
 
-    results = [
+    logger.info(
+        "rag_query top_k=%d candidates=%d returned=%d reranker=%s latency_ms=%d",
+        top_k, result.candidates, len(result.chunks), result.reranker, result.latency_ms,
+    )
+    return Response(
         {
-            "id": c.id,
-            "text": c.text,
-            "document_path": c.document_path,
-            "source": c.source,
-            "score": c.score,
+            "query": query,
+            "top_k": top_k,
+            "reranker": result.reranker,
+            "candidates": result.candidates,
+            "latency_ms": result.latency_ms,
+            "results": [{**c.to_dict(), "document_path": c.source} for c in result.chunks],
         }
-        for c in chunks
-    ]
-
-    return Response({"query": query, "results": results})
+    )
 
 
 # ---------------------------------------------------------------------
