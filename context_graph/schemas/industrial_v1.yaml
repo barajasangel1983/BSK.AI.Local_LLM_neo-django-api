@@ -1,0 +1,68 @@
+# Default "Industrial" Context Graph schema (version 1).
+#
+# entity_types:       node labels (PascalCase). Every curated node also carries
+#                     the :Entity label and a unique canonical `id`.
+# relationship_types: UPPER_SNAKE names with the allowed (from, to) label pairs.
+#
+# Editable later through GraphLab's schema editor (stored as versions);
+# this file is only the starting point loaded by `manage.py graph_init`.
+name: Industrial
+description: Assets, components, signals, alarms, procedures and documents of a manufacturing asset.
+
+entity_types:
+  Plant:           {description: "Manufacturing site."}
+  Area:            {description: "Area / department within a plant."}
+  Line:            {description: "Production line (work center)."}
+  Asset:           {description: "Machine or equipment unit (One Asset = One Context)."}
+  Component:       {description: "Part or subsystem of an asset; can nest."}
+  Signal:          {description: "Measured or computed variable (tag)."}
+  OPCNode:         {description: "OPC UA node implementing a signal."}
+  Alarm:           {description: "Alarm or event condition."}
+  OperatingLimit:  {description: "Range or setpoint that applies to a signal."}
+  Procedure:       {description: "SOP, troubleshooting or maintenance procedure (summary only)."}
+  Document:        {description: "Source document (evidence lives in the document stores, not the graph)."}
+  DocumentSection: {description: "Section/page range of a document, referenced as evidence."}
+
+relationship_types:
+  CONTAINS:
+    description: Physical/organizational hierarchy.
+    pairs: [[Plant, Area], [Area, Line], [Line, Asset]]
+  HAS_COMPONENT:
+    description: Composition.
+    pairs: [[Asset, Component], [Component, Component]]
+  CONNECTED_TO:
+    description: "Connection between components (property `kind`: material_flow, electrical, mechanical, ...)."
+    pairs: [[Component, Component]]
+  MONITORED_BY:
+    description: Signal that monitors an asset or component.
+    pairs: [[Asset, Signal], [Component, Signal]]
+  IMPLEMENTED_AS:
+    description: Signal realized by an OPC UA node.
+    pairs: [[Signal, OPCNode]]
+  HAS_LIMIT:
+    description: Operating limit of a signal.
+    pairs: [[Signal, OperatingLimit]]
+  HAS_ALARM:
+    description: Alarm defined for an asset.
+    pairs: [[Asset, Alarm]]
+  ASSOCIATED_WITH:
+    description: Component involved in an alarm.
+    pairs: [[Component, Alarm]]
+  HAS_PROCEDURE:
+    description: Procedure available for an asset.
+    pairs: [[Asset, Procedure]]
+  APPLIES_TO:
+    description: Scope of a procedure.
+    pairs: [[Procedure, Asset], [Procedure, Component]]
+  ADDRESSES:
+    description: Alarm a procedure resolves.
+    pairs: [[Procedure, Alarm]]
+  DOCUMENTED_BY:
+    description: Document describing an asset or component.
+    pairs: [[Asset, Document], [Component, Document]]
+  HAS_SECTION:
+    description: Document structure.
+    pairs: [[Document, DocumentSection]]
+  DESCRIBES:
+    description: Evidence link from a document section to what it describes.
+    pairs: [[DocumentSection, Asset], [DocumentSection, Component], [DocumentSection, Signal], [DocumentSection, Alarm]]

@@ -8,6 +8,7 @@ requests==2.33.0
 psycopg[binary]==3.3.3       # historian database (Postgres)
 chromadb==1.5.5              # document RAG (bsk_rag_v2)
 tiktoken==0.14.0             # chunker / RAG Lab token counts
+PyYAML==6.0.3                # Context Graph schema / seed files
 neo4j==5.28.6                    # Context Graph
 
 # Tests

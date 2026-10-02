@@ -1,0 +1,879 @@
+# EXTR01 seed for the Context Graph — load with: manage.py graph_seed context_graph/seeds/extr01.yaml
+# Node refs use the short form <EntityType>:<key>; they expand to canonical IDs (bsk:<type>:<key>).
+name: EXTR01 initial context
+description: 'Seed for the extruder EXTR01, derived from the PLC historian (plc_1_historian.extruder_samples): signals map
+  to historian columns, alarms are the codes that occur, limits are P5-P95 while RUNNING. Procedures are drafts to be replaced
+  by real SOPs.'
+source: seed:extr01-v1
+nodes:
+- ref: Plant:bsklab-demo
+  name: BSKLAB Demo Plant
+  description: Demonstration plant for the BSKLAB Industrial Context Layer.
+- ref: Area:bsklab-demo/extrusion
+  name: Extrusion
+- ref: Line:bsklab-demo/extrusion/line-1
+  name: Extrusion Line 1
+- ref: Asset:EXTR01
+  name: Extruder EXTR01
+  asset_type: Extruder
+  description: Kibble extrusion cooker (simulated PLC historian data, plc_1_historian).
+- ref: Component:EXTR01/feeder
+  name: Feeder
+  component_type: feeder
+  description: Dry-mix feeder
+- ref: Component:EXTR01/conditioning
+  name: Steam & Water Conditioning
+  component_type: conditioner
+  description: Steam and water injection before the barrel
+- ref: Component:EXTR01/main-drive
+  name: Main Drive Motor
+  component_type: motor
+  description: Motor driving the extruder screw
+- ref: Component:EXTR01/screw-barrel
+  name: Screw & Barrel
+  component_type: screw_barrel
+  description: Extruder screw and heated barrel
+- ref: Component:EXTR01/barrel-zone-1
+  name: Barrel Zone 1
+  component_type: heating_zone
+  description: Barrel heating zone 1
+- ref: Component:EXTR01/barrel-zone-2
+  name: Barrel Zone 2
+  component_type: heating_zone
+  description: Barrel heating zone 2
+- ref: Component:EXTR01/barrel-zone-3
+  name: Barrel Zone 3
+  component_type: heating_zone
+  description: Barrel heating zone 3
+- ref: Component:EXTR01/die-head
+  name: Die Head
+  component_type: die
+  description: Die head, die plate and screen
+- ref: Component:EXTR01/product-quality
+  name: Product Discharge & Quality
+  component_type: measurement_point
+  description: Discharge measurements of the finished kibble
+- ref: Signal:EXTR01/feeder_rate_actual_kg_hr
+  name: Feeder rate
+  unit: kg/h
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.feeder_rate_actual_kg_hr
+- ref: OperatingLimit:EXTR01/feeder_rate_actual_kg_hr/normal
+  name: Feeder rate normal range
+  kind: normal
+  low: 7959
+  high: 10391
+  unit: kg/h
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/steam_flow_kg_hr
+  name: Steam flow
+  unit: kg/h
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.steam_flow_kg_hr
+- ref: OperatingLimit:EXTR01/steam_flow_kg_hr/normal
+  name: Steam flow normal range
+  kind: normal
+  low: 96.6
+  high: 132.9
+  unit: kg/h
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/water_injection_l_hr
+  name: Water injection
+  unit: L/h
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.water_injection_l_hr
+- ref: OperatingLimit:EXTR01/water_injection_l_hr/normal
+  name: Water injection normal range
+  kind: normal
+  low: 76.2
+  high: 107.6
+  unit: L/h
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/motor_power_kw
+  name: Motor power
+  unit: kW
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.motor_power_kw
+- ref: OperatingLimit:EXTR01/motor_power_kw/normal
+  name: Motor power normal range
+  kind: normal
+  low: 315.3
+  high: 385.0
+  unit: kW
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/screw_torque_pct
+  name: Screw torque
+  unit: '%'
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.screw_torque_pct
+- ref: OperatingLimit:EXTR01/screw_torque_pct/normal
+  name: Screw torque normal range
+  kind: normal
+  low: 88.6
+  high: 101.5
+  unit: '%'
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/screw_speed_rpm
+  name: Screw speed
+  unit: rpm
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.screw_speed_rpm
+- ref: OperatingLimit:EXTR01/screw_speed_rpm/normal
+  name: Screw speed normal range
+  kind: normal
+  low: 405.9
+  high: 444.6
+  unit: rpm
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/barrel_zone_1_temp_c
+  name: Barrel zone 1 temperature
+  unit: °C
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.barrel_zone_1_temp_c
+- ref: OperatingLimit:EXTR01/barrel_zone_1_temp_c/normal
+  name: Barrel zone 1 temperature normal range
+  kind: normal
+  low: 81.0
+  high: 99.0
+  unit: °C
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/barrel_zone_2_temp_c
+  name: Barrel zone 2 temperature
+  unit: °C
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.barrel_zone_2_temp_c
+- ref: OperatingLimit:EXTR01/barrel_zone_2_temp_c/normal
+  name: Barrel zone 2 temperature normal range
+  kind: normal
+  low: 88.2
+  high: 106.8
+  unit: °C
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/barrel_zone_3_temp_c
+  name: Barrel zone 3 temperature
+  unit: °C
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.barrel_zone_3_temp_c
+- ref: OperatingLimit:EXTR01/barrel_zone_3_temp_c/normal
+  name: Barrel zone 3 temperature normal range
+  kind: normal
+  low: 95.3
+  high: 114.7
+  unit: °C
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/head_temp_c
+  name: Die head temperature
+  unit: °C
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.head_temp_c
+- ref: OperatingLimit:EXTR01/head_temp_c/normal
+  name: Die head temperature normal range
+  kind: normal
+  low: 93.9
+  high: 115.9
+  unit: °C
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/die_pressure_bar
+  name: Die pressure
+  unit: bar
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.die_pressure_bar
+- ref: OperatingLimit:EXTR01/die_pressure_bar/normal
+  name: Die pressure normal range
+  kind: normal
+  low: 84.3
+  high: 99.2
+  unit: bar
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/product_temp_discharge_c
+  name: Product discharge temperature
+  unit: °C
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.product_temp_discharge_c
+- ref: OperatingLimit:EXTR01/product_temp_discharge_c/normal
+  name: Product discharge temperature normal range
+  kind: normal
+  low: 93.5
+  high: 116.3
+  unit: °C
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/product_moisture_pct
+  name: Product moisture
+  unit: '%'
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.product_moisture_pct
+- ref: OperatingLimit:EXTR01/product_moisture_pct/normal
+  name: Product moisture normal range
+  kind: normal
+  low: 8.15
+  high: 10.85
+  unit: '%'
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/bulk_density_g_l
+  name: Bulk density
+  unit: g/L
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.bulk_density_g_l
+- ref: OperatingLimit:EXTR01/bulk_density_g_l/normal
+  name: Bulk density normal range
+  kind: normal
+  low: 332.4
+  high: 377.5
+  unit: g/L
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/kibble_diameter_mm
+  name: Kibble diameter
+  unit: mm
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.kibble_diameter_mm
+- ref: OperatingLimit:EXTR01/kibble_diameter_mm/normal
+  name: Kibble diameter normal range
+  kind: normal
+  low: 7.15
+  high: 9.85
+  unit: mm
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/throughput_actual_kg_hr
+  name: Throughput (actual)
+  unit: kg/h
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.throughput_actual_kg_hr
+- ref: OperatingLimit:EXTR01/throughput_actual_kg_hr/normal
+  name: Throughput (actual) normal range
+  kind: normal
+  low: 7972
+  high: 10385
+  unit: kg/h
+  basis: 'historian-derived: P5-P95 while RUNNING, Mar 2026'
+- ref: Signal:EXTR01/throughput_target_kg_hr
+  name: Throughput (target)
+  unit: kg/h
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.throughput_target_kg_hr
+- ref: Signal:EXTR01/good_output_kg
+  name: Good output
+  unit: kg
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.good_output_kg
+- ref: Signal:EXTR01/scrap_output_kg
+  name: Scrap output
+  unit: kg
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.scrap_output_kg
+- ref: Signal:EXTR01/downtime_min
+  name: Downtime
+  unit: min
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.downtime_min
+- ref: Signal:EXTR01/availability_pct
+  name: Availability
+  unit: '%'
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.availability_pct
+- ref: Signal:EXTR01/performance_pct
+  name: Performance
+  unit: '%'
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.performance_pct
+- ref: Signal:EXTR01/quality_pct
+  name: Quality
+  unit: '%'
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.quality_pct
+- ref: Signal:EXTR01/oee_pct
+  name: OEE
+  unit: '%'
+  data_type: float
+  historian_ref: plc_1_historian.extruder_samples.oee_pct
+- ref: Signal:EXTR01/machine_state
+  name: Machine state
+  unit: ''
+  data_type: enum
+  historian_ref: plc_1_historian.extruder_samples.machine_state
+  values:
+  - RUNNING
+  - STOPPED
+  - ALARMED
+  - WARM UP
+  - COOL DOWN
+  - FLUSH
+  - CHANGEOVER
+- ref: Signal:EXTR01/alarm_active
+  name: Alarm active
+  unit: ''
+  data_type: bool
+  historian_ref: plc_1_historian.extruder_samples.alarm_active
+- ref: Signal:EXTR01/alarm_code
+  name: Active alarm code
+  unit: ''
+  data_type: string
+  historian_ref: plc_1_historian.extruder_samples.alarm_code
+- ref: Signal:EXTR01/recipe_id
+  name: Recipe
+  unit: ''
+  data_type: string
+  historian_ref: plc_1_historian.extruder_samples.recipe_id
+- ref: Signal:EXTR01/batch_id
+  name: Batch
+  unit: ''
+  data_type: string
+  historian_ref: plc_1_historian.extruder_samples.batch_id
+- ref: Signal:EXTR01/shift_code
+  name: Shift
+  unit: ''
+  data_type: string
+  historian_ref: plc_1_historian.extruder_samples.shift_code
+- ref: Alarm:EXTR01/OUT_OF_SPEC_DENSITY
+  name: OUT_OF_SPEC_DENSITY
+  code: OUT_OF_SPEC_DENSITY
+  severity: warning
+  description: Bulk density outside specification
+- ref: Alarm:EXTR01/OUT_OF_SPEC_DIAMETER
+  name: OUT_OF_SPEC_DIAMETER
+  code: OUT_OF_SPEC_DIAMETER
+  severity: warning
+  description: Kibble diameter outside specification
+- ref: Alarm:EXTR01/LO_MOISTURE
+  name: LO_MOISTURE
+  code: LO_MOISTURE
+  severity: warning
+  description: Product moisture below specification
+- ref: Alarm:EXTR01/HI_MOISTURE
+  name: HI_MOISTURE
+  code: HI_MOISTURE
+  severity: warning
+  description: Product moisture above specification
+- ref: Alarm:EXTR01/SCREEN_BLOCK
+  name: SCREEN_BLOCK
+  code: SCREEN_BLOCK
+  severity: high
+  description: Die screen blocked
+- ref: Alarm:EXTR01/MOTOR_OVERLOAD
+  name: MOTOR_OVERLOAD
+  code: MOTOR_OVERLOAD
+  severity: high
+  description: Main drive motor overload
+- ref: Alarm:EXTR01/HIGH_SCRAP
+  name: HIGH_SCRAP
+  code: HIGH_SCRAP
+  severity: medium
+  description: Scrap rate above target
+- ref: Alarm:EXTR01/UNPLANNED_STOP
+  name: UNPLANNED_STOP
+  code: UNPLANNED_STOP
+  severity: high
+  description: Unplanned machine stop
+- ref: Alarm:EXTR01/DIE_PLUG
+  name: DIE_PLUG
+  code: DIE_PLUG
+  severity: high
+  description: Die plugged
+- ref: Alarm:EXTR01/HEAD_TEMP_DRIFT
+  name: HEAD_TEMP_DRIFT
+  code: HEAD_TEMP_DRIFT
+  severity: medium
+  description: Die head temperature drifting from setpoint
+- ref: Alarm:EXTR01/MOISTURE_SENSOR_FAIL
+  name: MOISTURE_SENSOR_FAIL
+  code: MOISTURE_SENSOR_FAIL
+  severity: medium
+  description: Moisture sensor fault
+- ref: Alarm:EXTR01/SPEED_UNDER_TARGET
+  name: SPEED_UNDER_TARGET
+  code: SPEED_UNDER_TARGET
+  severity: low
+  description: Screw speed below target
+- ref: Alarm:EXTR01/FEEDER_STARVE
+  name: FEEDER_STARVE
+  code: FEEDER_STARVE
+  severity: medium
+  description: Feeder starved (low material)
+- ref: Alarm:EXTR01/HI_DIE_PRESSURE
+  name: HI_DIE_PRESSURE
+  code: HI_DIE_PRESSURE
+  severity: high
+  description: Die pressure high
+- ref: Alarm:EXTR01/FEEDER_OVERLOAD
+  name: FEEDER_OVERLOAD
+  code: FEEDER_OVERLOAD
+  severity: medium
+  description: Feeder overload
+- ref: Alarm:EXTR01/TEMP_SENSOR_FAIL
+  name: TEMP_SENSOR_FAIL
+  code: TEMP_SENSOR_FAIL
+  severity: medium
+  description: Temperature sensor fault
+- ref: Alarm:EXTR01/LOW_OEE
+  name: LOW_OEE
+  code: LOW_OEE
+  severity: low
+  description: OEE below target
+- ref: Alarm:EXTR01/LO_TEMP_ZONE_1
+  name: LO_TEMP_ZONE_1
+  code: LO_TEMP_ZONE_1
+  severity: medium
+  description: Barrel zone 1 temperature low
+- ref: Alarm:EXTR01/HI_TEMP_ZONE_3
+  name: HI_TEMP_ZONE_3
+  code: HI_TEMP_ZONE_3
+  severity: medium
+  description: Barrel zone 3 temperature high
+- ref: Alarm:EXTR01/HI_TORQUE
+  name: HI_TORQUE
+  code: HI_TORQUE
+  severity: high
+  description: Screw torque high
+- ref: Procedure:EXTR01/die-plug-clearing
+  name: Die plug / screen block clearing
+  procedure_type: troubleshooting
+  status: draft
+  summary: Stop feed, relieve die pressure, clear die plate and screen, restart under supervision.
+- ref: Procedure:EXTR01/motor-overload-recovery
+  name: Main drive overload recovery
+  procedure_type: troubleshooting
+  status: draft
+  summary: Reduce feed rate, check torque trend and barrel temperatures, reset drive.
+- ref: Procedure:EXTR01/moisture-correction
+  name: Product moisture correction
+  procedure_type: troubleshooting
+  status: draft
+  summary: Adjust steam and water injection, verify moisture sensor, confirm with lab sample.
+- ref: Procedure:EXTR01/feeder-recovery
+  name: Feeder starve / overload recovery
+  procedure_type: troubleshooting
+  status: draft
+  summary: Check hopper level and feeder screw, rebalance feed rate.
+- ref: Procedure:EXTR01/product-spec-correction
+  name: Density / diameter correction
+  procedure_type: troubleshooting
+  status: draft
+  summary: Adjust knife speed, moisture and die temperature; recheck density and diameter.
+- ref: Procedure:EXTR01/barrel-temperature-control
+  name: Barrel / head temperature control
+  procedure_type: troubleshooting
+  status: draft
+  summary: Check heater bands and cooling, verify setpoints per zone.
+- ref: Procedure:EXTR01/sensor-fault-check
+  name: Sensor fault check
+  procedure_type: maintenance
+  status: draft
+  summary: Verify wiring and calibration, swap sensor if faulty.
+- ref: Procedure:EXTR01/unplanned-stop-restart
+  name: Restart after unplanned stop
+  procedure_type: sop
+  status: draft
+  summary: Identify stop cause, run warm-up sequence, restart feed gradually.
+relationships:
+- from: Plant:bsklab-demo
+  type: CONTAINS
+  to: Area:bsklab-demo/extrusion
+- from: Area:bsklab-demo/extrusion
+  type: CONTAINS
+  to: Line:bsklab-demo/extrusion/line-1
+- from: Line:bsklab-demo/extrusion/line-1
+  type: CONTAINS
+  to: Asset:EXTR01
+- from: Asset:EXTR01
+  type: HAS_COMPONENT
+  to: Component:EXTR01/feeder
+- from: Asset:EXTR01
+  type: HAS_COMPONENT
+  to: Component:EXTR01/conditioning
+- from: Asset:EXTR01
+  type: HAS_COMPONENT
+  to: Component:EXTR01/main-drive
+- from: Asset:EXTR01
+  type: HAS_COMPONENT
+  to: Component:EXTR01/screw-barrel
+- from: Asset:EXTR01
+  type: HAS_COMPONENT
+  to: Component:EXTR01/die-head
+- from: Asset:EXTR01
+  type: HAS_COMPONENT
+  to: Component:EXTR01/product-quality
+- from: Component:EXTR01/screw-barrel
+  type: HAS_COMPONENT
+  to: Component:EXTR01/barrel-zone-1
+- from: Component:EXTR01/screw-barrel
+  type: HAS_COMPONENT
+  to: Component:EXTR01/barrel-zone-2
+- from: Component:EXTR01/screw-barrel
+  type: HAS_COMPONENT
+  to: Component:EXTR01/barrel-zone-3
+- from: Component:EXTR01/feeder
+  type: CONNECTED_TO
+  to: Component:EXTR01/conditioning
+  kind: material_flow
+- from: Component:EXTR01/conditioning
+  type: CONNECTED_TO
+  to: Component:EXTR01/screw-barrel
+  kind: material_flow
+- from: Component:EXTR01/screw-barrel
+  type: CONNECTED_TO
+  to: Component:EXTR01/die-head
+  kind: material_flow
+- from: Component:EXTR01/die-head
+  type: CONNECTED_TO
+  to: Component:EXTR01/product-quality
+  kind: material_flow
+- from: Component:EXTR01/main-drive
+  type: CONNECTED_TO
+  to: Component:EXTR01/screw-barrel
+  kind: mechanical
+- from: Component:EXTR01/feeder
+  type: MONITORED_BY
+  to: Signal:EXTR01/feeder_rate_actual_kg_hr
+- from: Signal:EXTR01/feeder_rate_actual_kg_hr
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/feeder_rate_actual_kg_hr/normal
+- from: Component:EXTR01/conditioning
+  type: MONITORED_BY
+  to: Signal:EXTR01/steam_flow_kg_hr
+- from: Signal:EXTR01/steam_flow_kg_hr
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/steam_flow_kg_hr/normal
+- from: Component:EXTR01/conditioning
+  type: MONITORED_BY
+  to: Signal:EXTR01/water_injection_l_hr
+- from: Signal:EXTR01/water_injection_l_hr
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/water_injection_l_hr/normal
+- from: Component:EXTR01/main-drive
+  type: MONITORED_BY
+  to: Signal:EXTR01/motor_power_kw
+- from: Signal:EXTR01/motor_power_kw
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/motor_power_kw/normal
+- from: Component:EXTR01/main-drive
+  type: MONITORED_BY
+  to: Signal:EXTR01/screw_torque_pct
+- from: Signal:EXTR01/screw_torque_pct
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/screw_torque_pct/normal
+- from: Component:EXTR01/screw-barrel
+  type: MONITORED_BY
+  to: Signal:EXTR01/screw_speed_rpm
+- from: Signal:EXTR01/screw_speed_rpm
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/screw_speed_rpm/normal
+- from: Component:EXTR01/barrel-zone-1
+  type: MONITORED_BY
+  to: Signal:EXTR01/barrel_zone_1_temp_c
+- from: Signal:EXTR01/barrel_zone_1_temp_c
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/barrel_zone_1_temp_c/normal
+- from: Component:EXTR01/barrel-zone-2
+  type: MONITORED_BY
+  to: Signal:EXTR01/barrel_zone_2_temp_c
+- from: Signal:EXTR01/barrel_zone_2_temp_c
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/barrel_zone_2_temp_c/normal
+- from: Component:EXTR01/barrel-zone-3
+  type: MONITORED_BY
+  to: Signal:EXTR01/barrel_zone_3_temp_c
+- from: Signal:EXTR01/barrel_zone_3_temp_c
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/barrel_zone_3_temp_c/normal
+- from: Component:EXTR01/die-head
+  type: MONITORED_BY
+  to: Signal:EXTR01/head_temp_c
+- from: Signal:EXTR01/head_temp_c
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/head_temp_c/normal
+- from: Component:EXTR01/die-head
+  type: MONITORED_BY
+  to: Signal:EXTR01/die_pressure_bar
+- from: Signal:EXTR01/die_pressure_bar
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/die_pressure_bar/normal
+- from: Component:EXTR01/product-quality
+  type: MONITORED_BY
+  to: Signal:EXTR01/product_temp_discharge_c
+- from: Signal:EXTR01/product_temp_discharge_c
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/product_temp_discharge_c/normal
+- from: Component:EXTR01/product-quality
+  type: MONITORED_BY
+  to: Signal:EXTR01/product_moisture_pct
+- from: Signal:EXTR01/product_moisture_pct
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/product_moisture_pct/normal
+- from: Component:EXTR01/product-quality
+  type: MONITORED_BY
+  to: Signal:EXTR01/bulk_density_g_l
+- from: Signal:EXTR01/bulk_density_g_l
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/bulk_density_g_l/normal
+- from: Component:EXTR01/product-quality
+  type: MONITORED_BY
+  to: Signal:EXTR01/kibble_diameter_mm
+- from: Signal:EXTR01/kibble_diameter_mm
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/kibble_diameter_mm/normal
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/throughput_actual_kg_hr
+- from: Signal:EXTR01/throughput_actual_kg_hr
+  type: HAS_LIMIT
+  to: OperatingLimit:EXTR01/throughput_actual_kg_hr/normal
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/throughput_target_kg_hr
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/good_output_kg
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/scrap_output_kg
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/downtime_min
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/availability_pct
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/performance_pct
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/quality_pct
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/oee_pct
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/machine_state
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/alarm_active
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/alarm_code
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/recipe_id
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/batch_id
+- from: Asset:EXTR01
+  type: MONITORED_BY
+  to: Signal:EXTR01/shift_code
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/OUT_OF_SPEC_DENSITY
+- from: Component:EXTR01/product-quality
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/OUT_OF_SPEC_DENSITY
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/OUT_OF_SPEC_DIAMETER
+- from: Component:EXTR01/product-quality
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/OUT_OF_SPEC_DIAMETER
+- from: Component:EXTR01/die-head
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/OUT_OF_SPEC_DIAMETER
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/LO_MOISTURE
+- from: Component:EXTR01/product-quality
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/LO_MOISTURE
+- from: Component:EXTR01/conditioning
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/LO_MOISTURE
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/HI_MOISTURE
+- from: Component:EXTR01/product-quality
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/HI_MOISTURE
+- from: Component:EXTR01/conditioning
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/HI_MOISTURE
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/SCREEN_BLOCK
+- from: Component:EXTR01/die-head
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/SCREEN_BLOCK
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/MOTOR_OVERLOAD
+- from: Component:EXTR01/main-drive
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/MOTOR_OVERLOAD
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/HIGH_SCRAP
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/UNPLANNED_STOP
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/DIE_PLUG
+- from: Component:EXTR01/die-head
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/DIE_PLUG
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/HEAD_TEMP_DRIFT
+- from: Component:EXTR01/die-head
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/HEAD_TEMP_DRIFT
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/MOISTURE_SENSOR_FAIL
+- from: Component:EXTR01/product-quality
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/MOISTURE_SENSOR_FAIL
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/SPEED_UNDER_TARGET
+- from: Component:EXTR01/screw-barrel
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/SPEED_UNDER_TARGET
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/FEEDER_STARVE
+- from: Component:EXTR01/feeder
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/FEEDER_STARVE
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/HI_DIE_PRESSURE
+- from: Component:EXTR01/die-head
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/HI_DIE_PRESSURE
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/FEEDER_OVERLOAD
+- from: Component:EXTR01/feeder
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/FEEDER_OVERLOAD
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/TEMP_SENSOR_FAIL
+- from: Component:EXTR01/screw-barrel
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/TEMP_SENSOR_FAIL
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/LOW_OEE
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/LO_TEMP_ZONE_1
+- from: Component:EXTR01/barrel-zone-1
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/LO_TEMP_ZONE_1
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/HI_TEMP_ZONE_3
+- from: Component:EXTR01/barrel-zone-3
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/HI_TEMP_ZONE_3
+- from: Asset:EXTR01
+  type: HAS_ALARM
+  to: Alarm:EXTR01/HI_TORQUE
+- from: Component:EXTR01/main-drive
+  type: ASSOCIATED_WITH
+  to: Alarm:EXTR01/HI_TORQUE
+- from: Asset:EXTR01
+  type: HAS_PROCEDURE
+  to: Procedure:EXTR01/die-plug-clearing
+- from: Procedure:EXTR01/die-plug-clearing
+  type: APPLIES_TO
+  to: Component:EXTR01/die-head
+- from: Procedure:EXTR01/die-plug-clearing
+  type: ADDRESSES
+  to: Alarm:EXTR01/DIE_PLUG
+- from: Procedure:EXTR01/die-plug-clearing
+  type: ADDRESSES
+  to: Alarm:EXTR01/SCREEN_BLOCK
+- from: Procedure:EXTR01/die-plug-clearing
+  type: ADDRESSES
+  to: Alarm:EXTR01/HI_DIE_PRESSURE
+- from: Asset:EXTR01
+  type: HAS_PROCEDURE
+  to: Procedure:EXTR01/motor-overload-recovery
+- from: Procedure:EXTR01/motor-overload-recovery
+  type: APPLIES_TO
+  to: Component:EXTR01/main-drive
+- from: Procedure:EXTR01/motor-overload-recovery
+  type: ADDRESSES
+  to: Alarm:EXTR01/MOTOR_OVERLOAD
+- from: Procedure:EXTR01/motor-overload-recovery
+  type: ADDRESSES
+  to: Alarm:EXTR01/HI_TORQUE
+- from: Asset:EXTR01
+  type: HAS_PROCEDURE
+  to: Procedure:EXTR01/moisture-correction
+- from: Procedure:EXTR01/moisture-correction
+  type: APPLIES_TO
+  to: Component:EXTR01/conditioning
+- from: Procedure:EXTR01/moisture-correction
+  type: ADDRESSES
+  to: Alarm:EXTR01/HI_MOISTURE
+- from: Procedure:EXTR01/moisture-correction
+  type: ADDRESSES
+  to: Alarm:EXTR01/LO_MOISTURE
+- from: Asset:EXTR01
+  type: HAS_PROCEDURE
+  to: Procedure:EXTR01/feeder-recovery
+- from: Procedure:EXTR01/feeder-recovery
+  type: APPLIES_TO
+  to: Component:EXTR01/feeder
+- from: Procedure:EXTR01/feeder-recovery
+  type: ADDRESSES
+  to: Alarm:EXTR01/FEEDER_STARVE
+- from: Procedure:EXTR01/feeder-recovery
+  type: ADDRESSES
+  to: Alarm:EXTR01/FEEDER_OVERLOAD
+- from: Asset:EXTR01
+  type: HAS_PROCEDURE
+  to: Procedure:EXTR01/product-spec-correction
+- from: Procedure:EXTR01/product-spec-correction
+  type: APPLIES_TO
+  to: Component:EXTR01/product-quality
+- from: Procedure:EXTR01/product-spec-correction
+  type: ADDRESSES
+  to: Alarm:EXTR01/OUT_OF_SPEC_DENSITY
+- from: Procedure:EXTR01/product-spec-correction
+  type: ADDRESSES
+  to: Alarm:EXTR01/OUT_OF_SPEC_DIAMETER
+- from: Asset:EXTR01
+  type: HAS_PROCEDURE
+  to: Procedure:EXTR01/barrel-temperature-control
+- from: Procedure:EXTR01/barrel-temperature-control
+  type: APPLIES_TO
+  to: Component:EXTR01/screw-barrel
+- from: Procedure:EXTR01/barrel-temperature-control
+  type: ADDRESSES
+  to: Alarm:EXTR01/LO_TEMP_ZONE_1
+- from: Procedure:EXTR01/barrel-temperature-control
+  type: ADDRESSES
+  to: Alarm:EXTR01/HI_TEMP_ZONE_3
+- from: Procedure:EXTR01/barrel-temperature-control
+  type: ADDRESSES
+  to: Alarm:EXTR01/HEAD_TEMP_DRIFT
+- from: Asset:EXTR01
+  type: HAS_PROCEDURE
+  to: Procedure:EXTR01/sensor-fault-check
+- from: Procedure:EXTR01/sensor-fault-check
+  type: APPLIES_TO
+  to: Asset:EXTR01
+- from: Procedure:EXTR01/sensor-fault-check
+  type: ADDRESSES
+  to: Alarm:EXTR01/TEMP_SENSOR_FAIL
+- from: Procedure:EXTR01/sensor-fault-check
+  type: ADDRESSES
+  to: Alarm:EXTR01/MOISTURE_SENSOR_FAIL
+- from: Asset:EXTR01
+  type: HAS_PROCEDURE
+  to: Procedure:EXTR01/unplanned-stop-restart
+- from: Procedure:EXTR01/unplanned-stop-restart
+  type: APPLIES_TO
+  to: Asset:EXTR01
+- from: Procedure:EXTR01/unplanned-stop-restart
+  type: ADDRESSES
+  to: Alarm:EXTR01/UNPLANNED_STOP
