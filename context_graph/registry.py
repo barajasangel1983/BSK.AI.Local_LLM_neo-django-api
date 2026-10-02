@@ -32,3 +32,32 @@ def save_version(definition: dict, note: str = "", activate: bool = True) -> Gra
         note=note,
         is_active=activate,
     )
+
+
+@transaction.atomic
+def activate(version: int) -> GraphSchemaVersion:
+    row = GraphSchemaVersion.objects.filter(version=version).first()
+    if row is None:
+        raise SchemaError(f"unknown schema version {version}")
+    GraphSchemaVersion.objects.filter(is_active=True).exclude(pk=row.pk).update(is_active=False)
+    row.is_active = True
+    row.save(update_fields=["is_active"])
+    return row
+
+
+def versions() -> list[dict]:
+    return [
+        {"version": v.version, "name": v.name, "note": v.note, "is_active": v.is_active,
+         "created_at": v.created_at.isoformat()}
+        for v in GraphSchemaVersion.objects.all()
+    ]
+
+
+def definition_for(version: int | None) -> dict:
+    """Stored definition of `version` (active one if None; bundled default if nothing stored)."""
+    if version is None:
+        return active_schema().definition
+    row = GraphSchemaVersion.objects.filter(version=version).first()
+    if row is None:
+        raise SchemaError(f"unknown schema version {version}")
+    return row.definition

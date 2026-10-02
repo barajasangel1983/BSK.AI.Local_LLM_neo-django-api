@@ -147,3 +147,26 @@ def validate_definition(definition: dict) -> list[str]:
                 if end not in entity_types:
                     errors.append(f"{name}: {end!r} is not an entity type")
     return errors
+
+
+def diff(old: Schema, new: Schema) -> dict:
+    """What changes from `old` to `new` (entity types, relationship types, allowed pairs)."""
+    old_rels, new_rels = old.relationship_types, new.relationship_types
+    changed_pairs = {}
+    for name in sorted(set(old_rels) & set(new_rels)):
+        added = sorted(new_rels[name].pairs - old_rels[name].pairs)
+        removed = sorted(old_rels[name].pairs - new_rels[name].pairs)
+        if added or removed:
+            changed_pairs[name] = {"added": [list(p) for p in added], "removed": [list(p) for p in removed]}
+    return {
+        "added_entity_types": sorted(set(new.entity_types) - set(old.entity_types)),
+        "removed_entity_types": sorted(set(old.entity_types) - set(new.entity_types)),
+        "added_relationship_types": sorted(set(new_rels) - set(old_rels)),
+        "removed_relationship_types": sorted(set(old_rels) - set(new_rels)),
+        "changed_pairs": changed_pairs,
+    }
+
+
+def is_empty_diff(d: dict) -> bool:
+    return not any(d[k] for k in ("added_entity_types", "removed_entity_types", "added_relationship_types",
+                                  "removed_relationship_types", "changed_pairs"))

@@ -10,6 +10,7 @@ dicts and raise:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -57,6 +58,109 @@ def schema_summary() -> dict:
             for rt in schema.relationship_types.values()
         ],
     }
+
+
+# --- schema editing (GraphLab schema editor) ---------------------------------
+
+class SchemaConflict(SchemaError):
+    """A schema change would orphan data already in the graph."""
+
+    def __init__(self, conflicts: list[dict]):
+        self.conflicts = conflicts
+        super().__init__("; ".join(c["message"] for c in conflicts))
+
+
+def parse_schema_text(text: str, fmt: str = "yaml") -> dict:
+    """YAML or JSON text -> definition dict (YAML is a superset of JSON)."""
+    if fmt not in ("yaml", "json"):
+        raise SchemaError("format must be 'yaml' or 'json'")
+    try:
+        definition = json.loads(text) if fmt == "json" else yaml.safe_load(text)
+    except (ValueError, yaml.YAMLError) as exc:
+        raise SchemaError(f"could not parse {fmt.upper()}: {exc}")
+    if not isinstance(definition, dict):
+        raise SchemaError("the schema must be a mapping with entity_types and relationship_types")
+    return definition
+
+
+def export_schema(version: int | None = None, fmt: str = "yaml") -> str:
+    definition = registry.definition_for(version)
+    if fmt == "json":
+        return json.dumps(definition, indent=2, ensure_ascii=False)
+    if fmt != "yaml":
+        raise SchemaError("format must be 'yaml' or 'json'")
+    return yaml.safe_dump(definition, sort_keys=False, allow_unicode=True, width=120)
+
+
+def _usage_conflicts(current: Schema, change: dict) -> list[dict]:
+    """Removed types / relationships / pairs that the graph still uses.
+
+    Labels and relationship types come from the current (validated) schema, so
+    they are safe to interpolate.
+    """
+    conflicts = []
+    with session() as s:
+        stats = s.execute_read(repository.counts)
+        for label in change["removed_entity_types"]:
+            if stats["nodes"].get(label):
+                conflicts.append({"kind": "entity_type", "name": label, "count": stats["nodes"][label],
+                                  "message": f"{label} is used by {stats['nodes'][label]} node(s)"})
+        for rel in change["removed_relationship_types"]:
+            if stats["relationships"].get(rel):
+                conflicts.append({"kind": "relationship_type", "name": rel, "count": stats["relationships"][rel],
+                                  "message": f"{rel} is used by {stats['relationships'][rel]} relationship(s)"})
+        for rel, pairs in change["changed_pairs"].items():
+            for from_label, to_label in pairs["removed"]:
+                current.check_relationship(from_label, rel, to_label)
+                n = s.run(f"MATCH (:{from_label})-[r:{rel}]->(:{to_label}) RETURN count(r) AS n").single()["n"]
+                if n:
+                    conflicts.append({"kind": "pair", "name": f"{from_label} -{rel}-> {to_label}", "count": n,
+                                      "message": f"{from_label} -{rel}-> {to_label} is used by {n} relationship(s)"})
+    return conflicts
+
+
+def check_schema(definition: dict) -> dict:
+    """Validate a definition and preview it against the active schema (no writes).
+
+    Returns {valid, errors, diff, conflicts}; conflicts are in-use removals.
+    """
+    from .schema import diff, validate_definition
+
+    errors = validate_definition(definition)
+    if errors:
+        return {"valid": False, "errors": errors, "diff": None, "conflicts": []}
+    current = registry.active_schema()
+    change = diff(current, Schema.from_definition(definition))
+    return {"valid": True, "errors": [], "diff": change, "conflicts": _usage_conflicts(current, change)}
+
+
+def save_schema(definition: dict, note: str = "") -> dict:
+    """Store a new active schema version (rejects in-use removals) and apply its indexes."""
+    from .schema import is_empty_diff
+
+    result = check_schema(definition)
+    if not result["valid"]:
+        raise SchemaError("; ".join(result["errors"]))
+    if result["conflicts"]:
+        raise SchemaConflict(result["conflicts"])
+    if is_empty_diff(result["diff"]) and definition == registry.active_schema().definition:
+        raise SchemaError("no changes to save")
+    row = registry.save_version(definition, note=note)
+    with session() as s:
+        s.execute_write(repository.apply_constraints, registry.active_schema())
+    return {"version": row.version, "diff": result["diff"]}
+
+
+def activate_schema(version: int) -> dict:
+    """Make an earlier version active again (same in-use checks as saving)."""
+    definition = registry.definition_for(version)
+    result = check_schema(definition)
+    if result["conflicts"]:
+        raise SchemaConflict(result["conflicts"])
+    registry.activate(version)
+    with session() as s:
+        s.execute_write(repository.apply_constraints, registry.active_schema())
+    return {"version": version, "diff": result["diff"]}
 
 
 # --- seed / bulk load -------------------------------------------------------
