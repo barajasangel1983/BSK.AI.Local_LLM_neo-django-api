@@ -178,6 +178,16 @@ class ExtractionApiTests(LibraryTestCase):
         self.addCleanup(patcher.stop)
         self.doc, _ = self.upload()
 
+    def test_extract_config(self):
+        body = self.client.get("/api/graph/extract/config/").json()
+        self.assertEqual((body["provider"], body["modes"]), ("DGX", ["schema", "freeform", "both"]))
+        self.assertEqual(body["default_chunking"], extraction.DEFAULT_CHUNKING)
+        self.assertIn("fixed", body["chunking_strategies"])   # same shape as /api/rag/config/
+        self.assertNotIn("Document", body["schema"]["entity_types"])
+        rels = {r["name"]: r["pairs"] for r in body["schema"]["relationships"]}
+        self.assertIn(["Component", "Signal"], rels["MONITORED_BY"])
+        self.assertNotIn("HAS_SECTION", rels)
+
     def test_presets_crud_and_versioning(self):
         listed = self.client.get("/api/graph/presets/").json()["presets"]
         self.assertEqual({(p["mode"], p["is_default"], p["builtin"]) for p in listed},

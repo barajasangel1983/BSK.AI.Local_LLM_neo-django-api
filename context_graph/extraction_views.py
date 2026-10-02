@@ -4,6 +4,7 @@
     POST   presets/                       create {name, mode, template}
     PATCH  presets/<id>/                  update {name?, template?, is_default?} — a template change bumps the version
     DELETE presets/<id>/                  delete (not the built-in defaults)
+    GET    extract/config/                model, modes, default windows, window strategies, schema (read-only)
     POST   extract/                       Generate triples {document_ids, mode, chunking, presets, asset_id}
     GET    triples/?document=&status=&mode=&q=&offset=&limit=
     PATCH  triples/<id>/                  edit a pending/rejected triple
@@ -21,7 +22,7 @@ from ingestion import library
 from ingestion.library_views import job_json
 from ingestion.models import Document, Job
 
-from . import extraction, triples
+from . import extraction, registry, triples
 from .models import CandidateTriple, PromptPreset
 from .views import _int, graph_errors
 
@@ -114,6 +115,30 @@ def preset_detail(request, preset_id):
 
 
 # --- extract -------------------------------------------------------------------
+
+@api_view(["GET"])
+def extract_config(request):
+    """Server-side extraction settings for the GraphLab Extract UI (read-only)."""
+    from django.conf import settings
+
+    from ingestion import chunking
+
+    schema = registry.active_schema()
+    types, rels = extraction.extractable(schema)
+    return Response({
+        "model": settings.DGX_CHAT_MODEL,
+        "provider": "DGX",
+        "modes": list(extraction.MODES),
+        "default_chunking": extraction.DEFAULT_CHUNKING,
+        "chunking_strategies": chunking.STRATEGIES,
+        "timeout_seconds": settings.GRAPH_EXTRACT_TIMEOUT,
+        "schema": {  # what schema-mode triples may use (evidence types excluded)
+            "version": schema.version,
+            "entity_types": list(types),
+            "relationships": [{"name": name, "pairs": pairs} for name, pairs in rels.items()],
+        },
+    })
+
 
 @api_view(["POST"])
 def extract(request):

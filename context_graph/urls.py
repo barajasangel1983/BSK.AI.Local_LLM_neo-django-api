@@ -24,6 +24,7 @@ urlpatterns = [
     path("presets/", extraction_views.presets, name="graph-presets"),
     path("presets/<int:preset_id>/", extraction_views.preset_detail, name="graph-preset"),
     path("extract/", extraction_views.extract, name="graph-extract"),
+    path("extract/config/", extraction_views.extract_config, name="graph-extract-config"),
     path("triples/", extraction_views.triple_list, name="graph-triples"),
     path("triples/approve/", extraction_views.triples_approve, name="graph-triples-approve"),
     path("triples/reject/", extraction_views.triples_reject, name="graph-triples-reject"),

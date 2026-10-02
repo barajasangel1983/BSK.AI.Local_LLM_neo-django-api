@@ -76,6 +76,7 @@ output, one retry on a DGX timeout); a failed window is noted on the document an
   Placeholders: `{entity_types}`, `{relationships}`, `{document}`, `{section}`, `{text}` (without `{text}` the window is
   sent as the user message). Built-in defaults can be edited but not deleted.
 - **Visualizer:** `data/?layer=curated|lab|both&doc=<doc_key>`.
+- **UI config:** `GET extract/config/` — DGX model, modes, default/available window strategies, extractable schema types and pairs.
 - Settings: `GRAPH_EXTRACT_TIMEOUT` (120 s per call), `GRAPH_EXTRACT_MAX_TOKENS` (2000).
 
 ## Document library (shared by RAG Lab and GraphLab)
