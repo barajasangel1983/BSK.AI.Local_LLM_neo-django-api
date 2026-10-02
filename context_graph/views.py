@@ -7,13 +7,15 @@ errors to HTTP statuses.
 
 from functools import wraps
 
+from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from . import driver, services
+from . import driver, registry, services
 from .repository import NodeNotFound
 from .schema import SchemaError
+from .services import SchemaConflict
 
 MAX_LIMIT = 1000
 
@@ -29,6 +31,8 @@ def graph_errors(view):
             return Response({"error": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
         except NodeNotFound as exc:
             return Response({"error": f"Unknown node: {exc}"}, status=status.HTTP_404_NOT_FOUND)
+        except SchemaConflict as exc:
+            return Response({"error": str(exc), "conflicts": exc.conflicts}, status=status.HTTP_409_CONFLICT)
         except (SchemaError, ValueError) as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -51,11 +55,68 @@ def graph_health(request):
     return Response(result, status=code)
 
 
-@api_view(["GET"])
+def _definition_from(request) -> dict:
+    """A schema definition from a request body: {"definition": {...}} or {"text": "...", "format": "yaml"|"json"}."""
+    if isinstance(request.data.get("definition"), dict):
+        return request.data["definition"]
+    text = request.data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise SchemaError("send a 'definition' object or schema 'text' (YAML/JSON)")
+    return services.parse_schema_text(text, request.data.get("format", "yaml"))
+
+
+@api_view(["GET", "POST"])
 @graph_errors
 def graph_schema(request):
-    """GET /api/graph/schema/ — active schema (types, allowed pairs) with counts."""
+    """GET  /api/graph/schema/ — active schema (types, allowed pairs) with counts.
+    POST /api/graph/schema/ — save a new active version: {text, format, note} or {definition, note}.
+    """
+    if request.method == "POST":
+        result = services.save_schema(_definition_from(request), note=str(request.data.get("note", ""))[:255])
+        return Response({**result, "schema": services.schema_summary()}, status=status.HTTP_201_CREATED)
     return Response(services.schema_summary())
+
+
+@api_view(["POST"])
+@graph_errors
+def schema_validate(request):
+    """POST /api/graph/schema/validate/ — validate + diff against the active schema; writes nothing."""
+    try:
+        definition = _definition_from(request)
+    except SchemaError as exc:
+        return Response({"valid": False, "errors": [str(exc)], "diff": None, "conflicts": []})
+    return Response(services.check_schema(definition))
+
+
+@api_view(["GET"])
+@graph_errors
+def schema_versions(request):
+    """GET /api/graph/schema/versions/"""
+    return Response({"versions": registry.versions()})
+
+
+@api_view(["POST"])
+@graph_errors
+def schema_activate(request, version):
+    """POST /api/graph/schema/versions/<n>/activate/ — make an earlier version active."""
+    result = services.activate_schema(version)
+    return Response({**result, "schema": services.schema_summary()})
+
+
+@api_view(["GET"])
+@graph_errors
+def schema_export(request):
+    """GET /api/graph/schema/export/?fmt=yaml|json&version=<n> — download a schema definition.
+
+    (`fmt`, not `format`: DRF reserves ?format= for its own content negotiation.)
+    """
+    fmt = request.query_params.get("fmt", "yaml")
+    version = request.query_params.get("version")
+    text = services.export_schema(int(version) if version else None, fmt)
+    content_type = "application/json" if fmt == "json" else "application/yaml"
+    response = HttpResponse(text, content_type=f"{content_type}; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="graph-schema{"-v" + version if version else ""}.{fmt}"'
+    return response
 
 
 @api_view(["GET"])

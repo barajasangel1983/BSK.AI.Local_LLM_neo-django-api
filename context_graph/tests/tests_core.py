@@ -177,3 +177,76 @@ class ViewTests(SimpleTestCase):
             with patch("context_graph.views.services.search_nodes", side_effect=exc):
                 self.assertEqual(self.client.get("/api/graph/nodes/").status_code, code, exc)
         self.assertEqual(self.client.get("/api/graph/nodes/", {"limit": "abc"}).status_code, 400)
+
+
+class SchemaDiffAndParseTests(SimpleTestCase):
+    def test_diff_reports_types_and_pairs(self):
+        from context_graph.schema import diff, is_empty_diff
+
+        old = Schema.from_yaml()
+        definition = _default_definition()
+        definition["entity_types"]["Sensor"] = {}
+        definition["relationship_types"]["MONITORED_BY"]["pairs"].append(["Component", "Sensor"])
+        definition["relationship_types"]["MONITORED_BY"]["pairs"].remove(["Asset", "Signal"])
+        del definition["relationship_types"]["CONNECTED_TO"]
+        change = diff(old, Schema.from_definition(definition))
+        self.assertEqual(change["added_entity_types"], ["Sensor"])
+        self.assertEqual(change["removed_relationship_types"], ["CONNECTED_TO"])
+        self.assertEqual(change["changed_pairs"]["MONITORED_BY"],
+                         {"added": [["Component", "Sensor"]], "removed": [["Asset", "Signal"]]})
+        self.assertTrue(is_empty_diff(diff(old, Schema.from_yaml())))
+
+    def test_parse_yaml_and_json(self):
+        from context_graph.services import parse_schema_text
+
+        self.assertEqual(parse_schema_text('{"entity_types": {}}', "json"), {"entity_types": {}})
+        self.assertEqual(parse_schema_text("entity_types: {}\n", "yaml"), {"entity_types": {}})
+        for text, fmt, message in [("entity_types: [", "yaml", "could not parse YAML"),
+                                   ("- a\n- b", "yaml", "must be a mapping"),
+                                   ("{}", "xml", "format must be")]:
+            with self.assertRaisesMessage(SchemaError, message):
+                parse_schema_text(text, fmt)
+
+
+class SchemaRegistryEditTests(TestCase):
+    def test_export_and_activate(self):
+        from context_graph.services import export_schema
+
+        registry.save_version(_default_definition(), note="v1")
+        definition = _default_definition()
+        definition["entity_types"]["Sensor"] = {}
+        registry.save_version(definition, note="v2")
+        self.assertIn("Sensor:", export_schema(None, "yaml"))
+        self.assertNotIn('"Sensor"', export_schema(1, "json"))
+        registry.activate(1)
+        self.assertEqual(registry.active_schema().version, 1)
+        self.assertEqual([v["is_active"] for v in registry.versions()], [False, True])
+        with self.assertRaises(SchemaError):
+            registry.activate(99)
+
+
+class SchemaEditViewTests(SimpleTestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_validate_never_raises_on_bad_input(self):
+        r = self.client.post("/api/graph/schema/validate/", {"text": "entity_types: [", "format": "yaml"}, format="json")
+        self.assertEqual((r.status_code, r.data["valid"]), (200, False))
+        self.assertIn("could not parse YAML", r.data["errors"][0])
+
+    @patch("context_graph.views.services.save_schema")
+    def test_conflicts_are_409_with_details(self, mock_save):
+        from context_graph.services import SchemaConflict
+
+        mock_save.side_effect = SchemaConflict([{"kind": "entity_type", "name": "Procedure", "count": 8,
+                                                 "message": "Procedure is used by 8 node(s)"}])
+        r = self.client.post("/api/graph/schema/", {"definition": _default_definition(), "note": "x"}, format="json")
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.data["conflicts"][0]["name"], "Procedure")
+
+    @patch("context_graph.views.services.export_schema", return_value="name: Industrial\n")
+    def test_export_is_a_download(self, mock_export):
+        r = self.client.get("/api/graph/schema/export/", {"fmt": "yaml", "version": "2"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r["Content-Disposition"], 'attachment; filename="graph-schema-v2.yaml"')
+        mock_export.assert_called_once_with(2, "yaml")

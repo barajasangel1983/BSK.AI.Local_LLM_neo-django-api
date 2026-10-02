@@ -96,3 +96,33 @@ class GraphIntegrationTests(TestCase):
             with self.assertRaises(NodeNotFound):
                 s.execute_write(repository.upsert_relationship, schema, "bsk:asset:A1", "MONITORED_BY", "bsk:signal:A1/x")
         self.assertEqual(self._count("MATCH ()-[r]->() RETURN count(r) AS n"), 0)
+
+    def test_schema_edits_respect_data_in_use(self):
+        import copy
+
+        from context_graph import registry
+        from context_graph.services import SchemaConflict, activate_schema, check_schema, save_schema
+
+        services.load_seed(SEED)
+        base = copy.deepcopy(registry.active_schema().definition)
+
+        no_procedures = copy.deepcopy(base)
+        del no_procedures["entity_types"]["Procedure"]
+        for rel in ("HAS_PROCEDURE", "APPLIES_TO", "ADDRESSES"):
+            del no_procedures["relationship_types"][rel]
+        result = check_schema(no_procedures)
+        self.assertEqual({c["name"] for c in result["conflicts"]},
+                         {"Procedure", "HAS_PROCEDURE", "APPLIES_TO", "ADDRESSES"})
+        with self.assertRaises(SchemaConflict):
+            save_schema(no_procedures)
+
+        with_sensor = copy.deepcopy(base)
+        with_sensor["entity_types"]["Sensor"] = {"description": "Physical sensor"}
+        saved = save_schema(with_sensor, note="add Sensor")
+        self.assertEqual(saved["diff"]["added_entity_types"], ["Sensor"])
+        with driver.session() as s:
+            indexes = {row["name"] for row in s.run("SHOW INDEXES YIELD name")}
+        self.assertIn("sensor_name", indexes)
+
+        # back to v1 is fine: Sensor is unused
+        self.assertEqual(activate_schema(1)["diff"]["removed_entity_types"], ["Sensor"])

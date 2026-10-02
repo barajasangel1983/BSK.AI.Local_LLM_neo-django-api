@@ -38,6 +38,10 @@ rest of the app runs without Neo4j. Neo4j Browser: http://127.0.0.1:7474
 - Schema: `context_graph/schemas/industrial_v1.yaml` (default), stored as versions in `GraphSchemaVersion`; the active version validates every write.
 - Canonical IDs: `bsk:<type>:<key>`, e.g. `bsk:asset:EXTR01`, `bsk:component:EXTR01/die-head`.
 - Read API under `/api/graph/`: `schema/`, `assets/`, `assets/<id>/context/`, `nodes/?type=&q=`, `nodes/<id>/`, `alarms/<id>/procedures/`, `data/?root=&depth=&types=&limit=`.
+- Schema editor API (GraphLab): `POST schema/validate/` (validate + diff, no writes), `POST schema/` (save a new active
+  version), `GET schema/versions/`, `POST schema/versions/<n>/activate/`, `GET schema/export/?fmt=yaml|json&version=<n>`.
+  Body: `{"text": "...", "format": "yaml"|"json", "note": "..."}` or `{"definition": {...}}`. Adding types/relationships/pairs
+  is always allowed; removing or renaming one the graph still uses returns **409** with the conflicts.
 
 Integration tests use a throwaway Neo4j (never the real graph):
 
