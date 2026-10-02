@@ -50,6 +50,34 @@ docker compose -f deploy/neo4j/docker-compose.yml --env-file .env --profile test
 GRAPH_TEST_URI=bolt://127.0.0.1:7689 .venv/bin/python manage.py test context_graph
 ```
 
+### Triple extraction and review (P4)
+
+GraphLab **Generate triples** runs on the library worker (`POST /api/graph/extract/` with `document_ids`, `mode`
+`schema` | `freeform` | `both`, optional `chunking` (default fixed 800/100 tokens), `presets` and `asset_id` scope).
+Each window goes to the DGX Qwen model (prompted JSON in `json_object` mode, strict validation, one retry on malformed
+output, one retry on a DGX timeout); a failed window is noted on the document and doesn't fail the run.
+
+- **Staged, not written:** results land in `CandidateTriple` (pending) with evidence (page, section, window text),
+  model, prompt preset + version and schema version. Schema-mode triples are checked against the active schema
+  (`issue` explains a disallowed pair) and matched to existing entities (`existing: true`) or given proposed ids.
+  Document/DocumentSection are not extracted — they are written as evidence on approval. A re-run replaces pending
+  triples of the modes it ran; approved/rejected ones are kept and not staged again.
+- **Review API:** `GET triples/?document=&status=&mode=&issues=1&q=`, `PATCH triples/<id>/` (pending/rejected only; ids
+  re-resolved when names/types change), `POST triples/approve/ | reject/ | delete/` `{ids}`, `POST triples/<id>/promote/`.
+- **Approve:** schema triples → curated graph (new entities `source: "text"`; existing ones keep their names), the edge
+  records its supporting `triple_ids` (+ provenance when text created it), plus Document → DocumentSection →
+  DESCRIBES evidence and Asset DOCUMENTED_BY Document when scoped. Free-form triples → the **lab layer**
+  (`:Lab` nodes, `LAB_RELATION {predicate}`), never mixed with `:Entity`. **Promote** maps a lab triple onto the schema
+  and moves it to the curated graph.
+- **Delete** removes what a triple wrote: its support on each edge (an edge goes only when no triple supports it and
+  text created it — seeded edges are never deleted), then orphaned text-created entities, sections and documents.
+  Deleting a library document does the same for its approved triples.
+- **Prompt presets:** `GET/POST presets/`, `PATCH/DELETE presets/<id>/`; a template change bumps the version.
+  Placeholders: `{entity_types}`, `{relationships}`, `{document}`, `{section}`, `{text}` (without `{text}` the window is
+  sent as the user message). Built-in defaults can be edited but not deleted.
+- **Visualizer:** `data/?layer=curated|lab|both&doc=<doc_key>`.
+- Settings: `GRAPH_EXTRACT_TIMEOUT` (120 s per call), `GRAPH_EXTRACT_MAX_TOKENS` (2000).
+
 ## Document library (shared by RAG Lab and GraphLab)
 
 Uploads go to a shared library (`/api/documents/`); each file is parsed once by Docling and cached under

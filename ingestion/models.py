@@ -102,8 +102,10 @@ class Document(models.Model):
     rag_error = models.TextField(blank=True, default="")
     rag_updated_at = models.DateTimeField(null=True, blank=True)
 
-    # Reserved for GraphLab "Generate triples" (P4).
+    # GraphLab "Generate triples": status of the latest extraction run.
     graph_status = models.CharField(max_length=16, choices=PipelineStatus.choices, default=PipelineStatus.NONE)
+    graph_error = models.TextField(blank=True, default="")
+    graph_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "library_document"
@@ -119,6 +121,7 @@ class Job(models.Model):
     class Kind(models.TextChoices):
         PARSE = "parse", "Parse"
         EMBED = "embed", "Generate embeddings"
+        EXTRACT = "extract", "Generate triples"
 
     class Status(models.TextChoices):
         QUEUED = "queued", "Queued"

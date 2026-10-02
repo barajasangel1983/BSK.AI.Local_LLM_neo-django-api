@@ -165,7 +165,8 @@ class ViewTests(SimpleTestCase):
         mock_search.assert_called_once_with("Signal", "temp", limit=1000, offset=10)
         with patch("context_graph.views.services.graph_data", return_value={}) as mock_data:
             self.client.get("/api/graph/data/", {"root": "bsk:asset:EXTR01", "depth": "9", "types": "Signal,Alarm"})
-        mock_data.assert_called_once_with("bsk:asset:EXTR01", depth=4, labels=["Signal", "Alarm"], limit=300)
+        mock_data.assert_called_once_with("bsk:asset:EXTR01", depth=4, labels=["Signal", "Alarm"], limit=300,
+                                          layer="curated", doc_key=None)
 
     def test_errors_map_to_statuses(self):
         cases = [

@@ -270,12 +270,26 @@ def search_nodes(label: str | None, query: str | None, limit: int = 50, offset: 
     return {"total": total, "offset": offset, "limit": limit, "items": items}
 
 
-def graph_data(root_id: str | None, depth: int = 2, labels: list[str] | None = None, limit: int = 300) -> dict:
+LAYERS = ("curated", "lab", "both")
+
+
+def graph_data(root_id: str | None, depth: int = 2, labels: list[str] | None = None, limit: int = 300,
+               layer: str = "curated", doc_key: str | None = None) -> dict:
+    """Visualizer data. layer: curated (schema graph), lab (free-form triples) or both."""
+    if layer not in LAYERS:
+        raise ValueError(f"layer must be one of {', '.join(LAYERS)}")
     schema = registry.active_schema()
     for label in labels or []:
         schema.check_label(label)
+    result = {"nodes": [], "links": []}
     with session() as s:
-        return s.execute_read(repository.subgraph, root_id, depth, labels, limit)
+        if layer in ("curated", "both"):
+            result = s.execute_read(repository.subgraph, root_id, depth, labels, limit)
+        if layer in ("lab", "both"):
+            lab = s.execute_read(repository.lab_subgraph, doc_key, limit)
+            result["nodes"] += lab["nodes"]
+            result["links"] += lab["links"]
+    return result
 
 
 def alarm_procedures(alarm_id: str) -> dict:

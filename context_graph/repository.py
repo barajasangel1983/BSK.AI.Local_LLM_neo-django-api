@@ -208,3 +208,28 @@ def subgraph(tx, root_id: str | None, depth: int, labels: list[str] | None, limi
         "nodes": [serialize_node(n) for n in nodes],
         "links": [serialize_rel(row["r"], row["s"], row["t"]) for row in rels],
     }
+
+
+# --- lab layer (free-form triples, kept apart from the curated graph) ---------
+
+def lab_subgraph(tx, doc_key: str | None, limit: int) -> dict:
+    """Lab nodes + LAB_RELATION links; a link's `type` is its free-form predicate."""
+    nodes = [row["n"] for row in tx.run(
+        "MATCH (n:Lab) WHERE $doc IS NULL OR n.doc_key = $doc RETURN n LIMIT $limit", doc=doc_key, limit=limit)]
+    ids = [n["id"] for n in nodes]
+    rels = tx.run(
+        "MATCH (a:Lab)-[r:LAB_RELATION]->(b:Lab) WHERE a.id IN $ids AND b.id IN $ids RETURN r, a.id AS s, b.id AS t",
+        ids=ids,
+    )
+    links = []
+    for row in rels:
+        link = serialize_rel(row["r"], row["s"], row["t"])
+        link["type"] = link["properties"].get("predicate", "RELATED_TO")
+        link["layer"] = "lab"
+        links.append(link)
+    out_nodes = []
+    for n in nodes:
+        node = serialize_node(n)
+        node["layer"] = "lab"
+        out_nodes.append(node)
+    return {"nodes": out_nodes, "links": links}
