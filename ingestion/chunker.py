@@ -149,8 +149,16 @@ def _content_type(text: str) -> str:
     return "paragraph"
 
 
-def chunk_document(doc: Dict[str, Any]) -> List[Chunk]:
-    """Main entry point. Accepts the full Docling result JSON."""
+def chunk_document(
+    doc: Dict[str, Any],
+    max_tokens: int = MAX_TOKENS,
+    overlap_sentences: int = OVERLAP_SENTENCES,
+) -> List[Chunk]:
+    """Structure-aware chunking of the full Docling result JSON.
+
+    Paragraphs within heading sections, up to `max_tokens` per chunk, with the
+    last `overlap_sentences` sentences of a chunk prepended to the next.
+    """
     chunks: List[Chunk] = []
     overlap_buffer: str = ""
 
@@ -198,32 +206,32 @@ def chunk_document(doc: Dict[str, Any]) -> List[Chunk]:
             # Merge with overlap from previous chunk
             candidate = (overlap_buffer + " " + para).strip() if overlap_buffer else para
 
-            if _count_tokens(candidate) <= MAX_TOKENS:
+            if _count_tokens(candidate) <= max_tokens:
                 # Fits comfortably
                 chunks.append(make_chunk(candidate))
 
                 # Prepare overlap for next chunk
                 sents = _split_sentences(candidate)
-                overlap_buffer = " ".join(sents[-OVERLAP_SENTENCES:]) if len(sents) > 1 else ""
+                overlap_buffer = " ".join(sents[-overlap_sentences:]) if len(sents) > 1 and overlap_sentences else ""
             else:
                 # Paragraph is too large — split on sentence boundaries
                 sents = _split_sentences(para)
                 buf = overlap_buffer
                 for sent in sents:
                     trial = (buf + " " + sent).strip() if buf else sent
-                    if _count_tokens(trial) > MAX_TOKENS and buf:
+                    if _count_tokens(trial) > max_tokens and buf:
                         # Flush current buf as a chunk
                         chunks.append(make_chunk(buf))
                         buf = sent
                     else:
                         buf = trial
                 if buf:
-                    overlap_buffer = " ".join(_split_sentences(buf)[-OVERLAP_SENTENCES:])
-                    if _count_tokens(buf) <= MAX_TOKENS:
+                    overlap_buffer = " ".join(_split_sentences(buf)[-overlap_sentences:]) if overlap_sentences else ""
+                    if _count_tokens(buf) <= max_tokens:
                         chunks.append(make_chunk(buf))
                     else:
                         # Last resort: hard split by token count (no sentence boundary found)
-                        for hc in _hard_split_by_tokens(buf, MAX_TOKENS):
+                        for hc in _hard_split_by_tokens(buf, max_tokens):
                             chunks.append(make_chunk(hc))
 
     # Final cleanup: drop any empty or tiny chunks

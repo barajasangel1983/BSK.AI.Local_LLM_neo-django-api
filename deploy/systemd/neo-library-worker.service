@@ -1,0 +1,26 @@
+# Document-library worker for the Neo LLM API (parse + Generate embeddings jobs).
+#
+# Install (user service; starts at boot because lingering is enabled):
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/neo-library-worker.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now neo-library-worker
+# Logs:    journalctl --user -u neo-library-worker -f
+# Deploy:  systemctl --user restart neo-library-worker   (it doesn't auto-reload code)
+[Unit]
+Description=Neo LLM API document-library worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api
+ExecStart=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api/.venv/bin/python manage.py library_worker
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=5
+# SIGTERM lets the current job finish its step; interrupted jobs are re-queued.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+[Install]
+WantedBy=default.target

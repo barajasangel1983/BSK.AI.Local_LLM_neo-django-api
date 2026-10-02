@@ -15,6 +15,8 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 from django.conf import settings
 
+from .chroma_client import get_client
+
 
 class VectorStoreError(Exception):
     pass
@@ -26,18 +28,18 @@ class VectorStore:
         chroma_path: Optional[str] = None,
         collection_name: Optional[str] = None,
     ) -> None:
-        self.chroma_path = chroma_path or str(
-            getattr(settings, "CHROMA_DIR", "/home/barajas_angel/repos/BSK.AI.Local_LLM_neo4j-graphrag/data/chroma_index")
-        )
+        # An explicit path opens that folder embedded (tests); otherwise the
+        # shared client (Chroma server in normal operation).
+        self.chroma_path = chroma_path
         self.collection_name = collection_name or settings.RAG_COLLECTION_V2
-        self._client: Optional[chromadb.PersistentClient] = None
+        self._client = None
         self._collection: Optional[chromadb.Collection] = None
 
     def _get_collection(self) -> chromadb.Collection:
         if self._collection is None:
-            self._client = chromadb.PersistentClient(
-                path=self.chroma_path,
-                settings=ChromaSettings(anonymized_telemetry=False),
+            self._client = (
+                chromadb.PersistentClient(path=self.chroma_path, settings=ChromaSettings(anonymized_telemetry=False))
+                if self.chroma_path else get_client()
             )
             # Chroma 1.x reads the distance space from `configuration`; the old
             # metadata={"hnsw:space": ...} form is ignored (collections ended up L2).
@@ -63,10 +65,13 @@ class VectorStore:
         source_sha256: str,
         document_revision: str,
         config_version: str,
+        variant: str = "",
     ) -> int:
         """Write chunks + embeddings. Returns number of chunks written.
 
-        Skips the entire batch if the idempotency key already exists.
+        Skips the entire batch if the idempotency key already exists. `variant`
+        (chunking strategy + params) is part of the key, so the same file can be
+        re-embedded with different chunking.
         """
         if not chunks:
             return 0
@@ -74,10 +79,12 @@ class VectorStore:
             raise VectorStoreError("chunks, embeddings and metadatas must have same length")
 
         key = f"{source_sha256}:{document_revision}:{config_version}"
-        if self.exists(source_sha256, document_revision, config_version):
+        if variant:
+            key = f"{key}:{variant}"
+        coll = self._get_collection()
+        if coll.get(where={"ingest_key": key}, limit=1).get("ids"):
             return 0  # idempotent skip
 
-        coll = self._get_collection()
         ids = [f"{key}:{i}" for i in range(len(chunks))]
 
         # Add the ingest_key to every metadata record for future lookups
@@ -96,6 +103,14 @@ class VectorStore:
             metadatas=enriched,
         )
         return len(chunks)
+
+    def delete_document(self, asset_id: str) -> int:
+        """Remove every chunk of one document (by its `asset_id` / doc key)."""
+        coll = self._get_collection()
+        ids = coll.get(where={"asset_id": asset_id}, include=[]).get("ids") or []
+        if ids:
+            coll.delete(ids=ids)
+        return len(ids)
 
 
 # Module-level convenience (used by pipeline)

@@ -57,3 +57,94 @@ class IngestionJob(models.Model):
 
     def __str__(self):
         return f"{self.id} {self.source_filename} [{self.status}]"
+
+
+class Document(models.Model):
+    """A file in the shared document library (used by RAG Lab and GraphLab).
+
+    Uploaded and parsed (Docling) once; each pipeline is then run per file on
+    request: "Generate embeddings" (RAG, bsk_rag_v2) now, "Generate triples"
+    (GraphLab) in a later phase. `doc_key` is the key stored as `asset_id` in
+    Chroma chunk metadata (a document key, not a machine asset).
+    """
+
+    class ParseStatus(models.TextChoices):
+        PENDING = "pending", "Pending"
+        QUEUED = "queued", "Queued"
+        PARSING = "parsing", "Parsing"
+        PARSED = "parsed", "Parsed"
+        FAILED = "failed", "Failed"
+
+    class PipelineStatus(models.TextChoices):
+        NONE = "none", "Not generated"
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        DONE = "done", "Done"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    filename = models.CharField(max_length=512)
+    doc_key = models.CharField(max_length=128, unique=True)
+    sha256 = models.CharField(max_length=64, db_index=True)
+    size = models.PositiveBigIntegerField(default=0)
+    document_revision = models.CharField(max_length=64, default="1")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    parse_status = models.CharField(max_length=16, choices=ParseStatus.choices, default=ParseStatus.PENDING)
+    parse_error = models.TextField(blank=True, default="")
+    parsed_at = models.DateTimeField(null=True, blank=True)
+    page_count = models.PositiveIntegerField(null=True, blank=True)
+
+    rag_status = models.CharField(max_length=16, choices=PipelineStatus.choices, default=PipelineStatus.NONE)
+    rag_strategy = models.CharField(max_length=32, blank=True, default="")
+    rag_params = models.JSONField(default=dict, blank=True)
+    rag_chunk_count = models.PositiveIntegerField(default=0)
+    rag_error = models.TextField(blank=True, default="")
+    rag_updated_at = models.DateTimeField(null=True, blank=True)
+
+    # Reserved for GraphLab "Generate triples" (P4).
+    graph_status = models.CharField(max_length=16, choices=PipelineStatus.choices, default=PipelineStatus.NONE)
+
+    class Meta:
+        db_table = "library_document"
+        ordering = ["-uploaded_at"]
+
+    def __str__(self):
+        return f"{self.doc_key} ({self.filename})"
+
+
+class Job(models.Model):
+    """Background task for the library worker (`manage.py library_worker`)."""
+
+    class Kind(models.TextChoices):
+        PARSE = "parse", "Parse"
+        EMBED = "embed", "Generate embeddings"
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        DONE = "done", "Done"
+        FAILED = "failed", "Failed"
+        CANCELLED = "cancelled", "Cancelled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="jobs")
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.QUEUED, db_index=True)
+    params = models.JSONField(default=dict, blank=True)
+    progress_done = models.PositiveIntegerField(default=0)
+    progress_total = models.PositiveIntegerField(default=0)
+    message = models.CharField(max_length=255, blank=True, default="")
+    error = models.TextField(blank=True, default="")
+    attempts = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "library_job"
+        ordering = ["created_at"]
+
+    def __str__(self):
+        return f"{self.kind} {self.document_id} [{self.status}]"

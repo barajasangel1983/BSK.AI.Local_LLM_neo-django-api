@@ -229,7 +229,11 @@ LOGGING = {
 
 
 # === RAG v2 retrieval (bsk_rag_v2 + DGX reranker) ===
-# Chroma persistent dir shared with the GraphRAG repo (VectorStore reads this too).
+# Chroma: server mode when CHROMA_HOST is set (required with the library worker —
+# embedded mode isn't process-safe); CHROMA_DIR is the data folder (mounted into
+# the server container, or opened directly in embedded mode for tests).
+CHROMA_HOST = os.getenv("CHROMA_HOST", "")
+CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8100"))
 CHROMA_DIR = os.getenv(
     "CHROMA_DIR", "/home/barajas_angel/repos/BSK.AI.Local_LLM_neo4j-graphrag/data/chroma_index"
 )
@@ -267,3 +271,16 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
 NEO4J_CONNECTION_TIMEOUT = float(os.getenv("NEO4J_CONNECTION_TIMEOUT", "5"))
+
+
+# === Document library (shared by RAG Lab and GraphLab) ===
+# Uploaded files and cached Docling output live under LIBRARY_BASE/<document id>/.
+LIBRARY_BASE = os.getenv("LIBRARY_BASE", str(BASE_DIR / "data" / "library"))
+# Running jobs whose heartbeat is older than this are re-queued by the worker.
+LIBRARY_JOB_STALE_SECONDS = int(os.getenv("LIBRARY_JOB_STALE_SECONDS", "300"))
+# Max upload size per file (bytes).
+LIBRARY_MAX_UPLOAD_BYTES = int(os.getenv("LIBRARY_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+
+
+# Tests never touch the live Chroma server (see neo_llm_api/test_runner.py).
+TEST_RUNNER = "neo_llm_api.test_runner.IsolatedTestRunner"

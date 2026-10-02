@@ -1,0 +1,38 @@
+# Chroma server for the Neo LLM API (document RAG `bsk_rag_v2` + legacy `bsk_rag`).
+#
+#   docker compose -f deploy/chroma/docker-compose.yml --env-file .env up -d
+#
+# Every process (runserver, library worker, management commands) connects via
+# HTTP (CHROMA_HOST/CHROMA_PORT in .env): embedded Chroma isn't process-safe.
+# The existing data folder is mounted as-is; runs as the host user so files
+# keep their ownership. Never open CHROMA_DIR with an embedded client while
+# this server is running.
+name: bsklab-chroma
+
+services:
+  chroma:
+    image: chromadb/chroma:1.5.5          # keep in step with the chromadb Python client
+    container_name: bsklab-chroma
+    restart: unless-stopped
+    user: "${CHROMA_UID:-1001}:${CHROMA_GID:-1001}"
+    ports:
+      - "127.0.0.1:${CHROMA_PORT:-8100}:8000"
+    volumes:
+      - "${CHROMA_DIR:-/home/barajas_angel/repos/BSK.AI.Local_LLM_neo4j-graphrag/data/chroma_index}:/data"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8000 && printf \"GET /api/v2/heartbeat HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q nanosecond <&3' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Throwaway instance for tests (data lost on stop):
+  #   docker compose -f deploy/chroma/docker-compose.yml --env-file .env --profile test up -d chroma-test
+  #   CHROMA_TEST_URL=http://127.0.0.1:8102 .venv/bin/python manage.py test ingestion
+  chroma-test:
+    image: chromadb/chroma:1.5.5
+    container_name: bsklab-chroma-test
+    profiles: ["test"]
+    ports:
+      - "127.0.0.1:8102:8000"
+    tmpfs:
+      - /data
