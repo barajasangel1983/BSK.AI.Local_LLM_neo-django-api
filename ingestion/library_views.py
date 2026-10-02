@@ -12,10 +12,13 @@
     POST   /api/jobs/<id>/cancel/               cancel a queued or running job
 """
 
+from django.db.models import Count
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+
+from context_graph.driver import GraphUnavailable
 
 from . import library
 from .chunking import ChunkingError
@@ -65,9 +68,21 @@ def document_json(doc: Document, active_jobs=None) -> dict:
             "error": doc.rag_error,
             "updated_at": doc.rag_updated_at.isoformat() if doc.rag_updated_at else None,
         },
-        "graph": {"status": doc.graph_status},
+        "graph": {
+            "status": doc.graph_status,
+            "error": doc.graph_error,
+            "updated_at": doc.graph_updated_at.isoformat() if doc.graph_updated_at else None,
+            **graph_counts(doc),
+        },
         "active_jobs": [job_json(j) for j in active_jobs],
     }
+
+
+def graph_counts(doc: Document) -> dict:
+    counts = {"pending": 0, "approved": 0, "rejected": 0}
+    for row in doc.triples.values("status").annotate(n=Count("id")):
+        counts[row["status"]] = row["n"]
+    return {"triples": counts}
 
 
 def _get_document(doc_id):
@@ -107,7 +122,11 @@ def document_detail(request, doc_id):
     if doc is None:
         return Response({"error": "document not found"}, status=status.HTTP_404_NOT_FOUND)
     if request.method == "DELETE":
-        return Response({"document_id": str(doc_id), **library.delete_document(doc)})
+        try:
+            return Response({"document_id": str(doc_id), **library.delete_document(doc)})
+        except GraphUnavailable as exc:
+            return Response({"error": f"document has approved graph triples and the graph is unavailable: {exc}"},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
     return Response(document_json(doc))
 
 

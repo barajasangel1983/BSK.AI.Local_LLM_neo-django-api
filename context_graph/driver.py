@@ -13,13 +13,14 @@ from contextlib import contextmanager
 
 from django.conf import settings
 from neo4j import Driver, GraphDatabase
+from neo4j.exceptions import ServiceUnavailable, SessionExpired
 
 _driver: Driver | None = None
 _lock = threading.Lock()
 
 
 class GraphUnavailable(RuntimeError):
-    """The graph is disabled or not configured."""
+    """The graph is disabled, not configured or unreachable."""
 
 
 def is_enabled() -> bool:
@@ -57,9 +58,12 @@ def close_driver() -> None:
 
 @contextmanager
 def session(**kwargs):
-    """Session on the configured database."""
-    with get_driver().session(database=settings.NEO4J_DATABASE, **kwargs) as s:
-        yield s
+    """Session on the configured database (an unreachable server raises GraphUnavailable)."""
+    try:
+        with get_driver().session(database=settings.NEO4J_DATABASE, **kwargs) as s:
+            yield s
+    except (ServiceUnavailable, SessionExpired) as exc:
+        raise GraphUnavailable(f"Neo4j is unreachable: {exc}") from exc
 
 
 def health() -> dict:

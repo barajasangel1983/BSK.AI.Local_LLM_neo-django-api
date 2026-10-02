@@ -284,3 +284,8 @@ LIBRARY_MAX_UPLOAD_BYTES = int(os.getenv("LIBRARY_MAX_UPLOAD_BYTES", str(200 * 1
 
 # Tests never touch the live Chroma server (see neo_llm_api/test_runner.py).
 TEST_RUNNER = "neo_llm_api.test_runner.IsolatedTestRunner"
+
+
+# === GraphLab triple extraction (DGX) ===
+GRAPH_EXTRACT_TIMEOUT = float(os.getenv("GRAPH_EXTRACT_TIMEOUT", "120"))       # seconds per window call
+GRAPH_EXTRACT_MAX_TOKENS = int(os.getenv("GRAPH_EXTRACT_MAX_TOKENS", "2000"))  # output budget per window

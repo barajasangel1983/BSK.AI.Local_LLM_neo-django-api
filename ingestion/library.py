@@ -116,6 +116,9 @@ def enqueue(doc: Document, kind: str, params: dict | None = None) -> Job:
     if kind == Job.Kind.EMBED:
         strategy = (params or {}).get("strategy", DEFAULT_STRATEGY)
         params = {"strategy": strategy, "params": resolve_params(strategy, (params or {}).get("params"))}
+    elif kind == Job.Kind.EXTRACT:
+        from context_graph.extraction import validate_params  # graph app depends on the library, not vice versa
+        params = validate_params(params or {})
     elif kind != Job.Kind.PARSE:
         raise LibraryError(f"unknown job kind {kind!r}")
 
@@ -124,6 +127,8 @@ def enqueue(doc: Document, kind: str, params: dict | None = None) -> Job:
         return active
     if kind == Job.Kind.EMBED:
         Document.objects.filter(pk=doc.pk).update(rag_status=Document.PipelineStatus.QUEUED, rag_error="")
+    elif kind == Job.Kind.EXTRACT:
+        Document.objects.filter(pk=doc.pk).update(graph_status=Document.PipelineStatus.QUEUED, graph_error="")
     else:
         Document.objects.filter(pk=doc.pk).update(parse_status=Document.ParseStatus.QUEUED, parse_error="")
     return Job.objects.create(document=doc, kind=kind, params=params or {})
@@ -176,6 +181,9 @@ def run_job(job: Job) -> None:
             run_parse(job)
         elif job.kind == Job.Kind.EMBED:
             run_embed(job)
+        elif job.kind == Job.Kind.EXTRACT:
+            from context_graph.extraction import run_extract
+            run_extract(job)
         else:
             raise LibraryError(f"unknown job kind {job.kind!r}")
     except JobCancelled:
@@ -201,6 +209,13 @@ def _settle_document(job: Job, error: str = "", cancelled: bool = False) -> None
             Document.ParseStatus.PENDING if cancelled else doc.parse_status)
         doc.parse_error = error
         doc.save(update_fields=["parse_status", "parse_error"])
+    elif job.kind == Job.Kind.EXTRACT:
+        if cancelled:  # staged triples from earlier runs are untouched
+            doc.graph_status = Document.PipelineStatus.DONE if doc.triples.exists() else Document.PipelineStatus.NONE
+        else:
+            doc.graph_status = Document.PipelineStatus.FAILED
+        doc.graph_error = error
+        doc.save(update_fields=["graph_status", "graph_error"])
     else:
         if cancelled:  # back to what's actually in Chroma
             doc.rag_status = Document.PipelineStatus.DONE if doc.rag_chunk_count else Document.PipelineStatus.NONE
@@ -290,9 +305,13 @@ def remove_embeddings(doc: Document) -> int:
 
 
 def delete_document(doc: Document) -> dict:
-    """Remove a document everywhere: its chunks, files, legacy ingestion jobs and library jobs."""
+    """Remove a document everywhere: graph triples, chunks, files, legacy ingestion jobs and library jobs."""
     for job in doc.jobs.filter(status__in=ACTIVE):
         cancel(job)
+    committed = list(doc.triples.filter(status="approved"))
+    if committed:  # take its approved triples back out of the Context Graph first
+        from context_graph import triples
+        triples.delete(committed)
     chunks = VectorStore().delete_document(doc.doc_key)
     shutil.rmtree(doc_dir(doc), ignore_errors=True)
     legacy, _ = IngestionJob.objects.filter(asset_id=doc.doc_key).delete()

@@ -162,11 +162,16 @@ def alarm_procedures(request, alarm_id):
 @api_view(["GET"])
 @graph_errors
 def graph_data(request):
-    """GET /api/graph/data/?root=<id>&depth=2&types=Component,Signal&limit=300 — nodes + links for the visualizer."""
+    """GET /api/graph/data/?root=<id>&depth=2&types=Component,Signal&limit=300&layer=curated|lab|both&doc=<doc_key>
+
+    Nodes + links for the visualizer. The lab layer holds free-form triples (filter by document with `doc`).
+    """
     types = [t for t in request.query_params.get("types", "").split(",") if t]
     return Response(services.graph_data(
         request.query_params.get("root") or None,
         depth=max(1, _int(request, "depth", 2, maximum=4)),
         labels=types or None,
         limit=max(1, _int(request, "limit", 300)),
+        layer=request.query_params.get("layer") or "curated",
+        doc_key=request.query_params.get("doc") or None,
     ))
