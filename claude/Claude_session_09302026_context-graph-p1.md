@@ -8,7 +8,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | Versioned global schema registry, canonical IDs, schema-validated Cypher repository, services, read API, EXTR01 seed, management commands, test Neo4j | `context_graph/{schema,ids,models,registry,repository,services,views,urls}.py`, `context_graph/migrations/0001_initial.py`, `context_graph/schemas/industrial_v1.yaml`, `context_graph/seeds/extr01.yaml`, `context_graph/management/commands/{graph_init,graph_seed,graph_reset}.py`, `context_graph/tests/{tests_core,tests_integration}.py`, `deploy/neo4j/docker-compose.yml`, `requirements.txt`, `README.md` | _not committed yet_ |
+| 1 | Versioned global schema registry, canonical IDs, schema-validated Cypher repository, services, read API, EXTR01 seed, management commands, test Neo4j | `context_graph/{schema,ids,models,registry,repository,services,views,urls}.py`, `context_graph/migrations/0001_initial.py`, `context_graph/schemas/industrial_v1.yaml`, `context_graph/seeds/extr01.yaml`, `context_graph/management/commands/{graph_init,graph_seed,graph_reset}.py`, `context_graph/tests/{tests_core,tests_integration}.py`, `deploy/neo4j/docker-compose.yml`, `requirements.txt`, `README.md` | `be6f62f` — PR [#9](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/9) |
 
 ## Details
 
