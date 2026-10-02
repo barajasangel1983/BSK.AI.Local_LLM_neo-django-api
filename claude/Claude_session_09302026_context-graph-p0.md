@@ -8,7 +8,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | Dedicated Neo4j, `context_graph` app skeleton, graph health endpoint, Model Health entry, requirements.txt | `deploy/neo4j/docker-compose.yml` (new), `context_graph/` (new: `apps.py`, `driver.py`, `views.py`, `urls.py`, `tests/tests_health.py`), `neo_llm_api/settings.py`, `neo_llm_api/urls.py`, `chat/views.py`, `requirements.txt` (new), `.env.example`, `README.md` | _not committed yet_ |
+| 1 | Dedicated Neo4j, `context_graph` app skeleton, graph health endpoint, Model Health entry, requirements.txt | `deploy/neo4j/docker-compose.yml` (new), `context_graph/` (new: `apps.py`, `driver.py`, `views.py`, `urls.py`, `tests/tests_health.py`), `neo_llm_api/settings.py`, `neo_llm_api/urls.py`, `chat/views.py`, `requirements.txt` (new), `.env.example`, `README.md` | `cfa8c07` — PR [#8](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/8) |
 
 ## Details
 
