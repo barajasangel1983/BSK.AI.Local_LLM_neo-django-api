@@ -1,0 +1,14 @@
+# Direct dependencies (pinned to the versions in use). Install with:
+#   python -m venv .venv && .venv/bin/pip install -r requirements.txt
+Django==6.0.3
+djangorestframework==3.17.1
+django-cors-headers==4.9.0
+python-dotenv==1.2.2
+requests==2.33.0
+psycopg[binary]==3.3.3       # historian database (Postgres)
+chromadb==1.5.5              # document RAG (bsk_rag_v2)
+tiktoken==0.14.0             # chunker / RAG Lab token counts
+neo4j==5.28.6                    # Context Graph
+
+# Tests
+pytest==9.1.1
