@@ -1,0 +1,34 @@
+Tag,Description,Unit,Data Type,Component,Low,High
+feeder_rate_actual_kg_hr,Feeder rate,kg/h,float,Feeder,7959,10391
+steam_flow_kg_hr,Steam flow,kg/h,float,Steam & Water Conditioning,96.6,132.9
+water_injection_l_hr,Water injection,L/h,float,Steam & Water Conditioning,76.2,107.6
+motor_power_kw,Motor power,kW,float,Main Drive Motor,315.3,385.0
+screw_torque_pct,Screw torque,%,float,Main Drive Motor,88.6,101.5
+screw_speed_rpm,Screw speed,rpm,float,Screw & Barrel,405.9,444.6
+barrel_zone_1_temp_c,Barrel zone 1 temperature,°C,float,Barrel Zone 1,81.0,99.0
+barrel_zone_2_temp_c,Barrel zone 2 temperature,°C,float,Barrel Zone 2,88.2,106.8
+barrel_zone_3_temp_c,Barrel zone 3 temperature,°C,float,Barrel Zone 3,95.3,114.7
+head_temp_c,Die head temperature,°C,float,Die Head,93.9,115.9
+die_pressure_bar,Die pressure,bar,float,Die Head,84.3,99.2
+product_temp_discharge_c,Product discharge temperature,°C,float,Product Discharge & Quality,93.5,116.3
+product_moisture_pct,Product moisture,%,float,Product Discharge & Quality,8.15,10.85
+bulk_density_g_l,Bulk density,g/L,float,Product Discharge & Quality,332.4,377.5
+kibble_diameter_mm,Kibble diameter,mm,float,Product Discharge & Quality,7.15,9.85
+throughput_actual_kg_hr,Throughput (actual),kg/h,float,,7972,10385
+throughput_target_kg_hr,Throughput (target),kg/h,float,,,
+good_output_kg,Good output,kg,float,,,
+scrap_output_kg,Scrap output,kg,float,,,
+downtime_min,Downtime,min,float,,,
+availability_pct,Availability,%,float,,,
+performance_pct,Performance,%,float,,,
+quality_pct,Quality,%,float,,,
+oee_pct,OEE,%,float,,,
+machine_state,Machine state,,enum,,,
+alarm_active,Alarm active,,bool,,,
+alarm_code,Active alarm code,,string,,,
+recipe_id,Recipe,,string,,,
+batch_id,Batch,,string,,,
+shift_code,Shift,,string,,,
+melt_temp_c,Melt temperature,°C,float,Die Head,118,142
+gearbox_oil_temp_c,Gearbox oil temperature,°C,float,Gearbox,45,85
+line_speed_m_min,Line speed,m/min,float,,,

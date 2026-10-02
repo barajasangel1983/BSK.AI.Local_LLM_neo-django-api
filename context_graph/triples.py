@@ -7,6 +7,11 @@ active schema. Every written relationship carries provenance (`source: "text"`,
 DocumentSection nodes (evidence pointers — the text stays in the library) and
 linked to what they describe where the schema allows it.
 
+Structured imports (triples built from a data file's rows) use the same curated
+commit with `source: "structured"`: they carry node properties (written when the
+entity is new; only missing ones are added to an existing entity, and removed
+again if the triple is deleted) and have no document evidence nodes.
+
 Lab layer (free-form triples): `(:Lab {id, name, type})-[:LAB_RELATION
 {predicate, triple_id}]->(:Lab)`, kept apart from the curated graph; a lab
 triple can be promoted to the curated layer once mapped onto the schema.
@@ -28,6 +33,7 @@ from .schema import SchemaError
 
 EDITABLE = ("subject_name", "subject_type", "subject_id", "predicate", "object_name", "object_type", "object_id")
 EVIDENCE_RELS = ("DESCRIBES", "HAS_SECTION", "DOCUMENTED_BY")
+STAGED_SOURCES = ["text", "structured"]   # `source` of nodes/edges created by approved triples
 
 
 class TripleError(ValueError):
@@ -55,7 +61,10 @@ def edit(triple: CandidateTriple, changes: dict) -> CandidateTriple:
 def _reresolve(t: CandidateTriple, changes: dict, index=None) -> None:
     """Re-match/propose ids for ends whose name or type changed (unless an id was given)."""
     index = index or EntityIndex.load()
-    scope = scope_key_for(t.job.params if t.job else {}, t.document)
+    if t.data_file_id:
+        scope = t.data_file.asset_id.split(":", 2)[2] if t.data_file.asset_id else t.data_file.key
+    else:
+        scope = scope_key_for(t.job.params if t.job else {}, t.document)
     for end in ("subject", "object"):
         given = changes.get(f"{end}_id")
         if given:
@@ -86,6 +95,9 @@ def _schema_issue(t: CandidateTriple) -> str:
 # --- commit ------------------------------------------------------------------------
 
 def _provenance(t: CandidateTriple) -> dict:
+    if t.data_file_id:
+        return {"source": "structured", "triple_id": t.pk, "data_file_id": str(t.data_file_id),
+                "data_file": t.data_file.filename, "row": t.row_number, "imported_at": t.created_at.isoformat()}
     return {
         "source": "text", "triple_id": t.pk, "document_id": str(t.document_id), "doc_key": t.document.doc_key,
         "page_start": t.page_start, "page_end": t.page_end, "confidence": t.confidence, "model": t.model,
@@ -109,10 +121,10 @@ def _supports(tx, schema, t: CandidateTriple, from_id: str, rel: str, to_id: str
     repository.upsert_relationship(tx, schema, from_id, rel, to_id, {})   # validates + MERGE
     tx.run(
         f"MATCH (:Entity {{id: $f}})-[r:{rel}]->(:Entity {{id: $t}}) "   # rel validated above
-        f"SET r.source = coalesce(r.source, 'text'), "
+        f"SET r.source = coalesce(r.source, $src), "
         f"    r.triple_ids = [x IN coalesce(r.triple_ids, []) WHERE x <> $tid] + $tid "
-        f"WITH r WHERE r.source = 'text' SET r += $props",
-        f=from_id, t=to_id, tid=t.pk, props=props,
+        f"WITH r WHERE r.source = $src SET r += $props",
+        f=from_id, t=to_id, tid=t.pk, props=props, src=t.source,
     )
 
 
@@ -121,12 +133,24 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
     if issue:
         raise TripleError(issue)
     doc = t.document
-    for node_id, label, name in ((t.subject_id, t.subject_type, t.subject_name), (t.object_id, t.object_type, t.object_name)):
-        if not tx.run("MATCH (n:Entity {id: $id}) RETURN n.id", id=node_id).single():
-            # New entity; existing ones keep their name and properties.
-            repository.upsert_node(tx, schema, label, node_id, {"name": name, "source": "text",
-                                                                "created_by_triple": t.pk, "doc_key": doc.doc_key})
+    origin = {"doc_key": doc.doc_key} if doc else {"data_file": t.data_file.filename}
+    applied = {}
+    for node_id, label, name, props in ((t.subject_id, t.subject_type, t.subject_name, t.subject_props),
+                                        (t.object_id, t.object_type, t.object_name, t.object_props)):
+        existing = tx.run("MATCH (n:Entity {id: $id}) RETURN keys(n) AS keys", id=node_id).single()
+        if not existing:
+            repository.upsert_node(tx, schema, label, node_id, {**(props or {}), "name": name, "source": t.source,
+                                                                "created_by_triple": t.pk, **origin})
+        else:
+            # Existing entities keep their name and properties; only missing properties are added.
+            missing = {k: v for k, v in (props or {}).items() if k not in existing["keys"]}
+            if missing:
+                tx.run("MATCH (n:Entity {id: $id}) SET n += $props", id=node_id, props=missing)
+                applied[node_id] = sorted(missing)
+    t.applied_props = applied
     _supports(tx, schema, t, t.subject_id, t.predicate, t.object_id, _provenance(t))
+    if doc is None:
+        return   # structured import: no document evidence nodes
 
     # Evidence pointers: document + section, linked to what they describe (where the schema allows).
     doc_id = make_id("Document", doc.doc_key)
@@ -188,7 +212,7 @@ def approve(triples: list[CandidateTriple]) -> dict:
                 errors[t.pk] = str(exc)[:255]
                 continue
             t.status, t.committed_at = CandidateTriple.Status.APPROVED, timezone.now()
-            t.save(update_fields=["status", "layer", "committed_at", "updated_at"])
+            t.save(update_fields=["status", "layer", "committed_at", "applied_props", "updated_at"])
             approved.append(t.pk)
     return {"approved": approved, "errors": errors}
 
@@ -209,15 +233,20 @@ def _uncommit(tx, t: CandidateTriple) -> None:
     tx.run(
         "MATCH (:Entity)-[r]->(:Entity) WHERE $tid IN coalesce(r.triple_ids, []) "
         "SET r.triple_ids = [x IN r.triple_ids WHERE x <> $tid] "
-        "WITH r WHERE size(r.triple_ids) = 0 AND r.source = 'text' DELETE r",
-        tid=t.pk,
+        "WITH r WHERE size(r.triple_ids) = 0 AND r.source IN $sources DELETE r",
+        tid=t.pk, sources=STAGED_SOURCES,
     )
+    # Properties this triple added to entities that already existed.
+    for node_id, names in (t.applied_props or {}).items():
+        tx.run("MATCH (n:Entity {id: $id}) SET n += $unset", id=node_id, unset={name: None for name in names})
     # Text-created entities with no remaining (non-evidence) relationships.
     tx.run(
-        "MATCH (n:Entity) WHERE n.id IN $ids AND n.source = 'text' "
+        "MATCH (n:Entity) WHERE n.id IN $ids AND n.source IN $sources "
         "AND NOT EXISTS { MATCH (n)-[r]-() WHERE NOT type(r) IN $evidence } DETACH DELETE n",
-        ids=[t.subject_id, t.object_id], evidence=list(EVIDENCE_RELS),
+        ids=[t.subject_id, t.object_id], evidence=list(EVIDENCE_RELS), sources=STAGED_SOURCES,
     )
+    if t.document is None:
+        return
     # Sections that no longer describe anything, then documents with no sections left.
     tx.run(
         "MATCH (s:DocumentSection {doc_key: $doc, source: 'library'}) "

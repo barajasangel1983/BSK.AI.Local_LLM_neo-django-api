@@ -1,0 +1,14 @@
+Item,Description,Type,Parent,Manufacturer,Qty
+feeder,Feeder,feeder,,,1
+conditioning,Steam & Water Conditioning,conditioner,,,1
+main-drive,Main Drive Motor,motor,,,1
+screw-barrel,Screw & Barrel,screw_barrel,,,1
+barrel-zone-1,Barrel Zone 1,heating_zone,screw-barrel,,1
+barrel-zone-2,Barrel Zone 2,heating_zone,screw-barrel,,1
+barrel-zone-3,Barrel Zone 3,heating_zone,screw-barrel,,1
+die-head,Die Head,die,,,1
+product-quality,Product Discharge & Quality,measurement_point,,,1
+gearbox,Gearbox,gearbox,main-drive,SEW,1
+die-plate,Die Plate,die_plate,die-head,,1
+screen-pack,Screen Pack,screen,die-head,,2
+knife-assembly,Cutter Knife Assembly,cutter,,,1

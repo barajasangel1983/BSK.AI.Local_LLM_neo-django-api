@@ -1,0 +1,22 @@
+Alarm Code,Message,Severity,Component
+OUT_OF_SPEC_DENSITY,Bulk density outside specification,warning,Product Discharge & Quality
+OUT_OF_SPEC_DIAMETER,Kibble diameter outside specification,warning,Die Head
+LO_MOISTURE,Product moisture below specification,warning,Steam & Water Conditioning
+HI_MOISTURE,Product moisture above specification,warning,Steam & Water Conditioning
+SCREEN_BLOCK,Die screen blocked,high,Die Head
+MOTOR_OVERLOAD,Main drive motor overload,high,Main Drive Motor
+HIGH_SCRAP,Scrap rate above target,medium,
+UNPLANNED_STOP,Unplanned machine stop,high,
+DIE_PLUG,Die plugged,high,Die Head
+HEAD_TEMP_DRIFT,Die head temperature drifting from setpoint,medium,Die Head
+MOISTURE_SENSOR_FAIL,Moisture sensor fault,medium,Product Discharge & Quality
+SPEED_UNDER_TARGET,Screw speed below target,low,Screw & Barrel
+FEEDER_STARVE,Feeder starved (low material),medium,Feeder
+HI_DIE_PRESSURE,Die pressure high,high,Die Head
+FEEDER_OVERLOAD,Feeder overload,medium,Feeder
+TEMP_SENSOR_FAIL,Temperature sensor fault,medium,Screw & Barrel
+LOW_OEE,OEE below target,low,
+LO_TEMP_ZONE_1,Barrel zone 1 temperature low,medium,Barrel Zone 1
+HI_TEMP_ZONE_3,Barrel zone 3 temperature high,medium,Barrel Zone 3
+HI_TORQUE,Screw torque high,high,Main Drive Motor
+GEARBOX_OIL_TEMP_HIGH,Gearbox oil temperature high,warning,Gearbox

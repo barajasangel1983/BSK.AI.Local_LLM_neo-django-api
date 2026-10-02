@@ -11,6 +11,7 @@ tiktoken==0.14.0             # chunker / RAG Lab token counts
 pysbd==0.3.4                 # sentence chunking
 PyYAML==6.0.3                # Context Graph schema / seed files
 neo4j==5.28.6                    # Context Graph
+openpyxl==3.1.5              # GraphLab Import: Excel files
 
 # Tests
 pytest==9.1.1

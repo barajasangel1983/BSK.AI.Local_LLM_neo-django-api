@@ -257,14 +257,24 @@ class EntityIndex:
     def has(self, node_id: str) -> bool:
         return any(node_id == i for rows in self.by_label.values() for i, _, _ in rows)
 
+    def match_exact(self, label: str, name: str) -> str | None:
+        """Exact (normalized) name, or the id's last key part (tags like EXTR01, DIE_PLUG)."""
+        target = normalize(name)
+        if not target:
+            return None
+        for node_id, _, norm in self.by_label.get(label, []):
+            if norm == target or normalize(node_id.rsplit("/", 1)[-1].split(":")[-1]) == target:
+                return node_id
+        return None
+
     def match(self, label: str, name: str) -> str | None:
         target = normalize(name)
         if not target:
             return None
+        exact = self.match_exact(label, name)
+        if exact:
+            return exact
         candidates = self.by_label.get(label, [])
-        for node_id, _, norm in candidates:  # exact name, or the id's last key part (tags like EXTR01, DIE_PLUG)
-            if norm == target or normalize(node_id.rsplit("/", 1)[-1].split(":")[-1]) == target:
-                return node_id
         tokens = set(target.split())
         best, best_score = None, 0.0
         for node_id, _, norm in candidates:

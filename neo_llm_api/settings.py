@@ -289,3 +289,8 @@ TEST_RUNNER = "neo_llm_api.test_runner.IsolatedTestRunner"
 # === GraphLab triple extraction (DGX) ===
 GRAPH_EXTRACT_TIMEOUT = float(os.getenv("GRAPH_EXTRACT_TIMEOUT", "120"))       # seconds per window call
 GRAPH_EXTRACT_MAX_TOKENS = int(os.getenv("GRAPH_EXTRACT_MAX_TOKENS", "2000"))  # output budget per window
+
+# Structured data import (GraphLab Import): CSV / Excel files mapped to triples by columns.
+GRAPH_DATA_BASE = os.getenv("GRAPH_DATA_BASE", str(BASE_DIR / "data" / "graph_data"))
+GRAPH_IMPORT_MAX_ROWS = int(os.getenv("GRAPH_IMPORT_MAX_ROWS", "5000"))
+GRAPH_IMPORT_MAX_UPLOAD_BYTES = int(os.getenv("GRAPH_IMPORT_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
