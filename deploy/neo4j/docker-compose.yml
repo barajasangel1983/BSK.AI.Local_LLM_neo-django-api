@@ -28,6 +28,26 @@ services:
       timeout: 5s
       retries: 12
 
+  # Throwaway instance for integration tests (no volumes; data is lost on stop):
+  #   docker compose -f deploy/neo4j/docker-compose.yml --env-file .env --profile test up -d neo4j-test
+  #   GRAPH_TEST_URI=bolt://127.0.0.1:7689 .venv/bin/python manage.py test context_graph
+  neo4j-test:
+    image: neo4j:5.26-community
+    container_name: bsklab-neo4j-test
+    profiles: ["test"]
+    environment:
+      NEO4J_AUTH: "neo4j/${NEO4J_TEST_PASSWORD:-bsklab-test-only}"
+      NEO4J_server_memory_heap_max__size: 512m
+    ports:
+      - "127.0.0.1:7689:7687"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
 volumes:
   neo4j_data:
   neo4j_logs:
