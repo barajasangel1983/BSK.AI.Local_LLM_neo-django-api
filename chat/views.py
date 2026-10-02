@@ -21,6 +21,7 @@ import requests
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from django.conf import settings
 from django.db.models import Max, Count
 from django.http import JsonResponse
 from django.contrib.auth.models import User
@@ -45,15 +46,10 @@ def is_factory_question(text: str) -> bool:
     t = text.lower()
     return any(k in t for k in FACTORY_KEYWORDS)
 
-# Legacy retrieval over the old `bsk_rag` collection – imported from GraphRAG repo.
-# Only used for plc_historian shift summaries (factory questions); documents
-# are retrieved from bsk_rag_v2 via chat.retrieval.search_v2.
-# NOTE: this assumes the BSK.AI.Local_LLM_neo4j-graphrag repo is on PYTHONPATH
-# when running Django (we can adjust PYTHONPATH in manage.py or venv later).
-try:  # pragma: no cover - defensive import
-    from rag.retrieval import query_chunks
-except Exception:  # pragma: no cover
-    query_chunks = None  # type: ignore
+# Legacy retrieval over the old `bsk_rag` collection, only used for
+# plc_historian shift summaries (factory questions); documents are retrieved
+# from bsk_rag_v2 via chat.retrieval.search_v2.
+from .legacy_retrieval import query_chunks
 
 
 # Base directory for RAG uploads (raw docs). For now, point directly at the
@@ -428,7 +424,11 @@ def rag_upload(request):
     AUTO_INGEST = getenv("RAG_AUTO_INGEST", "false").lower() == "true"
 
     chunks_added = 0
-    if AUTO_INGEST:
+    if AUTO_INGEST and settings.CHROMA_HOST:
+        # The GraphRAG repo's ingest_files opens the Chroma folder directly, which
+        # isn't safe while the Chroma server owns it. Use the document library.
+        logger.warning("RAG_AUTO_INGEST ignored in Chroma server mode; use /api/documents/ instead")
+    elif AUTO_INGEST:
         try:
             from rag.ingestion import ingest_files
 
@@ -909,9 +909,9 @@ def _check_single_endpoint(ep: dict) -> dict:
     if ep_id == "rag-chroma":
         start = time.time()
         try:
-            from rag.retrieval import get_collection
-            col = get_collection()
-            col.count()
+            from ingestion.chroma_client import get_client
+
+            get_client().heartbeat()
             latency = round((time.time() - start) * 1000)
             status_val = "online"
         except Exception:
@@ -1025,16 +1025,10 @@ def health_restart(request, endpoint_id: str):
 
     if endpoint_id == "rag-chroma":
         try:
-            import chromadb
-            from rag.config import CHROMA_DIR
-            from chromadb.config import Settings as ChromaSettings
-            client = chromadb.PersistentClient(
-                path=str(CHROMA_DIR),
-                settings=ChromaSettings(anonymized_telemetry=False),
-            )
-            col = client.get_or_create_collection(name="bsk_rag")
-            count = col.count()
-            restart_message = f"Chroma reconnected — {count} chunks indexed"
+            from ingestion.chroma_client import get_client, legacy_collection
+
+            v2 = get_client().get_collection(name=settings.RAG_COLLECTION_V2).count()
+            restart_message = f"Chroma reconnected — {v2} document chunks, {legacy_collection().count()} historian summaries"
         except Exception as exc:
             restart_message = f"Chroma reconnect failed: {exc}"
 

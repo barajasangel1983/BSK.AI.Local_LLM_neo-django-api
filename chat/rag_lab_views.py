@@ -22,8 +22,8 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from ingestion import chunker
-from ingestion.models import IngestionJob
+from ingestion import chunker, chunking
+from ingestion.models import Document, IngestionJob
 
 from .retrieval import distance_space, get_v2_collection
 
@@ -139,16 +139,23 @@ def rag_delete_doc(request, asset_id: str):
     """
 
     chunks_deleted = 0
-    collection = get_v2_collection()
-    if collection is not None:
-        ids = collection.get(where={"asset_id": asset_id}, include=[]).get("ids") or []
-        if ids:
-            collection.delete(ids=ids)
-        chunks_deleted = len(ids)
+    library_doc = Document.objects.filter(doc_key=asset_id).first()
+    if library_doc is not None:
+        # Library document: remove it from RAG only (it stays in the library for GraphLab).
+        from ingestion import library
+
+        chunks_deleted = library.remove_embeddings(library_doc)
+    else:
+        collection = get_v2_collection()
+        if collection is not None:
+            ids = collection.get(where={"asset_id": asset_id}, include=[]).get("ids") or []
+            if ids:
+                collection.delete(ids=ids)
+            chunks_deleted = len(ids)
 
     jobs_deleted, _ = IngestionJob.objects.filter(asset_id=asset_id).delete()
 
-    if not chunks_deleted and not jobs_deleted:
+    if not chunks_deleted and not jobs_deleted and library_doc is None:
         return Response({"error": f"Unknown asset_id: {asset_id}"}, status=status.HTTP_404_NOT_FOUND)
 
     logger.info("rag_delete_doc asset_id=%s chunks_deleted=%d jobs_deleted=%d",
@@ -219,6 +226,10 @@ def rag_config(request):
                 "name": settings.RAG_COLLECTION_V2,
                 "chunk_count": collection.count() if collection is not None else 0,
                 "distance_space": distance_space(collection) if collection is not None else None,
+            },
+            "chunking": {
+                "default_strategy": chunking.DEFAULT_STRATEGY,
+                "strategies": chunking.STRATEGIES,
             },
             "chunker": {
                 "target_tokens": chunker.TARGET_TOKENS,

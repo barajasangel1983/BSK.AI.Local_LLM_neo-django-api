@@ -16,11 +16,10 @@ import logging
 import time
 from dataclasses import asdict, dataclass, field
 
-import chromadb
 import requests
-from chromadb.config import Settings as ChromaSettings
 from django.conf import settings
 
+from ingestion.chroma_client import get_client
 from ingestion.embedder import Embedder
 
 logger = logging.getLogger("chat")
@@ -61,12 +60,8 @@ def get_v2_collection():
 
     Read-only: never creates the collection (the ingestion pipeline owns it).
     """
-    client = chromadb.PersistentClient(
-        path=str(settings.CHROMA_DIR),
-        settings=ChromaSettings(anonymized_telemetry=False),
-    )
     try:
-        return client.get_collection(name=settings.RAG_COLLECTION_V2)
+        return get_client().get_collection(name=settings.RAG_COLLECTION_V2)
     except Exception:  # chromadb raises NotFoundError (type varies by version)
         return None
 

@@ -196,15 +196,12 @@ def ingestion_health(request):
     except Exception as e:
         checks["embeddings"] = {"status": "error", "detail": str(e)}
 
-    # Chroma (local)
+    # Chroma
     try:
-        import chromadb
-        from chromadb.config import Settings as ChromaSettings
+        from .chroma_client import describe, get_client
 
-        chroma_path = str(getattr(settings, "CHROMA_DIR", "/home/barajas_angel/repos/BSK.AI.Local_LLM_neo4j-graphrag/data/chroma_index"))
-        client = chromadb.PersistentClient(path=chroma_path, settings=ChromaSettings(anonymized_telemetry=False))
-        coll = client.get_or_create_collection(name=settings.RAG_COLLECTION_V2)
-        checks["chroma"] = {"status": "ok", "detail": f"{settings.RAG_COLLECTION_V2}: {coll.count()} chunks"}
+        coll = get_client().get_or_create_collection(name=settings.RAG_COLLECTION_V2)
+        checks["chroma"] = {"status": "ok", "detail": f"{describe()} {settings.RAG_COLLECTION_V2}: {coll.count()} chunks"}
     except Exception as e:
         checks["chroma"] = {"status": "error", "detail": str(e)}
 

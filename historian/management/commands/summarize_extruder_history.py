@@ -8,8 +8,6 @@ from django.utils import timezone
 
 from historian.summarizer import ShiftStats, compute_shift_stats, format_shift_summary
 
-# RAG ingestion from GraphRAG repo
-from rag.ingestion import ingest_chunks  # type: ignore
 
 
 UTC = timezone.UTC
@@ -131,14 +129,11 @@ class Command(BaseCommand):
             f"Ingesting {len(documents)} shift summaries into Chroma collection 'bsk_rag'..."
         )
 
-        # We re-use ingest_chunks' logic by temporarily patching its Chunk handling via a simple add call.
-        # For v0 we call the Chroma client directly from here to avoid changing ingest_chunks.
-        from chromadb import PersistentClient
-        from chromadb.config import Settings
-        from rag.config import CHROMA_DIR
+        # Through the shared client (Chroma server); embeddings use Chroma's
+        # default model, computed client-side, as before.
+        from ingestion.chroma_client import legacy_collection
 
-        client = PersistentClient(path=str(CHROMA_DIR), settings=Settings(anonymized_telemetry=False))
-        collection = client.get_or_create_collection(name="bsk_rag")
+        collection = legacy_collection()
 
         ids = [
             f"plc_historian::{s.extruder_id}::{s.date.isoformat()}::{s.shift_code}::{s.recipe_id}"
