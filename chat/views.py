@@ -889,6 +889,13 @@ TRACKED_ENDPOINTS = [
         "model": "historian",
         "can_restart": False,
     },
+    {
+        "id": "context-graph",
+        "name": "Context Graph (Neo4j)",
+        "url": "",
+        "model": "graph",
+        "can_restart": False,
+    },
 ]
 
 
@@ -910,6 +917,13 @@ def _check_single_endpoint(ep: dict) -> dict:
         except Exception:
             latency = 0
             status_val = "offline"
+    elif ep_id == "context-graph":
+        from context_graph.driver import health as graph_health
+
+        result = graph_health()
+        # disabled / not_configured / offline all show as offline on the page.
+        status_val = "online" if result["status"] == "online" else "offline"
+        latency = result.get("latency_ms", 0)
     elif ep_id == "historian-db":
         start = time.time()
         try:
@@ -953,7 +967,7 @@ def _check_single_endpoint(ep: dict) -> dict:
     return {
         "id": ep_id,
         "name": ep["name"],
-        "url": ep.get("url", ""),
+        "url": settings.NEO4J_URI if ep_id == "context-graph" else ep.get("url", ""),
         "model": ep["model"],
         "status": status_val,
         "latency": latency,

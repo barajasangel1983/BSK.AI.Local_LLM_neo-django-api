@@ -59,6 +59,7 @@ INSTALLED_APPS = [
     # Local apps
     "chat",
     "historian",
+    "context_graph",
     "ingestion",
 ]
 
@@ -255,3 +256,14 @@ RAG_MIN_RERANK_SCORE = float(os.getenv("RAG_MIN_RERANK_SCORE", "0.1"))
 # Timeout (seconds) for the one-off DGX call that titles a new conversation;
 # on timeout the title falls back to the start of the first message.
 CHAT_TITLE_TIMEOUT = float(os.getenv("CHAT_TITLE_TIMEOUT", "6"))
+
+
+# === Context Graph (Neo4j) ===
+# Optional: with GRAPH_ENABLED=false the app runs without Neo4j.
+# Start the dedicated instance: docker compose -f deploy/neo4j/docker-compose.yml --env-file .env up -d
+GRAPH_ENABLED = os.getenv("GRAPH_ENABLED", "false").lower() == "true"
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
+NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
+NEO4J_CONNECTION_TIMEOUT = float(os.getenv("NEO4J_CONNECTION_TIMEOUT", "5"))
