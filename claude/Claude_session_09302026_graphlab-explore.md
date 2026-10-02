@@ -8,7 +8,7 @@
 
 | # | Change | Files | Commit |
 |---|--------|-------|--------|
-| 1 | Schema editor API: validate + diff, in-use conflict checks, save version, activate version, export YAML/JSON | `context_graph/schema.py` (+`diff`, `is_empty_diff`), `context_graph/registry.py` (+`activate`, `versions`, `definition_for`), `context_graph/services.py` (+`parse_schema_text`, `export_schema`, `check_schema`, `save_schema`, `activate_schema`, `SchemaConflict`), `context_graph/views.py`, `context_graph/urls.py`, `context_graph/tests/tests_core.py`, `context_graph/tests/tests_integration.py`, `README.md` | _not committed yet_ |
+| 1 | Schema editor API: validate + diff, in-use conflict checks, save version, activate version, export YAML/JSON | `context_graph/schema.py` (+`diff`, `is_empty_diff`), `context_graph/registry.py` (+`activate`, `versions`, `definition_for`), `context_graph/services.py` (+`parse_schema_text`, `export_schema`, `check_schema`, `save_schema`, `activate_schema`, `SchemaConflict`), `context_graph/views.py`, `context_graph/urls.py`, `context_graph/tests/tests_core.py`, `context_graph/tests/tests_integration.py`, `README.md` | `f58ad33` — PR [#11](https://github.com/barajasangel1983/BSK.AI.Local_LLM_neo-django-api/pull/11) |
 
 ## Details
 
