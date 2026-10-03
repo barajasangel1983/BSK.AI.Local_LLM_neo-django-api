@@ -167,6 +167,16 @@ class AssetChatViewTests(TestCase):
         self.chat("Something else", use_rag=True, asset_id=ASSET)
         self.assertEqual([c.kwargs.get("doc_keys") for c in search.call_args_list[-2:]], [["MANUAL"], None])
 
+    def test_no_shift_summaries_in_asset_chats(self, post, search, title):
+        with patch("chat.views.query_chunks") as shifts:
+            shifts.return_value = []
+            self.chat("Any extruder alarm today?", use_rag=True, asset_id=ASSET)        # factory keywords
+            shifts.assert_not_called()
+            self.assertEqual(search.call_args.kwargs["top_n"], 5)                     # full document share
+            self.chat("Any extruder alarm today?", use_rag=True)                       # no asset: as before
+            shifts.assert_called_once()
+            self.assertEqual(search.call_args.kwargs["top_n"], 3)
+
     def test_invalid_scope(self, post, search, title):
         self.assertEqual(self.chat("hi", asset_id="EXTR01").status_code, 400)
         with patch("context_graph.services.node_detail", return_value={**CONTEXT["asset"], "label": "Component"}):

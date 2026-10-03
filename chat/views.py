@@ -595,7 +595,9 @@ def _chat(request):
         entries: list[dict] = []
         v2_top_n = settings.RAG_CHAT_TOP_N
 
-        if is_factory_question(user_message) and query_chunks is not None:
+        # Asset-scoped chats already carry the asset's historian values in its fact sheet;
+        # the legacy shift summaries would only use up document budget there.
+        if is_factory_question(user_message) and query_chunks is not None and not asset_ctx:
             # Historian-first: plc_historian shift summaries live in the legacy
             # bsk_rag collection; documents come second from v2.
             try:
@@ -937,6 +939,22 @@ TRACKED_ENDPOINTS = [
         "name": "DGX vLLM (Qwen3.8-27B-FP8)",
         "url": "http://100.74.225.3:8004/v1/models",
         "model": "dgx-qwen38-27b-fp8",
+        "can_restart": False,
+    },
+    # RAG v2: every document chunk and every RAG question is embedded, and retrieved chunks
+    # are reranked, on the DGX.
+    {
+        "id": "dgx-embed",
+        "name": f"DGX Embeddings ({settings.DGX_EMBED_MODEL})",
+        "url": settings.DGX_EMBED_URL.split("/v1/")[0].rstrip("/") + "/health",
+        "model": "embeddings",
+        "can_restart": False,
+    },
+    {
+        "id": "dgx-rerank",
+        "name": f"DGX Reranker ({settings.DGX_RERANK_MODEL})",
+        "url": settings.DGX_RERANK_URL.rsplit("/", 1)[0] + "/health",
+        "model": "reranker",
         "can_restart": False,
     },
     {

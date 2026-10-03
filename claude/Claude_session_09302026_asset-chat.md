@@ -44,3 +44,17 @@
 
 - For factory-keyword questions the legacy `plc_historian` shift summaries (old `bsk_rag`) are still added as documents; in asset chats they are usually noise and use document budget.
 - No documents are linked to EXTR01 yet (no schema-mode extraction approved with the asset scope), so documents come from the whole library.
+
+## Follow-up (10/03/2026): no shift summaries in asset chats
+
+- **Branch:** `fix/asset-chat-shift-summaries` (off `main` @ `4021549`).
+- **Change:** the legacy `plc_historian` shift summaries (old `bsk_rag`, added for factory-keyword questions) are no longer added when the chat has asset facts. The asset fact sheet already carries the historian values, so asset chats get the full document share (`top_n` 5 instead of 3). Unscoped chats are unchanged. If the graph is down mid-conversation (no facts), the old behaviour applies. (`chat/views.py`, `README.md`)
+- **Tests:** `test_no_shift_summaries_in_asset_chats` (asset chat: summaries not queried, top_n 5; unscoped chat: queried, top_n 3); chat suite 65 passing.
+- **Live:** "Is anything out of range on the extruder?" scoped to EXTR01 → sources [G] Context Graph and [H] plc_1_historian only; no shift summaries.
+
+## Follow-up (10/03/2026): DGX embeddings and reranker on the Health page
+
+- **Same branch** (`fix/asset-chat-shift-summaries`; user: "all together").
+- **Gap:** Model Health didn't list the two DGX services RAG v2 depends on: embeddings (`nemotron-3-embed-1b`, :8010, used for Generate embeddings and every RAG question) and reranker (`llama-nemotron-rerank-1b-v2`, :8011, every RAG question). If the reranker failed, RAG silently fell back to plain vector order.
+- **Change:** two entries in `TRACKED_ENDPOINTS`, URLs derived from `DGX_EMBED_URL` / `DGX_RERANK_URL` (their `/health`), names include the model (`chat/views.py`). Tests in `chat/tests.py`: URLs and names, online / offline from the health check.
+- **Live:** both online (~74 ms); full backend suite passing.
