@@ -161,6 +161,13 @@ def alarm_procedures(request, alarm_id):
 
 @api_view(["GET"])
 @graph_errors
+def lab_summary(request):
+    """GET /api/graph/lab/ — size of the lab layer (free-form triples) and its source documents."""
+    return Response(services.lab_summary())
+
+
+@api_view(["GET"])
+@graph_errors
 def graph_data(request):
     """GET /api/graph/data/?root=<id>&depth=2&types=Component,Signal&limit=300&layer=curated|lab|both&doc=<doc_key>
 

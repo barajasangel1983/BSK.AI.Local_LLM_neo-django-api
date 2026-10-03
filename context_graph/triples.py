@@ -193,9 +193,9 @@ def _commit_lab(tx, t: CandidateTriple) -> None:
 
 
 def approve(triples: list[CandidateTriple]) -> dict:
-    """Commit pending/rejected triples. Returns {approved: [ids], errors: {id: message}}."""
+    """Commit pending/rejected triples. Returns {approved: [ids], errors: {id: message}, layers: {curated, lab}}."""
     schema = registry.active_schema()
-    approved, errors = [], {}
+    approved, errors, layers = [], {}, {"curated": 0, "lab": 0}
     with session() as s:
         for t in triples:
             if t.status == CandidateTriple.Status.APPROVED:
@@ -214,7 +214,8 @@ def approve(triples: list[CandidateTriple]) -> dict:
             t.status, t.committed_at = CandidateTriple.Status.APPROVED, timezone.now()
             t.save(update_fields=["status", "layer", "committed_at", "applied_props", "updated_at"])
             approved.append(t.pk)
-    return {"approved": approved, "errors": errors}
+            layers[t.layer] += 1
+    return {"approved": approved, "errors": errors, "layers": layers}
 
 
 def reject(triples: list[CandidateTriple]) -> int:

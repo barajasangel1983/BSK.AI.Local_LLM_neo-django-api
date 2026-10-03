@@ -212,6 +212,14 @@ def subgraph(tx, root_id: str | None, depth: int, labels: list[str] | None, limi
 
 # --- lab layer (free-form triples, kept apart from the curated graph) ---------
 
+def lab_summary(tx) -> dict:
+    """Size of the lab layer, overall and per source document."""
+    docs = [{"doc_key": row["doc"], "nodes": row["n"]} for row in tx.run(
+        "MATCH (n:Lab) RETURN n.doc_key AS doc, count(n) AS n ORDER BY n DESC")]
+    rels = tx.run("MATCH (:Lab)-[r:LAB_RELATION]->(:Lab) RETURN count(r) AS n").single()["n"]
+    return {"nodes": sum(d["nodes"] for d in docs), "relationships": rels, "documents": docs}
+
+
 def lab_subgraph(tx, doc_key: str | None, limit: int) -> dict:
     """Lab nodes + LAB_RELATION links; a link's `type` is its free-form predicate."""
     nodes = [row["n"] for row in tx.run(

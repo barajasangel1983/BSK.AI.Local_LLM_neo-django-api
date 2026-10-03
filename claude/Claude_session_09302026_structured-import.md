@@ -32,3 +32,9 @@
 ## Open points
 
 - The same new component named differently in two files staged before either is approved (tag list "Gearbox" by name, BOM "gearbox" by key) gets two proposed ids. Approving one file first makes the other match it; importing the BOM first is the natural order.
+
+## Follow-up (10/02/2026): worker restart incident and lab-layer visibility
+
+- **Incident:** the `0003_structured_import` migration went live without restarting `neo-library-worker`; a running free-form extraction failed at its final insert (`NOT NULL constraint failed: ...applied_props`). Worker restarted, job re-queued and completed. Always restart the worker after a migration.
+- **Changes:** `GET /api/graph/lab/` (`repository.lab_summary`, `services.lab_summary`): lab layer node / relationship counts and per-document node counts with file names. `triples.approve` now also returns `layers: {curated, lab}`.
+- **Tests:** context_graph 68 passing with the test Neo4j (lab summary and layer counts asserted in `tests_extraction.py`).

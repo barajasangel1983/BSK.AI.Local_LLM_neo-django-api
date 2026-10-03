@@ -20,6 +20,7 @@ urlpatterns = [
     path("nodes/<path:node_id>/", views.node_detail, name="graph-node"),
     path("alarms/<path:alarm_id>/procedures/", views.alarm_procedures, name="graph-alarm-procedures"),
     path("data/", views.graph_data, name="graph-data"),
+    path("lab/", views.lab_summary, name="graph-lab"),
     # Triple extraction (GraphLab "Generate triples") and review
     path("presets/", extraction_views.presets, name="graph-presets"),
     path("presets/<int:preset_id>/", extraction_views.preset_detail, name="graph-preset"),
