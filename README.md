@@ -75,9 +75,36 @@ output, one retry on a DGX timeout); a failed window is noted on the document an
 - **Prompt presets:** `GET/POST presets/`, `PATCH/DELETE presets/<id>/`; a template change bumps the version.
   Placeholders: `{entity_types}`, `{relationships}`, `{document}`, `{section}`, `{text}` (without `{text}` the window is
   sent as the user message). Built-in defaults can be edited but not deleted.
-- **Visualizer:** `data/?layer=curated|lab|both&doc=<doc_key>`.
+- **Visualizer:** `data/?layer=curated|lab|both&doc=<doc_key>`. `GET lab/` returns the lab layer's size and source documents.
 - **UI config:** `GET extract/config/` — DGX model, modes, default/available window strategies, extractable schema types and pairs.
 - Settings: `GRAPH_EXTRACT_TIMEOUT` (120 s per call), `GRAPH_EXTRACT_MAX_TOKENS` (2000).
+
+### Structured data import (P6)
+
+GraphLab **Import** turns CSV / Excel files (tag lists, alarm lists, BOMs) into staged triples by column mapping — no
+LLM. Data files are kept apart from the document library (`GRAPH_DATA_BASE/<id>/`, model `DataFile`).
+
+- **Files:** `GET/POST datafiles/` (multipart `files`; `.csv/.tsv/.txt/.xlsx/.xlsm`, deduplicated by content),
+  `GET/PATCH/DELETE datafiles/<id>/` (PATCH `{sheet, header_row}` re-reads the columns; detail returns sample rows and
+  template suggestions; DELETE takes approved triples back out of the graph).
+- **Mapping:** `{"entities": [...], "relationships": [...]}` — an entity has a `type`, an `id_column` (key), optional
+  `name_column` / `name_template` (`"{Description} normal range"`), `id_suffix`, `properties` (property ← column) and
+  `skip_if_empty`; `{"scope": true}` is the selected asset. A relationship links two entities of the row
+  (`unless: <entity>` = only when that entity is absent). See `context_graph/structured.py`.
+- **Templates** (auto-filled from the header names): tag list (Signal MONITORED_BY Component/Asset, HAS_LIMIT
+  OperatingLimit), alarm list (Asset HAS_ALARM, Component ASSOCIATED_WITH), BOM (parent/child HAS_COMPONENT).
+  Saved mappings: `GET/POST mappings/`, `DELETE mappings/<id>/`.
+- **Preview / stage:** `POST datafiles/<id>/preview/` and `.../stage/` with `{mapping, asset_id}`. Preview returns
+  mapping errors, stats (rows, triples, new / existing entities, skipped rows), row problems and the first triples;
+  nothing is saved. Stage replaces the file's pending triples (reviewed ones are kept). Limit:
+  `GRAPH_IMPORT_MAX_ROWS` (5000) rows, `GRAPH_IMPORT_MAX_UPLOAD_BYTES` (20 MB).
+- **Ids and matching:** `bsk:<type>:<asset key>/<key>[/<suffix>]`; an entity is *existing* only on an exact id, key or
+  name match (no fuzzy matching for structured data).
+- **Review:** the same triples API with `?data_file=<id>` (`&new=1`: triples that add an entity; `&fields=ids`: all
+  matching ids). Approved triples use `source: "structured"` with file + row provenance and no document evidence
+  nodes. New entities get the row's properties; an existing entity only gets properties it doesn't have yet, and
+  those are removed again if the triple is deleted.
+- Samples for EXTR01 (derived from the seed, plus a few new rows): `context_graph/samples/`.
 
 ## Document library (shared by RAG Lab and GraphLab)
 

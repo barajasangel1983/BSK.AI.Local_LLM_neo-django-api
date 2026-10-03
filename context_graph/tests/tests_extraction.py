@@ -274,7 +274,7 @@ class ReviewIntegrationTests(LibraryTestCase):
     def test_approve_writes_provenance_and_evidence_then_delete_cleans_up(self):
         base_nodes = self.q("MATCH (n:Entity) RETURN count(n) AS n")[0]["n"]
         t = self.stage()
-        self.assertEqual(self.approve(t), {"approved": [t.pk], "errors": {}})
+        self.assertEqual(self.approve(t), {"approved": [t.pk], "errors": {}, "layers": {"curated": 1, "lab": 0}})
         t.refresh_from_db()
         self.assertEqual((t.status, t.layer), ("approved", "curated"))
 
@@ -322,7 +322,9 @@ class ReviewIntegrationTests(LibraryTestCase):
     def test_lab_layer_commit_promote_and_document_delete(self):
         lab = self.stage(mode="freeform", subject_name="Die pressure", subject_type="Parameter", subject_id="",
                          predicate="must stay below", object_name="99 bar", object_type="Value", object_id="")
-        self.approve(lab)
+        self.assertEqual(self.approve(lab)["layers"], {"curated": 0, "lab": 1})
+        self.assertEqual(self.client.get("/api/graph/lab/").json(), {"nodes": 2, "relationships": 1, "documents": [
+            {"doc_key": self.doc.doc_key, "nodes": 2, "filename": self.doc.filename}]})
         data = self.client.get(f"/api/graph/data/?layer=lab&doc={self.doc.doc_key}").json()
         self.assertEqual([link["type"] for link in data["links"]], ["must stay below"])
         self.assertEqual(self.q("MATCH (n:Lab:Entity) RETURN count(n) AS n")[0]["n"], 0)   # never curated

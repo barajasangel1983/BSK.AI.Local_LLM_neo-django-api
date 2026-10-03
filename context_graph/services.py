@@ -273,6 +273,19 @@ def search_nodes(label: str | None, query: str | None, limit: int = 50, offset: 
 LAYERS = ("curated", "lab", "both")
 
 
+def lab_summary() -> dict:
+    """Lab layer counts (free-form triples), with file names for the per-document filter."""
+    from ingestion.models import Document
+
+    with session() as s:
+        summary = s.execute_read(repository.lab_summary)
+    names = dict(Document.objects.filter(doc_key__in=[d["doc_key"] for d in summary["documents"]])
+                 .values_list("doc_key", "filename"))
+    for d in summary["documents"]:
+        d["filename"] = names.get(d["doc_key"], d["doc_key"])
+    return summary
+
+
 def graph_data(root_id: str | None, depth: int = 2, labels: list[str] | None = None, limit: int = 300,
                layer: str = "curated", doc_key: str | None = None) -> dict:
     """Visualizer data. layer: curated (schema graph), lab (free-form triples) or both."""

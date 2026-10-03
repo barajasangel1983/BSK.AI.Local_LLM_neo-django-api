@@ -6,7 +6,7 @@
     DELETE presets/<id>/                  delete (not the built-in defaults)
     GET    extract/config/                model, modes, default windows, window strategies, schema (read-only)
     POST   extract/                       Generate triples {document_ids, mode, chunking, presets, asset_id}
-    GET    triples/?document=&status=&mode=&q=&offset=&limit=
+    GET    triples/?document=&data_file=&status=&mode=&issues=1&new=1&q=&offset=&limit=   (&fields=ids: matching ids only)
     PATCH  triples/<id>/                  edit a pending/rejected triple
     POST   triples/approve/ | reject/ | delete/   {ids: [...]}
     POST   triples/<id>/promote/          lab triple -> curated {subject_type, predicate, object_type, subject_id?, object_id?}
@@ -27,6 +27,7 @@ from .models import CandidateTriple, PromptPreset
 from .views import _int, graph_errors
 
 MAX_TRIPLES = 500
+MAX_IDS = 10000
 
 
 def _error(message: str, code=status.HTTP_400_BAD_REQUEST) -> Response:
@@ -162,14 +163,18 @@ def extract(request):
 
 def triple_json(t: CandidateTriple) -> dict:
     return {
-        "id": t.pk, "document_id": str(t.document_id), "job_id": str(t.job_id) if t.job_id else None,
+        "id": t.pk, "document_id": str(t.document_id) if t.document_id else None,
+        "data_file_id": str(t.data_file_id) if t.data_file_id else None, "source": t.source,
+        "job_id": str(t.job_id) if t.job_id else None,
         "mode": t.mode, "status": t.status, "layer": t.layer or None,
-        "subject": {"name": t.subject_name, "type": t.subject_type, "id": t.subject_id or None, "existing": t.subject_existing},
+        "subject": {"name": t.subject_name, "type": t.subject_type, "id": t.subject_id or None, "existing": t.subject_existing,
+                    "properties": t.subject_props or {}},
         "predicate": t.predicate,
-        "object": {"name": t.object_name, "type": t.object_type, "id": t.object_id or None, "existing": t.object_existing},
+        "object": {"name": t.object_name, "type": t.object_type, "id": t.object_id or None, "existing": t.object_existing,
+                   "properties": t.object_props or {}},
         "confidence": t.confidence, "issue": t.issue, "occurrences": t.occurrences, "edited": t.edited,
         "evidence": {"chunk_index": t.chunk_index, "page_start": t.page_start, "page_end": t.page_end,
-                     "section_path": t.section_path, "text": t.evidence_text},
+                     "section_path": t.section_path, "text": t.evidence_text, "row": t.row_number},
         "provenance": {"model": t.model, "preset": t.preset_name, "preset_version": t.preset_version,
                        "schema_version": t.schema_version},
         "created_at": t.created_at.isoformat(), "updated_at": t.updated_at.isoformat(),
@@ -183,18 +188,24 @@ def triple_list(request):
     qs = CandidateTriple.objects.select_related("document")
     if qp.get("document"):
         qs = qs.filter(document_id=qp["document"])
+    if qp.get("data_file"):
+        qs = qs.filter(data_file_id=qp["data_file"])
     if qp.get("status"):
         qs = qs.filter(status__in=qp["status"].split(","))
     if qp.get("mode"):
         qs = qs.filter(mode=qp["mode"])
     if qp.get("issues") in ("1", "true"):
         qs = qs.exclude(issue="")
+    if qp.get("new") in ("1", "true"):   # triples that would add an entity to the graph
+        qs = qs.filter(Q(subject_existing=False) | Q(object_existing=False))
     if qp.get("q"):
         q = qp["q"]
         qs = qs.filter(Q(subject_name__icontains=q) | Q(object_name__icontains=q) | Q(predicate__icontains=q))
     counts = {s: 0 for s in CandidateTriple.Status.values}
     for row in qs.order_by().values("status").annotate(n=Count("id")):
         counts[row["status"]] = row["n"]
+    if qp.get("fields") == "ids":   # "select all matching" in the review table
+        return Response({"total": qs.count(), "ids": list(qs.values_list("id", flat=True)[:MAX_IDS])})
     try:
         offset = _int(request, "offset", 0, maximum=10**9)
         limit = max(1, _int(request, "limit", 200, maximum=MAX_TRIPLES))
@@ -209,7 +220,7 @@ def triple_list(request):
 @api_view(["PATCH"])
 @graph_errors
 def triple_detail(request, triple_id):
-    triple = CandidateTriple.objects.select_related("document", "job").filter(pk=triple_id).first()
+    triple = CandidateTriple.objects.select_related("document", "data_file", "job").filter(pk=triple_id).first()
     if triple is None:
         return _error("triple not found", status.HTTP_404_NOT_FOUND)
     try:
@@ -225,7 +236,7 @@ def _selected(request) -> list[CandidateTriple] | Response:
         return _error("ids must be a non-empty list")
     if len(ids) > MAX_TRIPLES:
         return _error(f"at most {MAX_TRIPLES} triples per request")
-    found = list(CandidateTriple.objects.select_related("document", "job").filter(pk__in=ids))
+    found = list(CandidateTriple.objects.select_related("document", "data_file", "job").filter(pk__in=ids))
     if len(found) != len(set(map(str, ids))):
         known = {str(t.pk) for t in found}
         return _error(f"unknown triple(s): {', '.join(str(i) for i in ids if str(i) not in known)}",
@@ -266,7 +277,7 @@ def triples_delete(request):
     selected = _selected(request)
     if isinstance(selected, Response):
         return selected
-    doc_ids = [t.document_id for t in selected]
+    doc_ids = [t.document_id for t in selected if t.document_id]
     deleted = triples.delete(selected)
     _settle_graph_status(doc_ids)
     return Response({"deleted": deleted})
@@ -275,7 +286,7 @@ def triples_delete(request):
 @api_view(["POST"])
 @graph_errors
 def triple_promote(request, triple_id):
-    triple = CandidateTriple.objects.select_related("document", "job").filter(pk=triple_id).first()
+    triple = CandidateTriple.objects.select_related("document", "data_file", "job").filter(pk=triple_id).first()
     if triple is None:
         return _error("triple not found", status.HTTP_404_NOT_FOUND)
     missing = [k for k in ("subject_type", "predicate", "object_type") if not request.data.get(k)]
