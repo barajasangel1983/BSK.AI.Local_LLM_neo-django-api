@@ -91,6 +91,28 @@ Every place a fact was found is an `Evidence` row: the source kind (text, struct
 - **API:** `GET /api/graph/evidence/<id>/`; the triples list includes `sources`.
 - **After migrating:** run `manage.py graph_backfill_evidence` once (idempotent) to link already-approved triples.
 
+### Identity resolution and vocabulary (P8b)
+
+`context_graph/identity.py` resolves a name to an entity in one order for every source (extraction, imports, edits, promote, later the VLM):
+
+1. explicit id
+2. same asset + engineering **tag** (`M101`, `VFD-101`, `DIE_PLUG`, historian columns)
+3. tag + type, any scope
+4. exact name or **alias**
+5. fuzzy similarity: only a **possible** match with up to 3 candidates. A different number ("Zone 1" vs "Zone 2") never scores high.
+6. otherwise **new**
+
+Each triple end records `match` (`id`, `tag`, `alias`, `name`, `possible` or `new`) and its `candidates`. Approving is blocked until a possible match is resolved: `PATCH triples/<id>/` with `{subject_id}` (pick) or `{subject_match: "new"}`.
+
+**Schema vocabulary** (optional; v1 still valid):
+- `subtypes` per entity type. A known subtype goes to the node's `subtype` property.
+- `aliases` per relationship. A synonym becomes the schema relationship only when the pair is allowed.
+- Both are listed in extraction prompts and in `extract/config/`. Vocabulary changes count as a schema change.
+
+**Draft schema v2** (DRIVES / PROTECTS / CONTROLS, subtypes, aliases): `context_graph/schemas/industrial_v2.yaml`. It validates against the live graph with no conflicts.
+
+Units in imports are normalized (`context_graph/units.py`).
+
 ### Structured data import (P6)
 
 GraphLab **Import** turns CSV / Excel files (tag lists, alarm lists, BOMs) into staged triples by column mapping — no

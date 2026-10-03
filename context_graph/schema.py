@@ -32,6 +32,7 @@ class RelationshipType:
     name: str
     description: str
     pairs: frozenset[tuple[str, str]]
+    aliases: tuple[str, ...] = ()       # phrases that mean this relationship ("drives", "runs", …) — P8b
 
 
 @dataclass
@@ -40,6 +41,7 @@ class Schema:
     description: str
     entity_types: dict[str, str]                       # label -> description
     relationship_types: dict[str, RelationshipType]
+    subtypes: dict[str, tuple[str, ...]] = field(default_factory=dict)   # label -> allowed subtypes (P8b)
     version: int | None = None
     definition: dict = field(default_factory=dict, repr=False)
 
@@ -59,14 +61,20 @@ class Schema:
                 name=name,
                 description=(spec or {}).get("description", ""),
                 pairs=frozenset(tuple(p) for p in spec["pairs"]),
+                aliases=tuple(str(a) for a in (spec or {}).get("aliases") or ()),
             )
             for name, spec in definition["relationship_types"].items()
+        }
+        subtypes = {
+            label: tuple(str(t) for t in (spec or {}).get("subtypes") or ())
+            for label, spec in definition["entity_types"].items() if (spec or {}).get("subtypes")
         }
         return cls(
             name=definition.get("name", "Schema"),
             description=definition.get("description", ""),
             entity_types=entity_types,
             relationship_types=relationship_types,
+            subtypes=subtypes,
             version=version,
             definition=definition,
         )
@@ -90,6 +98,22 @@ class Schema:
             raise SchemaError(f"{from_label} -{rel}-> {to_label} is not allowed by the schema")
         return rel
 
+    def subtype_for(self, label: str, value: str) -> str | None:
+        """The schema's spelling of a subtype of `label` (case / spacing insensitive), or None."""
+        key = _vocab_key(value)
+        return next((t for t in self.subtypes.get(label, ()) if _vocab_key(t) == key), None) if key else None
+
+    def relationship_for(self, phrase: str, from_label: str | None = None, to_label: str | None = None) -> str | None:
+        """Relationship type for a name or alias ("drives", "is monitored by" …); with labels, only an allowed pair."""
+        key = _vocab_key(phrase)
+        if not key:
+            return None
+        for rt in self.relationship_types.values():
+            if key == _vocab_key(rt.name) or key in {_vocab_key(a) for a in rt.aliases}:
+                if from_label is None or (from_label, to_label) in rt.pairs:
+                    return rt.name
+        return None
+
     def label_for_slug(self, slug: str) -> str | None:
         """Entity type whose ID slug is `slug` (bsk:<slug>:...)."""
         return next((label for label in self.entity_types if type_slug(label) == slug), None)
@@ -105,6 +129,10 @@ class Schema:
             for label in self.entity_types
         ]
         return statements
+
+
+def _vocab_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
 
 
 def validate_definition(definition: dict) -> list[str]:
@@ -131,11 +159,25 @@ def validate_definition(definition: dict) -> list[str]:
         if slug in slugs:
             errors.append(f"entity types {slugs[slug]!r} and {label!r} produce the same ID prefix")
         slugs[slug] = label
+        sub = (entity_types[label] or {}).get("subtypes") if isinstance(entity_types[label], dict) else None
+        if sub is not None and not (isinstance(sub, list) and all(isinstance(t, str) and t.strip() for t in sub)):
+            errors.append(f"entity type {label!r}: subtypes must be a list of names")
 
+    seen_aliases: dict[str, str] = {}
     for name, spec in rel_types.items():
         if not REL_RE.match(str(name)):
             errors.append(f"relationship type {name!r} must be UPPER_SNAKE_CASE")
         pairs = (spec or {}).get("pairs") if isinstance(spec, dict) else None
+        aliases = (spec or {}).get("aliases") if isinstance(spec, dict) else None
+        if aliases is not None:
+            if not (isinstance(aliases, list) and all(isinstance(a, str) and a.strip() for a in aliases)):
+                errors.append(f"relationship type {name!r}: aliases must be a list of phrases")
+            else:
+                for a in aliases:
+                    key = _vocab_key(a)
+                    if key in seen_aliases and seen_aliases[key] != name:
+                        errors.append(f"alias {a!r} is used by both {seen_aliases[key]} and {name}")
+                    seen_aliases[key] = name
         if not pairs:
             errors.append(f"relationship type {name!r} needs at least one [from, to] pair")
             continue
@@ -164,9 +206,24 @@ def diff(old: Schema, new: Schema) -> dict:
         "added_relationship_types": sorted(set(new_rels) - set(old_rels)),
         "removed_relationship_types": sorted(set(old_rels) - set(new_rels)),
         "changed_pairs": changed_pairs,
+        # Vocabulary (P8b): subtypes of entity types and aliases of relationship types.
+        "changed_vocabulary": _vocabulary_diff(old, new),
     }
 
 
+def _vocabulary_diff(old: "Schema", new: "Schema") -> dict:
+    out = {}
+    for label in sorted(set(old.subtypes) | set(new.subtypes)):
+        a, b = set(old.subtypes.get(label, ())), set(new.subtypes.get(label, ()))
+        if a != b:
+            out[f"{label} subtypes"] = {"added": sorted(b - a), "removed": sorted(a - b)}
+    for name in sorted(set(old.relationship_types) & set(new.relationship_types)):
+        a, b = set(old.relationship_types[name].aliases), set(new.relationship_types[name].aliases)
+        if a != b:
+            out[f"{name} aliases"] = {"added": sorted(b - a), "removed": sorted(a - b)}
+    return out
+
+
 def is_empty_diff(d: dict) -> bool:
-    return not any(d[k] for k in ("added_entity_types", "removed_entity_types", "added_relationship_types",
-                                  "removed_relationship_types", "changed_pairs"))
+    return not any(d.get(k) for k in ("added_entity_types", "removed_entity_types", "added_relationship_types",
+                                      "removed_relationship_types", "changed_pairs", "changed_vocabulary"))

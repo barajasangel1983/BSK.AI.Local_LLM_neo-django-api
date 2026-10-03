@@ -32,6 +32,7 @@ from . import registry, repository
 from .driver import GraphUnavailable, session
 from .ids import clean_part, is_valid_id, make_id
 from . import evidence
+from .identity import EntityIndex, normalize, proposed_id  # noqa: F401 (re-exported)
 from .models import CandidateTriple, Evidence, PromptPreset
 from .schema import Schema
 
@@ -57,7 +58,8 @@ Relationships (predicate: allowed subject type -> object type):
 Rules:
 - Only extract facts stated in the text; do not guess.
 - Use only the entity types and relationships listed above, in the allowed directions.
-- Name entities as they are written in the text (e.g. "die head", "DIE_PLUG").
+- Name entities as they are written in the text, keeping engineering tags (e.g. "M101", "VFD-101", "DIE_PLUG").
+- When a type lists subtypes, you may add "subject_subtype" / "object_subtype" with one of them.
 - Return ONLY a JSON object:
   {"triples": [{"subject": str, "subject_type": str, "predicate": str, "object": str, "object_type": str, "confidence": number 0-1}]}
 - Return {"triples": []} if the text has no such facts.
@@ -153,7 +155,10 @@ def extractable(schema: Schema) -> tuple[dict, dict]:
 
 def render_schema(schema: Schema) -> tuple[str, str]:
     types, rels = extractable(schema)
-    entity_types = "\n".join(f"- {label}: {desc}" if desc else f"- {label}" for label, desc in types.items())
+    entity_types = "\n".join(
+        (f"- {label}: {desc}" if desc else f"- {label}")
+        + (f" (subtypes: {', '.join(schema.subtypes[label])})" if schema.subtypes.get(label) else "")
+        for label, desc in types.items())
     relationships = "\n".join(f"- {name}: " + ", ".join(f"{a} -> {b}" for a, b in pairs) for name, pairs in rels.items())
     return entity_types, relationships
 
@@ -226,7 +231,8 @@ def parse_triples(content: str) -> list[dict]:
             confidence = max(0.0, min(1.0, float(t.get("confidence"))))
         except (TypeError, ValueError):
             confidence = None
-        out.append({**{k: v[:MAX_NAME] for k, v in fields.items()}, "confidence": confidence})
+        subtypes = {k: str(t.get(k) or "").strip()[:MAX_NAME] for k in ("subject_subtype", "object_subtype") if t.get(k)}
+        out.append({**{k: v[:MAX_NAME] for k, v in fields.items()}, **subtypes, "confidence": confidence})
     return out
 
 
@@ -242,74 +248,10 @@ def extract_window(messages: list[dict]) -> list[dict]:
 
 # --- entity matching -----------------------------------------------------------
 
-def normalize(name: str) -> str:
-    name = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
-    return re.sub(r"^(the|a|an) ", "", name)
-
-
-@dataclass
-class EntityIndex:
-    """Curated nodes by label for matching extracted names to existing ids."""
-
-    by_label: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)  # label -> [(id, name, norm)]
-
-    @classmethod
-    def load(cls) -> "EntityIndex":
-        index = cls()
-        try:
-            with session() as s:
-                rows = s.run("MATCH (n:Entity) RETURN n.id AS id, n.name AS name, labels(n) AS labels").data()
-        except GraphUnavailable:
-            return index
-        for row in rows:
-            label = repository.node_label(row["labels"])
-            index.by_label.setdefault(label, []).append((row["id"], row["name"] or "", normalize(row["name"] or "")))
-        return index
-
-    def has(self, node_id: str) -> bool:
-        return any(node_id == i for rows in self.by_label.values() for i, _, _ in rows)
-
-    def match_exact(self, label: str, name: str) -> str | None:
-        """Exact (normalized) name, or the id's last key part (tags like EXTR01, DIE_PLUG)."""
-        target = normalize(name)
-        if not target:
-            return None
-        for node_id, _, norm in self.by_label.get(label, []):
-            if norm == target or normalize(node_id.rsplit("/", 1)[-1].split(":")[-1]) == target:
-                return node_id
-        return None
-
-    def match(self, label: str, name: str) -> str | None:
-        target = normalize(name)
-        if not target:
-            return None
-        exact = self.match_exact(label, name)
-        if exact:
-            return exact
-        candidates = self.by_label.get(label, [])
-        tokens = set(target.split())
-        best, best_score = None, 0.0
-        for node_id, _, norm in candidates:
-            other = set(norm.split())
-            if not other:
-                continue
-            score = len(tokens & other) / len(tokens | other)
-            if len(target) >= 4 and (target in norm or norm in target):
-                score = max(score, 0.75)
-            if score > best_score:
-                best, best_score = node_id, score
-        return best if best_score >= 0.6 else None
-
-
-def proposed_id(label: str, name: str, scope_key: str) -> str:
-    part = clean_part(name)
-    return make_id(label, part) if label == "Asset" else make_id(label, scope_key, part)
-
-
 def resolve_id(index: EntityIndex, label: str, name: str, scope_key: str) -> tuple[str, bool]:
-    """(id, existing): an existing entity's id when the name matches one, else a proposed id."""
-    match = index.match(label, name)
-    return (match, True) if match else (proposed_id(label, name, scope_key), False)
+    """(id, existing) — kept for callers that don't need the match details."""
+    match = index.resolve(label, name, scope_key)
+    return match.id, match.existing
 
 
 def triple_key(mode: str, subject_name: str, subject_type: str, predicate: str, object_name: str, object_type: str) -> tuple:
@@ -426,7 +368,17 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset) -
     issue = ""
     subject_id = object_id = ""
     subject_existing = object_existing = False
+    matches: dict = {}
+    props: dict = {}
     if mode == "schema":
+        # A synonym of an allowed relationship ("drives", "is monitored by") becomes the schema type.
+        canonical = schema.relationship_for(t["predicate"], t["subject_type"], t["object_type"])
+        if canonical:
+            t = {**t, "predicate": canonical}
+        for end in ("subject", "object"):
+            subtype = schema.subtype_for(t[f"{end}_type"], t.get(f"{end}_subtype", ""))
+            if subtype:
+                props.setdefault(end, {})["subtype"] = subtype
         if t["subject_type"] not in schema.entity_types or t["object_type"] not in schema.entity_types:
             issue = f"type not in schema ({t['subject_type']} / {t['object_type']})"
         else:
@@ -435,8 +387,11 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset) -
             except Exception as exc:
                 issue = str(exc)[:255]
             try:
-                subject_id, subject_existing = resolve_id(index, t["subject_type"], t["subject"], scope_key)
-                object_id, object_existing = resolve_id(index, t["object_type"], t["object"], scope_key)
+                sm = index.resolve(t["subject_type"], t["subject"], scope_key)
+                om = index.resolve(t["object_type"], t["object"], scope_key)
+                subject_id, subject_existing, object_id, object_existing = sm.id, sm.existing, om.id, om.existing
+                matches = {"subject_match": sm.kind, "subject_candidates": sm.candidates,
+                           "object_match": om.kind, "object_candidates": om.candidates}
             except ValueError as exc:  # a name with no usable id characters
                 issue = str(exc)[:255]
     return CandidateTriple(
@@ -448,5 +403,6 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset) -
         chunk_index=i, page_start=window.page_start, page_end=window.page_end, section_path=window.section_path,
         evidence_text=window.text[:EVIDENCE_CHARS],
         model=settings.DGX_CHAT_MODEL, preset_name=preset.name, preset_version=preset.version,
-        schema_version=schema.version,
+        schema_version=schema.version, **matches,
+        subject_props=props.get("subject", {}), object_props=props.get("object", {}),
     )

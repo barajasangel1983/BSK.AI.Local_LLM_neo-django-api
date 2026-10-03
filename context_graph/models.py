@@ -186,6 +186,12 @@ class CandidateTriple(models.Model):
     object_type = models.CharField(max_length=100)
     object_id = models.CharField(max_length=512, blank=True, default="")
     object_existing = models.BooleanField(default=False)
+    # Identity resolution (P8b): how each end matched — id | tag | alias | name | possible | new — and,
+    # for "possible", the suggested entities [{id, name, score}] a reviewer picks from.
+    subject_match = models.CharField(max_length=10, blank=True, default="")
+    object_match = models.CharField(max_length=10, blank=True, default="")
+    subject_candidates = models.JSONField(default=list, blank=True)
+    object_candidates = models.JSONField(default=list, blank=True)
     # Node properties from structured imports (written when the entity is created; missing ones added otherwise).
     subject_props = models.JSONField(default=dict, blank=True)
     object_props = models.JSONField(default=dict, blank=True)

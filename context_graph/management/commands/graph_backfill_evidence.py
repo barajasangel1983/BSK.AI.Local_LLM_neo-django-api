@@ -10,7 +10,7 @@ Idempotent: running it twice changes nothing.
 from django.core.management.base import BaseCommand
 
 from context_graph.driver import session
-from context_graph.extraction import normalize
+from context_graph.identity import normalize
 from context_graph.models import CandidateTriple
 from context_graph.triples import _evidence_ids, apply_alias
 
