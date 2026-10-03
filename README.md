@@ -79,6 +79,18 @@ output, one retry on a DGX timeout); a failed window is noted on the document an
 - **UI config:** `GET extract/config/` — DGX model, modes, default/available window strategies, extractable schema types and pairs.
 - Settings: `GRAPH_EXTRACT_TIMEOUT` (120 s per call), `GRAPH_EXTRACT_MAX_TOKENS` (2000).
 
+### Evidence and aliases (P8a)
+
+Every place a fact was found is an `Evidence` row: the source kind (text, structured, later vision / human / OPC), the document and pages / section and window, or the data file and row, a region, the extractor, model and prompt, and a ≤ 1,500-char excerpt.
+
+- **Staging:** a triple links to *all* its occurrences (`CandidateTriple.evidence`); `occurrences` is their count.
+- **Approving:**
+  - copies the evidence IDs onto the Neo4j nodes and edges it writes (`evidence_ids`)
+  - adds a differing name as an **alias** of an existing node, never a rename. An alias several approved triples use is shared and goes only with its last user.
+- **Deleting** removes exactly those again.
+- **API:** `GET /api/graph/evidence/<id>/`; the triples list includes `sources`.
+- **After migrating:** run `manage.py graph_backfill_evidence` once (idempotent) to link already-approved triples.
+
 ### Structured data import (P6)
 
 GraphLab **Import** turns CSV / Excel files (tag lists, alarm lists, BOMs) into staged triples by column mapping — no

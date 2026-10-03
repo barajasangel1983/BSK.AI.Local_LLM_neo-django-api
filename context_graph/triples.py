@@ -26,7 +26,8 @@ from django.utils import timezone
 
 from . import registry, repository
 from .driver import session
-from .extraction import EntityIndex, resolve_id, scope_key_for
+from . import evidence
+from .extraction import EntityIndex, normalize, resolve_id, scope_key_for
 from .ids import is_valid_id, make_id
 from .models import CandidateTriple
 from .schema import SchemaError
@@ -122,9 +123,10 @@ def _supports(tx, schema, t: CandidateTriple, from_id: str, rel: str, to_id: str
     tx.run(
         f"MATCH (:Entity {{id: $f}})-[r:{rel}]->(:Entity {{id: $t}}) "   # rel validated above
         f"SET r.source = coalesce(r.source, $src), "
-        f"    r.triple_ids = [x IN coalesce(r.triple_ids, []) WHERE x <> $tid] + $tid "
+        f"    r.triple_ids = [x IN coalesce(r.triple_ids, []) WHERE x <> $tid] + $tid, "
+        f"    r.evidence_ids = [x IN coalesce(r.evidence_ids, []) WHERE NOT x IN $ev] + $ev "
         f"WITH r WHERE r.source = $src SET r += $props",
-        f=from_id, t=to_id, tid=t.pk, props=props, src=t.source,
+        f=from_id, t=to_id, tid=t.pk, props=props, src=t.source, ev=_evidence_ids(t),
     )
 
 
@@ -134,20 +136,28 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
         raise TripleError(issue)
     doc = t.document
     origin = {"doc_key": doc.doc_key} if doc else {"data_file": t.data_file.filename}
-    applied = {}
+    applied, aliased = {}, {}
+    ev = _evidence_ids(t)
     for node_id, label, name, props in ((t.subject_id, t.subject_type, t.subject_name, t.subject_props),
                                         (t.object_id, t.object_type, t.object_name, t.object_props)):
-        existing = tx.run("MATCH (n:Entity {id: $id}) RETURN keys(n) AS keys", id=node_id).single()
+        existing = tx.run("MATCH (n:Entity {id: $id}) RETURN keys(n) AS keys, n.name AS name, "
+                          "coalesce(n.aliases, []) AS aliases", id=node_id).single()
         if not existing:
             repository.upsert_node(tx, schema, label, node_id, {**(props or {}), "name": name, "source": t.source,
                                                                 "created_by_triple": t.pk, **origin})
         else:
-            # Existing entities keep their name and properties; only missing properties are added.
+            # Existing entities keep their name and properties; only missing properties are added,
+            # and a different name becomes an alias (never a rename).
             missing = {k: v for k, v in (props or {}).items() if k not in existing["keys"]}
             if missing:
                 tx.run("MATCH (n:Entity {id: $id}) SET n += $props", id=node_id, props=missing)
                 applied[node_id] = sorted(missing)
-    t.applied_props = applied
+            claimed = apply_alias(tx, node_id, name, existing["name"], existing["aliases"])
+            if claimed:
+                aliased.setdefault(node_id, []).append(claimed)
+        tx.run("MATCH (n:Entity {id: $id}) "
+               "SET n.evidence_ids = [x IN coalesce(n.evidence_ids, []) WHERE NOT x IN $ev] + $ev", id=node_id, ev=ev)
+    t.applied_props, t.applied_aliases = applied, aliased
     _supports(tx, schema, t, t.subject_id, t.predicate, t.object_id, _provenance(t))
     if doc is None:
         return   # structured import: no document evidence nodes
@@ -170,6 +180,44 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
             repository.upsert_relationship(tx, schema, asset_scope, "DOCUMENTED_BY", doc_id, {"source": "library"})
 
 
+def _evidence_ids(t: CandidateTriple) -> list[int]:
+    if not hasattr(t, "_evidence_ids"):
+        t._evidence_ids = evidence.ids_for(t) if t.pk else []
+    return t._evidence_ids
+
+
+def apply_alias(tx, node_id: str, name: str, node_name: str, aliases: list[str]) -> str | None:
+    """Record `name` as an alias of an existing node; returns the alias this triple now co-owns, if any.
+
+    A name equal to the node's own name adds nothing. A new name is added. A name that
+    matches an alias another approved triple added is shared, so the alias goes only when
+    its last user goes; aliases from the seed or a person are never claimed.
+    """
+    if not name or normalize(name) == normalize(node_name or ""):
+        return None
+    same = [a for a in aliases if normalize(a) == normalize(name)]
+    if not same:
+        tx.run("MATCH (n:Entity {id: $id}) SET n.aliases = coalesce(n.aliases, []) + $name", id=node_id, name=name)
+        return name
+    return same[0] if _alias_claimed(node_id, same[0]) else None
+
+
+def _alias_claimed(node_id: str, alias: str) -> bool:
+    """The alias was added by an approved triple (not by the seed or a person)."""
+    return any(alias in (claims or {}).get(node_id, []) for claims in
+               CandidateTriple.objects.filter(status=CandidateTriple.Status.APPROVED,
+                                              applied_aliases__has_key=node_id).values_list("applied_aliases", flat=True))
+
+
+def _alias_still_used(t: CandidateTriple, node_id: str, name: str) -> bool:
+    """Another approved triple still names `node_id` this way (so the alias stays)."""
+    from django.db.models import Q
+    others = (CandidateTriple.objects.filter(status=CandidateTriple.Status.APPROVED).exclude(pk=t.pk)
+              .filter(Q(subject_id=node_id) | Q(object_id=node_id)).values_list("subject_id", "subject_name", "object_name"))
+    target = normalize(name)
+    return any(normalize(sn if sid == node_id else on) == target for sid, sn, on in others)
+
+
 def _allowed(schema, from_label: str, rel: str, to_label: str) -> bool:
     spec = schema.relationship_types.get(rel)
     return bool(spec) and (from_label, to_label) in spec.pairs
@@ -189,7 +237,7 @@ def _commit_lab(tx, t: CandidateTriple) -> None:
     tx.run("MATCH (a:Lab {id: $s}), (b:Lab {id: $o}) "
            "MERGE (a)-[r:LAB_RELATION {triple_id: $tid}]->(b) SET r += $props",
            s=lab_id(doc_key, t.subject_name), o=lab_id(doc_key, t.object_name), tid=t.pk,
-           props={**_provenance(t), "predicate": t.predicate})
+           props={**_provenance(t), "predicate": t.predicate, "evidence_ids": _evidence_ids(t)})
 
 
 def approve(triples: list[CandidateTriple]) -> dict:
@@ -212,7 +260,7 @@ def approve(triples: list[CandidateTriple]) -> dict:
                 errors[t.pk] = str(exc)[:255]
                 continue
             t.status, t.committed_at = CandidateTriple.Status.APPROVED, timezone.now()
-            t.save(update_fields=["status", "layer", "committed_at", "applied_props", "updated_at"])
+            t.save(update_fields=["status", "layer", "committed_at", "applied_props", "applied_aliases", "updated_at"])
             approved.append(t.pk)
             layers[t.layer] += 1
     return {"approved": approved, "errors": errors, "layers": layers}
@@ -230,12 +278,23 @@ def _uncommit(tx, t: CandidateTriple) -> None:
         tx.run("MATCH (n:Lab) WHERE n.id IN $ids AND NOT (n)--() DELETE n",
                ids=[lab_id(t.document.doc_key, t.subject_name), lab_id(t.document.doc_key, t.object_name)])
         return
+    ev = _evidence_ids(t)
+    for node_id in {t.subject_id, t.object_id}:
+        tx.run("MATCH (n:Entity {id: $id}) SET n.evidence_ids = [x IN coalesce(n.evidence_ids, []) WHERE NOT x IN $ev]",
+               id=node_id, ev=ev)
+    for node_id, names in (t.applied_aliases or {}).items():
+        keep = [n for n in names if _alias_still_used(t, node_id, n)]
+        drop = [n for n in names if n not in keep]
+        if drop:
+            tx.run("MATCH (n:Entity {id: $id}) SET n.aliases = [a IN coalesce(n.aliases, []) WHERE NOT a IN $drop]",
+                   id=node_id, drop=drop)
     # Drop this triple's support; delete text-created edges nothing supports any more.
     tx.run(
         "MATCH (:Entity)-[r]->(:Entity) WHERE $tid IN coalesce(r.triple_ids, []) "
-        "SET r.triple_ids = [x IN r.triple_ids WHERE x <> $tid] "
+        "SET r.triple_ids = [x IN r.triple_ids WHERE x <> $tid], "
+        "    r.evidence_ids = [x IN coalesce(r.evidence_ids, []) WHERE NOT x IN $ev] "
         "WITH r WHERE size(r.triple_ids) = 0 AND r.source IN $sources DELETE r",
-        tid=t.pk, sources=STAGED_SOURCES,
+        tid=t.pk, sources=STAGED_SOURCES, ev=ev,
     )
     # Properties this triple added to entities that already existed.
     for node_id, names in (t.applied_props or {}).items():
@@ -268,7 +327,10 @@ def delete(triples: list[CandidateTriple]) -> int:
             for t in committed:
                 s.execute_write(_uncommit, t)
     count = len(triples)
+    evidence_ids = list(CandidateTriple.evidence.through.objects.filter(candidatetriple_id__in=[t.pk for t in triples])
+                        .values_list("evidence_id", flat=True))
     CandidateTriple.objects.filter(pk__in=[t.pk for t in triples]).delete()
+    evidence.drop_orphans(pk__in=evidence_ids)
     return count
 
 
@@ -298,6 +360,7 @@ def promote(triple: CandidateTriple, mapping: dict) -> dict:
         "schema", CandidateTriple.Status.PENDING, "", "", True)
     candidate.committed_at = None
     candidate.save()
+    candidate.evidence.set(triple.evidence.all())
     result = approve([candidate])
     if result["errors"]:
         CandidateTriple.objects.filter(pk=candidate.pk).update(issue=result["errors"][candidate.pk])
