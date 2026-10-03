@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock, patch
+import requests
 
 from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
@@ -125,3 +126,24 @@ class ChatViewHistoryTests(TestCase):
         self.assertIn("chat failed", logs.output[0])
         sent = mock_post.call_args_list[1].kwargs["json"]["messages"]
         self.assertEqual([m["content"] for m in sent[1:]], ["retry"])
+
+
+class HealthEndpointsTests(TestCase):
+    """The DGX embedding and reranker services (RAG v2) are on the Health page."""
+
+    def test_dgx_rag_services_are_tracked(self):
+        from django.conf import settings
+        from chat.views import TRACKED_ENDPOINTS
+        by_id = {ep["id"]: ep for ep in TRACKED_ENDPOINTS}
+        self.assertEqual(by_id["dgx-embed"]["url"], settings.DGX_EMBED_URL.split("/v1/")[0] + "/health")
+        self.assertEqual(by_id["dgx-rerank"]["url"], settings.DGX_RERANK_URL.rsplit("/", 1)[0] + "/health")
+        self.assertIn(settings.DGX_EMBED_MODEL, by_id["dgx-embed"]["name"])
+
+    @patch("chat.views.requests.get")
+    def test_status_comes_from_their_health_endpoint(self, get):
+        from chat.views import TRACKED_ENDPOINTS, _check_single_endpoint
+        get.return_value = MagicMock(status_code=200)
+        ep = next(e for e in TRACKED_ENDPOINTS if e["id"] == "dgx-rerank")
+        self.assertEqual(_check_single_endpoint(ep)["status"], "online")
+        get.side_effect = requests.exceptions.ConnectionError("down")
+        self.assertEqual(_check_single_endpoint(ep)["status"], "offline")

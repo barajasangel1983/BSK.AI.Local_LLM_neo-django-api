@@ -116,7 +116,7 @@ of `use_rag`. Each signal line includes the **last RUNNING historian value** (`p
 `historian_ref`) compared with its range; the latest sample's timestamp and machine state are stated. If the sheet exceeds
 `ASSET_CONTEXT_SHARE` (0.3) of the model's budget, lines matching the question are kept first.
 
-With RAG on, documents linked to the asset (DOCUMENTED_BY) are searched first (`search_v2(..., doc_keys=...)`), then the
+The legacy `plc_historian` shift summaries (old `bsk_rag`) are not added to asset-scoped chats. With RAG on, documents linked to the asset (DOCUMENTED_BY) are searched first (`search_v2(..., doc_keys=...)`), then the
 whole library; excerpts get `ASSET_RAG_SHARE` (0.25). Sources: `kind: "graph"` ([G], with the facts used),
 `"historian"` ([H]) and `"document"` ([1], [2], …). Unknown asset → 400; graph down when choosing → 503, mid-conversation →
 the answer says the facts are unavailable. DGX chat timeout: `DGX_CHAT_TIMEOUT` (180 s).
