@@ -36,7 +36,9 @@ from django.db import transaction
 from django.utils import timezone
 
 from . import registry
-from .extraction import EntityIndex, normalize
+from .extraction import normalize
+from .identity import EntityIndex, Match
+from .units import normalize_unit
 from .ids import clean_part, is_valid_id, make_id
 from . import evidence
 from .models import CandidateTriple, DataFile, Evidence
@@ -398,6 +400,8 @@ class End:
     existing: bool
     props: dict
     named: bool   # the name came from a name column/template (not just the key)
+    match: str = ""
+    candidates: list = field(default_factory=list)
 
 
 @dataclass
@@ -408,23 +412,14 @@ class BuildResult:
     skipped_rows: int = 0
     new_entities: int = 0
     existing_entities: int = 0
+    possible_matches: int = 0   # entities that may be an existing one: resolved in review
     evidence: dict = field(default_factory=dict)   # id(triple) -> [Evidence] (one per row)
 
     def stats(self) -> dict:
         return {"rows": self.rows, "triples": len(self.triples), "skipped_rows": self.skipped_rows,
                 "new_entities": self.new_entities, "existing_entities": self.existing_entities,
+                "possible_matches": self.possible_matches,
                 "row_errors": len(self.row_errors)}
-
-
-def _resolve(index: EntityIndex, label: str, proposed: str, key: str, name: str, exact_only: bool) -> tuple[str, bool]:
-    if index.has(proposed):
-        return proposed, True
-    if not exact_only:
-        for value in (key, name):
-            match = index.match_exact(label, value)
-            if match:
-                return match, True
-    return proposed, False
 
 
 def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None = None) -> BuildResult:
@@ -435,14 +430,14 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
     if len(rows) > settings.GRAPH_IMPORT_MAX_ROWS:
         raise ImportError_(f"{len(rows)} rows: the limit is {settings.GRAPH_IMPORT_MAX_ROWS} rows per file")
     scope_key = asset_id.split(":", 2)[2] if asset_id else df.key
-    scope_name = next((name for i, name, _ in index.by_label.get("Asset", []) if i == asset_id), "") or scope_key
+    scope_name = next((n.name for n in index.by_label.get("Asset", []) if n.id == asset_id), "") or scope_key
     result = BuildResult(rows=len(rows))
     staged: dict[tuple, CandidateTriple] = {}
     ends: dict[str, End] = {}   # one End per id across the file (names/properties are merged)
 
     def entity(spec: dict, values: dict, number: int) -> End | None:
         if spec.get("scope"):
-            return End(asset_id, "Asset", scope_name, index.has(asset_id), {}, True)
+            return End(asset_id, "Asset", scope_name, index.has(asset_id), {}, True, "id" if index.has(asset_id) else "new")
         key = values.get(spec["id_column"], "")
         if not key or (spec.get("skip_if_empty") and not any(values.get(c) for c in spec["skip_if_empty"])):
             return None
@@ -459,9 +454,16 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         elif spec.get("name_column"):
             name = values.get(spec["name_column"], "")
         named = bool(name) and name != key
-        node_id, existing = _resolve(index, label, proposed, key, name, exact_only=bool(spec.get("id_suffix")))
+        if spec.get("id_suffix"):   # derived entities (e.g. a signal's limit): exact id only
+            match = Match(proposed, "id" if index.has(proposed) else "new")
+        else:                       # the key column is an explicit tag; names / aliases, then possible matches
+            match = index.resolve(label, name or key, scope_key, proposed=proposed, tag=key)
         props = {p: _coerce(values[c]) for p, c in (spec.get("properties") or {}).items() if values.get(c)}
-        return End(node_id, label, (name or key)[:255], existing, props, named)
+        if "unit" in props:
+            props["unit"] = normalize_unit(props["unit"])
+        if "subtype" in props and isinstance(props["subtype"], str):   # schema spelling when it is a known subtype
+            props["subtype"] = schema.subtype_for(label, props["subtype"]) or props["subtype"]
+        return End(match.id, label, (name or key)[:255], match.existing, props, named, match.kind, match.candidates)
 
     for number, values in rows:
         present: dict[str, End] = {}
@@ -511,10 +513,13 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         a, b = ends[t.subject_id], ends[t.object_id]
         t.subject_name, t.subject_existing, t.subject_props = a.name, a.existing, a.props
         t.object_name, t.object_existing, t.object_props = b.name, b.existing, b.props
+        t.subject_match, t.subject_candidates = a.match, a.candidates
+        t.object_match, t.object_candidates = b.match, b.candidates
         used.update((a.id, b.id))
     result.triples = list(staged.values())
     result.existing_entities = sum(1 for i in used if ends[i].existing)
-    result.new_entities = len(used) - result.existing_entities
+    result.possible_matches = sum(1 for i in used if ends[i].match == "possible")
+    result.new_entities = len(used) - result.existing_entities - result.possible_matches
     return result
 
 

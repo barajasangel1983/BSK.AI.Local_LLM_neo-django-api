@@ -108,7 +108,7 @@ class StructuredImportTests(ImportTestCase):
         self.assertTrue(body["valid"], body)
         # 33 signals: 32 under a component, 1 under the asset; 18 with limits.
         self.assertEqual(body["stats"], {"rows": 33, "triples": 51, "skipped_rows": 0, "new_entities": 62,
-                                         "existing_entities": 0, "row_errors": 0})
+                                         "existing_entities": 0, "possible_matches": 0, "row_errors": 0})
         first = body["triples"][0]
         self.assertEqual((first["subject"]["id"], first["predicate"], first["object"]["id"], first["row"]),
                          ("bsk:component:EXTR01/Feeder", "MONITORED_BY", "bsk:signal:EXTR01/feeder_rate_actual_kg_hr", 2))

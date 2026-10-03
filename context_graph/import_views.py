@@ -51,10 +51,10 @@ def _preview_triple(t: CandidateTriple) -> dict:
     return {
         "row": t.row_number, "occurrences": t.occurrences,
         "subject": {"name": t.subject_name, "type": t.subject_type, "id": t.subject_id, "existing": t.subject_existing,
-                    "properties": t.subject_props},
+                    "match": t.subject_match or None, "candidates": t.subject_candidates, "properties": t.subject_props},
         "predicate": t.predicate,
         "object": {"name": t.object_name, "type": t.object_type, "id": t.object_id, "existing": t.object_existing,
-                   "properties": t.object_props},
+                   "match": t.object_match or None, "candidates": t.object_candidates, "properties": t.object_props},
     }
 
 

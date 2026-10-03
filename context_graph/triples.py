@@ -27,12 +27,14 @@ from django.utils import timezone
 from . import registry, repository
 from .driver import session
 from . import evidence
-from .extraction import EntityIndex, normalize, resolve_id, scope_key_for
+from .extraction import scope_key_for
+from .identity import EntityIndex, normalize, tag_key
 from .ids import is_valid_id, make_id
 from .models import CandidateTriple
 from .schema import SchemaError
 
-EDITABLE = ("subject_name", "subject_type", "subject_id", "predicate", "object_name", "object_type", "object_id")
+EDITABLE = ("subject_name", "subject_type", "subject_id", "predicate", "object_name", "object_type", "object_id",
+            "subject_match", "object_match")   # *_match: only "new" (accept a possible match as a new entity)
 EVIDENCE_RELS = ("DESCRIBES", "HAS_SECTION", "DOCUMENTED_BY")
 STAGED_SOURCES = ["text", "structured"]   # `source` of nodes/edges created by approved triples
 
@@ -49,8 +51,12 @@ def edit(triple: CandidateTriple, changes: dict) -> CandidateTriple:
     unknown = set(changes) - set(EDITABLE)
     if unknown:
         raise TripleError(f"not editable: {', '.join(sorted(unknown))}")
+    for end in ("subject", "object"):
+        if f"{end}_match" in changes and changes[f"{end}_match"] != "new":
+            raise TripleError(f"{end}_match can only be set to 'new' (pick a candidate by setting {end}_id)")
     for key, value in changes.items():
-        setattr(triple, key, str(value or "").strip()[:512])
+        if not key.endswith("_match"):
+            setattr(triple, key, str(value or "").strip()[:512])
     if triple.mode == "schema":
         _reresolve(triple, changes)
         triple.issue = _schema_issue(triple)
@@ -68,15 +74,33 @@ def _reresolve(t: CandidateTriple, changes: dict, index=None) -> None:
         scope = scope_key_for(t.job.params if t.job else {}, t.document)
     for end in ("subject", "object"):
         given = changes.get(f"{end}_id")
-        if given:
-            setattr(t, f"{end}_existing", bool(index.has(given)))
+        if given:  # a reviewer chose the entity (e.g. one of the possible matches)
+            existing = bool(index.has(given))
+            setattr(t, f"{end}_existing", existing)
+            setattr(t, f"{end}_match", "id" if existing else "new")
+            setattr(t, f"{end}_candidates", [])
+        elif changes.get(f"{end}_match") == "new":  # accept the proposed id as a new entity
+            setattr(t, f"{end}_match", "new")
+            setattr(t, f"{end}_existing", False)
+            setattr(t, f"{end}_candidates", [])
         elif f"{end}_name" in changes or f"{end}_type" in changes or not getattr(t, f"{end}_id"):
             try:
-                node_id, existing = resolve_id(index, getattr(t, f"{end}_type"), getattr(t, f"{end}_name"), scope)
+                match = index.resolve(getattr(t, f"{end}_type"), getattr(t, f"{end}_name"), scope)
+                node_id, existing, kind, candidates = match.id, match.existing, match.kind, match.candidates
             except ValueError:
-                node_id, existing = "", False
+                node_id, existing, kind, candidates = "", False, "", []
             setattr(t, f"{end}_id", node_id)
             setattr(t, f"{end}_existing", existing)
+            setattr(t, f"{end}_match", kind)
+            setattr(t, f"{end}_candidates", candidates)
+
+
+def unresolved(t: CandidateTriple) -> str:
+    """A possible match a reviewer still has to resolve (approval is blocked until then)."""
+    for end in ("subject", "object"):
+        if getattr(t, f"{end}_match") == "possible":
+            return f"{getattr(t, f'{end}_name')!r} may be an existing entity: pick one of the suggestions or accept it as new"
+    return ""
 
 
 def _schema_issue(t: CandidateTriple) -> str:
@@ -195,6 +219,8 @@ def apply_alias(tx, node_id: str, name: str, node_name: str, aliases: list[str])
     """
     if not name or normalize(name) == normalize(node_name or ""):
         return None
+    if tag_key(name) == tag_key(node_id.rsplit("/", 1)[-1].split(":")[-1]):
+        return None   # just the node's own tag / id key ("M101" for …/M101): not another name
     same = [a for a in aliases if normalize(a) == normalize(name)]
     if not same:
         tx.run("MATCH (n:Entity {id: $id}) SET n.aliases = coalesce(n.aliases, []) + $name", id=node_id, name=name)
@@ -244,10 +270,18 @@ def approve(triples: list[CandidateTriple]) -> dict:
     """Commit pending/rejected triples. Returns {approved: [ids], errors: {id: message}, layers: {curated, lab}}."""
     schema = registry.active_schema()
     approved, errors, layers = [], {}, {"curated": 0, "lab": 0}
+    ready = []
+    for t in triples:   # checks that need no graph connection first
+        if t.status == CandidateTriple.Status.APPROVED:
+            continue
+        if t.mode == "schema" and unresolved(t):
+            errors[t.pk] = unresolved(t)[:255]
+            continue
+        ready.append(t)
+    if not ready:
+        return {"approved": approved, "errors": errors, "layers": layers}
     with session() as s:
-        for t in triples:
-            if t.status == CandidateTriple.Status.APPROVED:
-                continue
+        for t in ready:
             asset_scope = (t.job.params.get("asset_id") if t.job else "") or None
             try:
                 if t.mode == "schema":

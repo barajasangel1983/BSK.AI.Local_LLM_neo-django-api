@@ -49,12 +49,13 @@ def schema_summary() -> dict:
         "version": schema.version,
         "description": schema.description,
         "entity_types": [
-            {"name": label, "description": desc, "count": stats["nodes"].get(label, 0)}
+            {"name": label, "description": desc, "count": stats["nodes"].get(label, 0),
+             "subtypes": list(schema.subtypes.get(label, ()))}
             for label, desc in schema.entity_types.items()
         ],
         "relationship_types": [
             {"name": rt.name, "description": rt.description, "pairs": sorted(list(p) for p in rt.pairs),
-             "count": stats["relationships"].get(rt.name, 0)}
+             "aliases": list(rt.aliases), "count": stats["relationships"].get(rt.name, 0)}
             for rt in schema.relationship_types.values()
         ],
     }

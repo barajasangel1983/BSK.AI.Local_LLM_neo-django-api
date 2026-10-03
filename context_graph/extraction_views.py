@@ -137,7 +137,9 @@ def extract_config(request):
         "schema": {  # what schema-mode triples may use (evidence types excluded)
             "version": schema.version,
             "entity_types": list(types),
-            "relationships": [{"name": name, "pairs": pairs} for name, pairs in rels.items()],
+            "relationships": [{"name": name, "pairs": pairs, "aliases": list(schema.relationship_types[name].aliases)}
+                              for name, pairs in rels.items()],
+            "subtypes": {label: list(schema.subtypes.get(label, ())) for label in types if schema.subtypes.get(label)},
         },
     })
 
@@ -169,9 +171,11 @@ def triple_json(t: CandidateTriple) -> dict:
         "job_id": str(t.job_id) if t.job_id else None,
         "mode": t.mode, "status": t.status, "layer": t.layer or None,
         "subject": {"name": t.subject_name, "type": t.subject_type, "id": t.subject_id or None, "existing": t.subject_existing,
+                    "match": t.subject_match or None, "candidates": t.subject_candidates or [],
                     "properties": t.subject_props or {}},
         "predicate": t.predicate,
         "object": {"name": t.object_name, "type": t.object_type, "id": t.object_id or None, "existing": t.object_existing,
+                   "match": t.object_match or None, "candidates": t.object_candidates or [],
                    "properties": t.object_props or {}},
         "confidence": t.confidence, "issue": t.issue, "occurrences": t.occurrences, "edited": t.edited,
         # Every place the triple was found (P8a); `evidence` below is the first one (kept for older clients).
