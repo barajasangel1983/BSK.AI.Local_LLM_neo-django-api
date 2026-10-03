@@ -60,7 +60,8 @@ class HealthTests(DriverTestCase):
         self.assertEqual(result["status"], "online")
         self.assertEqual(result["server"], "Neo4j Kernel 5.26.0 (community)")
         self.assertEqual(result["node_count"], 42)
-        mock_factory.assert_called_once_with("bolt://graph:7687", auth=("neo4j", "secret"), connection_timeout=5.0)
+        mock_factory.assert_called_once_with("bolt://graph:7687", auth=("neo4j", "secret"), connection_timeout=5.0,
+                                             notifications_disabled_categories=["UNRECOGNIZED"])
         fake.session.assert_called_with(database="neo4j")
 
     @override_settings(**CONFIGURED)

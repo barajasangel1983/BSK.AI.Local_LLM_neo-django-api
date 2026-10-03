@@ -50,6 +50,9 @@ def is_factory_question(text: str) -> bool:
 # plc_historian shift summaries (factory questions); documents are retrieved
 # from bsk_rag_v2 via chat.retrieval.search_v2.
 from .legacy_retrieval import query_chunks
+from context_graph.driver import GraphUnavailable
+
+from . import asset_context
 
 
 # Base directory for RAG uploads (raw docs). For now, point directly at the
@@ -152,7 +155,8 @@ def call_dgx_gpt_oss_20b(messages: list[dict]) -> str:
         "max_tokens": 2048,
     }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    # Asset-scoped prompts are longer and the DGX is shared: 60 s was too tight.
+    resp = requests.post(url, headers=headers, json=payload, timeout=settings.DGX_CHAT_TIMEOUT)
     resp.raise_for_status()
     data = resp.json()
 
@@ -245,6 +249,7 @@ def to_citation(entry: dict) -> dict:
     """Citation stored on the assistant Message and returned to the UI."""
 
     return {
+        "kind": "document",
         "source": entry.get("source", ""),
         "asset_id": entry.get("asset_id", ""),
         "section_path": entry.get("section_path") or [],
@@ -257,7 +262,8 @@ def to_citation(entry: dict) -> dict:
     }
 
 
-def build_rag_context(entries: list[dict], budget_chars: int) -> tuple[str | None, list[dict]]:
+def build_rag_context(entries: list[dict], budget_chars: int, header: str = RAG_CONTEXT_HEADER,
+                      footer: str = RAG_CONTEXT_FOOTER) -> tuple[str | None, list[dict]]:
     """Build the RAG system prompt from ranked entries within `budget_chars`.
 
     Entries are added in order; ones that don't fit are skipped. If even the
@@ -265,7 +271,7 @@ def build_rag_context(entries: list[dict], budget_chars: int) -> tuple[str | Non
     Returns (system_prompt or None, entries actually used).
     """
 
-    remaining = budget_chars - len(RAG_CONTEXT_HEADER) - len(RAG_CONTEXT_FOOTER) - 2
+    remaining = budget_chars - len(header) - len(footer) - 2
     blocks: list[str] = []
     used: list[dict] = []
     for entry in entries:
@@ -286,7 +292,7 @@ def build_rag_context(entries: list[dict], budget_chars: int) -> tuple[str | Non
 
     if not used:
         return None, []
-    return "\n".join([RAG_CONTEXT_HEADER, *blocks, RAG_CONTEXT_FOOTER]), used
+    return "\n".join([header, *blocks, footer]), used
 
 
 def build_chat_messages(
@@ -472,6 +478,7 @@ def chat_view(request):
       "message": "user text",
       "model": "local-small",
       "use_rag": true/false   (default true)
+      "asset_id": "bsk:asset:EXTR01" | "" | absent   (scope; absent = keep the conversation's)
     }
 
     Behavior:
@@ -488,12 +495,22 @@ def chat_view(request):
     user_message = request.data.get("message")
     model_id = request.data.get("model", "local-small")
     use_rag = bool(request.data.get("use_rag", True))
+    requested_asset = request.data.get("asset_id")
 
     if not user_message:
         return Response(
             {"error": "message is required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+
+    # Asset scope: validated before anything is saved.
+    if requested_asset:
+        try:
+            asset_context.check_asset(str(requested_asset))
+        except asset_context.AssetScopeError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except GraphUnavailable as exc:
+            return Response({"error": f"Context Graph unavailable: {exc}"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     # --- Get or create conversation ---
 
@@ -527,10 +544,30 @@ def chat_view(request):
         content=user_message,
     )
 
+    if requested_asset is not None and conversation.asset_id != (requested_asset or ""):
+        conversation.asset_id = requested_asset or ""
+        conversation.save(update_fields=["asset_id"])
+    scope = conversation.asset_id
+
+    # --- Asset facts (independent of the RAG toggle) ---
+
+    total_budget = context_budget_chars(model_id)
+    asset_ctx = None
+    asset_note = ""
+    if scope:
+        facts_budget, _ = asset_context.budgets(total_budget)
+        try:
+            asset_ctx = asset_context.build(scope, user_message, facts_budget)
+        except (GraphUnavailable, asset_context.AssetScopeError) as exc:
+            logger.warning("asset context failed conversation=%s asset=%s: %s", conversation.id, scope, exc)
+            asset_note = (f"You are Neo, the assistant for asset {scope}. Its facts are unavailable right now "
+                          f"(Context Graph unreachable); say so if the question needs them.")
+
     # --- Optional RAG context ---
 
     system_prompt: str | None = None
     citations: list[dict] = []
+    rag_block: str | None = None
     if use_rag:
         rag_start = time.time()
         entries: list[dict] = []
@@ -547,26 +584,48 @@ def chat_view(request):
             v2_top_n = 3
 
         reranker = "error"
+        doc_scope = "library"
         try:
-            result = search_v2(user_message, top_n=v2_top_n)
-            entries.extend(
-                c.to_dict()
-                for c in result.chunks
+            relevant = lambda result: [  # noqa: E731
+                c.to_dict() for c in result.chunks
                 if c.rerank_score is None or c.rerank_score >= settings.RAG_MIN_RERANK_SCORE
-            )
-            reranker = result.reranker
+            ]
+            found: list[dict] = []
+            if asset_ctx and asset_ctx.doc_keys:
+                # The asset's own documents first; the whole library when none of them match.
+                result = search_v2(user_message, top_n=v2_top_n, doc_keys=asset_ctx.doc_keys)
+                found, reranker, doc_scope = relevant(result), result.reranker, "asset"
+            if not found:
+                result = search_v2(user_message, top_n=v2_top_n)
+                found, reranker = relevant(result), result.reranker
+                doc_scope = "library"
+            entries.extend(found)
         except Exception:
             logger.exception("v2 retrieval failed conversation=%s", conversation.id)
 
-        rag_budget = int(context_budget_chars(model_id) * settings.RAG_CONTEXT_SHARE)
-        system_prompt, used = build_rag_context(entries, rag_budget)
+        if asset_ctx:
+            _, rag_budget = asset_context.budgets(total_budget)
+            rag_block, used = build_rag_context(entries, rag_budget, header="DOCUMENT EXCERPTS:", footer="---")
+        else:
+            rag_budget = int(total_budget * settings.RAG_CONTEXT_SHARE)
+            system_prompt, used = build_rag_context(entries, rag_budget)
+            rag_block = system_prompt
         citations = [to_citation(e) for e in used]
         logger.info(
             "rag conversation=%s model=%s retrieved=%d used=%d reranker=%s "
-            "rag_chars=%d/%d latency_ms=%d",
+            "rag_chars=%d/%d doc_scope=%s latency_ms=%d",
             conversation.id, model_id, len(entries), len(used), reranker,
-            len(system_prompt or ""), rag_budget, round((time.time() - rag_start) * 1000),
+            len(rag_block or ""), rag_budget, doc_scope, round((time.time() - rag_start) * 1000),
         )
+
+    if asset_ctx:
+        system_prompt = asset_context.system_prompt(asset_ctx) + (f"\n\n{rag_block}" if rag_block else "")
+        citations = asset_context.citations(asset_ctx) + citations
+        logger.info("asset context conversation=%s asset=%s facts=%d/%d chars=%d historian=%s docs_linked=%d",
+                    conversation.id, scope, len(asset_ctx.facts), asset_ctx.total_facts, len(asset_ctx.text),
+                    bool(asset_ctx.historian), len(asset_ctx.doc_keys))
+    elif asset_note:
+        system_prompt = asset_note + (f"\n\n{rag_block}" if rag_block else "")
 
     # --- Generate assistant reply ---
 
@@ -575,7 +634,7 @@ def chat_view(request):
         assistant_reply, history_sent = generate_reply_backend(
             message=user_message,
             model_id=model_id,
-            use_rag=use_rag,
+            use_rag=use_rag or bool(scope),
             history=history,
             system_prompt=system_prompt,
         )

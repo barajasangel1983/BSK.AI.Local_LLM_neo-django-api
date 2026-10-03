@@ -49,6 +49,7 @@ class ConversationSummarySerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "title",
+            "asset_id",
             "created_at",
             "updated_at",
             "last_message_at",
@@ -90,4 +91,4 @@ class ConversationDetailSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Conversation
-        fields = ["id", "title", "created_at", "updated_at", "messages"]
+        fields = ["id", "title", "asset_id", "created_at", "updated_at", "messages"]

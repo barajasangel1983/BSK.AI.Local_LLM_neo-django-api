@@ -15,6 +15,9 @@ class Conversation(models.Model):
     # Optional human-readable title (can be empty at first).
     title = models.CharField(max_length=255, blank=True)
 
+    # Asset the conversation is about (canonical id, e.g. bsk:asset:EXTR01); empty = not scoped.
+    asset_id = models.CharField(max_length=512, blank=True, default="")
+
     # Model that was used for this conversation's last turn (optional)
     model_id = models.CharField(max_length=64, blank=True)
 

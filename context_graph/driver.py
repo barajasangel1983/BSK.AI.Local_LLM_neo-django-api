@@ -44,6 +44,9 @@ def get_driver() -> Driver:
                 settings.NEO4J_URI,
                 auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
                 connection_timeout=settings.NEO4J_CONNECTION_TIMEOUT,
+                # Queries name relationship types the graph may not have yet (e.g. no
+                # DOCUMENTED_BY before a document is linked); those warnings are noise.
+                notifications_disabled_categories=["UNRECOGNIZED"],
             )
         return _driver
 
