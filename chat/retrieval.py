@@ -17,6 +17,8 @@ import time
 from dataclasses import asdict, dataclass, field
 
 import requests
+
+from usage import recorder as usage
 from django.conf import settings
 
 from ingestion.chroma_client import get_client
@@ -122,6 +124,19 @@ def _vector_search(query: str, n_candidates: int, where: dict | None = None) -> 
 def _rerank(query: str, chunks: list[V2Chunk], top_n: int) -> list[V2Chunk]:
     """Reorder chunks with the DGX reranker; raises on any failure."""
 
+    with usage.track("rerank", f"rerank:{settings.DGX_RERANK_MODEL}") as call:
+        data = _post_rerank(query, chunks, top_n).json()
+        call.from_response(data)
+
+    ranked: list[V2Chunk] = []
+    for item in data["results"]:
+        chunk = chunks[item["index"]]
+        chunk.rerank_score = round(float(item["relevance_score"]), 4)
+        ranked.append(chunk)
+    return ranked[:top_n]
+
+
+def _post_rerank(query: str, chunks: list[V2Chunk], top_n: int):
     resp = requests.post(
         settings.DGX_RERANK_URL,
         json={
@@ -133,13 +148,7 @@ def _rerank(query: str, chunks: list[V2Chunk], top_n: int) -> list[V2Chunk]:
         timeout=settings.RAG_RERANK_TIMEOUT,
     )
     resp.raise_for_status()
-
-    ranked: list[V2Chunk] = []
-    for item in resp.json()["results"]:
-        chunk = chunks[item["index"]]
-        chunk.rerank_score = round(float(item["relevance_score"]), 4)
-        ranked.append(chunk)
-    return ranked[:top_n]
+    return resp
 
 
 def search_v2(query: str, top_n: int, rerank: bool = True, doc_keys: list[str] | None = None) -> SearchResult:

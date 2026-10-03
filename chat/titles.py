@@ -11,6 +11,8 @@ import logging
 import re
 
 import requests
+
+from usage import recorder as usage
 from django.conf import settings
 
 logger = logging.getLogger("chat")
@@ -57,6 +59,13 @@ def clean_title(raw: str) -> str:
 
 
 def _llm_title(user_message: str, reply: str) -> str:
+    with usage.track("title", f"dgx-{settings.DGX_CHAT_MODEL}") as call:
+        data = _post_title(user_message, reply).json()
+        call.from_response(data)
+    return clean_title(data["choices"][0]["message"]["content"])
+
+
+def _post_title(user_message: str, reply: str):
     resp = requests.post(
         f"{settings.DGX_API_BASE.rstrip('/')}/v1/chat/completions",
         json={
@@ -73,7 +82,7 @@ def _llm_title(user_message: str, reply: str) -> str:
         timeout=settings.CHAT_TITLE_TIMEOUT,
     )
     resp.raise_for_status()
-    return clean_title(resp.json()["choices"][0]["message"]["content"])
+    return resp
 
 
 def generate_title(user_message: str, reply: str) -> tuple[str, str]:

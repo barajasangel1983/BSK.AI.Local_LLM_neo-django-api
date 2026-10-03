@@ -20,6 +20,8 @@ import base64
 from typing import Optional
 
 import requests
+
+from usage import recorder as usage
 from django.conf import settings
 
 from .chunker import PAGE_BREAK
@@ -73,16 +75,17 @@ class DoclingClient:
             ],
             "options": CONVERT_OPTIONS,
         }
-        resp = requests.post(
-            url,
-            json=payload,
-            headers=self._headers(),
-            timeout=max(self.timeout, 300.0),
-        )
-        if resp.status_code >= 300:
-            raise DoclingError(
-                f"Docling conversion failed: HTTP {resp.status_code}: {resp.text[:500]}"
+        with usage.track("parse", "docling"):
+            resp = requests.post(
+                url,
+                json=payload,
+                headers=self._headers(),
+                timeout=max(self.timeout, 300.0),
             )
+            if resp.status_code >= 300:
+                raise DoclingError(
+                    f"Docling conversion failed: HTTP {resp.status_code}: {resp.text[:500]}"
+                )
         result = resp.json()
 
         # Check for errors in the response

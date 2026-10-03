@@ -32,6 +32,8 @@ from rest_framework.response import Response
 from pathlib import Path
 from os import getenv
 
+from usage import recorder as usage
+
 from .models import Conversation, Message
 from .retrieval import search_v2
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
@@ -130,12 +132,15 @@ def call_grok_chat(messages: list[dict]) -> str:
         "messages": messages,
     }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # Grok follows the OpenAI-style response format
-    return data["choices"][0]["message"]["content"]
+    with usage.track(None, "external-gpt") as call:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        # Grok follows the OpenAI-style response format
+        reply = data["choices"][0]["message"]["content"]
+        call.from_response(data)
+        call.estimate(usage.messages_text(messages), reply)
+    return reply
 
 
 def call_dgx_gpt_oss_20b(messages: list[dict]) -> str:
@@ -156,11 +161,14 @@ def call_dgx_gpt_oss_20b(messages: list[dict]) -> str:
     }
 
     # Asset-scoped prompts are longer and the DGX is shared: 60 s was too tight.
-    resp = requests.post(url, headers=headers, json=payload, timeout=settings.DGX_CHAT_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()
-
-    return data["choices"][0]["message"]["content"]
+    with usage.track(None, f"dgx-{model}") as call:
+        resp = requests.post(url, headers=headers, json=payload, timeout=settings.DGX_CHAT_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        reply = data["choices"][0]["message"]["content"]
+        call.from_response(data)
+        call.estimate(usage.messages_text(messages), reply)
+    return reply
 
 
 def call_ollama_qwen3_8b(messages: list[dict]) -> str:
@@ -179,12 +187,15 @@ def call_ollama_qwen3_8b(messages: list[dict]) -> str:
         "stream": False,
     }
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    resp.raise_for_status()
-    data = resp.json()
-
-    # Ollama chat API returns the final message under data["message"]["content"]
-    return data["message"]["content"]
+    with usage.track(None, "ollama-qwen3-8b") as call:
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        # Ollama chat API returns the final message under data["message"]["content"]
+        reply = data["message"]["content"]
+        call.from_response(data)
+        call.estimate(usage.messages_text(messages), reply)
+    return reply
 
 
 # ---------------------------------------------------------------------
@@ -467,9 +478,18 @@ def rag_upload(request):
 # ---------------------------------------------------------------------
 
 
-@api_view(["POST"])
+CHAT_PURPOSES = ("chat", "compare", "regenerate")
 
+
+@api_view(["POST"])
 def chat_view(request):
+    """POST /api/chat/ — see _chat. `purpose` (chat | compare | regenerate) labels the model calls for Analytics."""
+    purpose = request.data.get("purpose")
+    with usage.scope(purpose=purpose if purpose in CHAT_PURPOSES else "chat"):
+        return _chat(request)
+
+
+def _chat(request):
     """POST /api/chat/
 
     Body:
@@ -526,6 +546,8 @@ def chat_view(request):
             )
     else:
         conversation = Conversation.objects.create(owner=owner, title=DEFAULT_TITLE)
+
+    usage.set_conversation(conversation.id)
 
     # --- Prior messages (before saving this one), oldest first ---
     from django.conf import settings
@@ -863,38 +885,35 @@ def rag_query(request):
 
 @api_view(["GET"])
 def usage_summary(request):
-    """GET /api/usage/summary/
+    """GET /api/usage/summary/?days=7|14|30|90&purpose=<purpose>
 
-    Return a very simple usage summary for the Analytics page.
-
-    For now we only report per-model conversation counts and total
-    conversations, scoped to the current owner. Later we can extend
-    this with token counts and latency when we start logging them.
+    Measured model / AI-service calls (usage.ModelCall): totals, per model, per
+    purpose and a daily series with prompt and completion tokens, requests,
+    errors and latency. Plus conversations per model (from the chat history).
     """
 
-    owner = get_current_user()
+    from usage.summary import RANGES, summary
 
-    # Per-model conversation counts
+    try:
+        days = int(request.query_params.get("days", 14))
+    except ValueError:
+        days = 0
+    if days not in RANGES:
+        return Response({"error": f"days must be one of {', '.join(map(str, RANGES))}"},
+                        status=status.HTTP_400_BAD_REQUEST)
+
+    owner = get_current_user()
     per_model = (
         Conversation.objects.filter(owner=owner)
         .values("model_id")
         .annotate(count=Count("id"))
         .order_by("model_id")
     )
-
-    total_conversations = sum(row["count"] for row in per_model)
-
-    data = {
-        "total_conversations": total_conversations,
-        "per_model": [
-            {
-                "model_id": row["model_id"] or "unknown",
-                "conversations": row["count"],
-            }
-            for row in per_model
-        ],
-    }
-
+    data = summary(days, request.query_params.get("purpose") or None)
+    data["total_conversations"] = sum(row["count"] for row in per_model)
+    data["conversations_per_model"] = [
+        {"model_id": row["model_id"] or "unknown", "conversations": row["count"]} for row in per_model
+    ]
     return Response(data)
 
 
