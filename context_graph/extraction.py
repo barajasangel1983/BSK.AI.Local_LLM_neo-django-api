@@ -31,7 +31,8 @@ from usage import recorder as usage
 from . import registry, repository
 from .driver import GraphUnavailable, session
 from .ids import clean_part, is_valid_id, make_id
-from .models import CandidateTriple, PromptPreset
+from . import evidence
+from .models import CandidateTriple, Evidence, PromptPreset
 from .schema import Schema
 
 logger = logging.getLogger("chat")
@@ -349,6 +350,7 @@ def run_extract(job) -> None:
     library.heartbeat(job, 0, total, f"extracting from {len(windows)} windows ({', '.join(presets)})")
 
     staged: dict[tuple, CandidateTriple] = {}
+    found: dict[int, list[Evidence]] = {}   # id(triple) -> one Evidence per window it was found in
     reviewed = {  # already approved/rejected in an earlier run: not staged again
         triple_key(t.mode, t.subject_name, t.subject_type, t.predicate, t.object_name, t.object_type)
         for t in CandidateTriple.objects.filter(document=doc).exclude(status=CandidateTriple.Status.PENDING)
@@ -382,19 +384,25 @@ def run_extract(job) -> None:
                                  candidate.object_name, candidate.object_type)
                 if key in reviewed:
                     skipped += 1
-                elif key in staged:
-                    staged[key].occurrences += 1
+                    continue
+                if key in staged:
                     if (t["confidence"] or 0) > (staged[key].confidence or 0):
                         staged[key].confidence = t["confidence"]
                 else:
                     staged[key] = candidate
+                windows_seen = found.setdefault(id(staged[key]), [])
+                if all(e.chunk_index != i for e in windows_seen):   # same window twice = one place
+                    windows_seen.append(_evidence(doc, window, i, preset, schema, t, params))
+                    staged[key].occurrences = len(windows_seen)
             done += 1
             library.heartbeat(job, done, total)
 
     with transaction.atomic():
         # A new run replaces the document's pending triples of the modes it ran; reviewed ones are kept.
         CandidateTriple.objects.filter(document=doc, status=CandidateTriple.Status.PENDING, mode__in=list(presets)).delete()
-        CandidateTriple.objects.bulk_create(staged.values())
+        triples = CandidateTriple.objects.bulk_create(staged.values())
+        evidence.attach(triples, found)
+        evidence.drop_orphans(document=doc)
     Document.objects.filter(pk=doc.pk).update(
         graph_status=Document.PipelineStatus.DONE, graph_updated_at=timezone.now(),
         graph_error=f"{failed} window call(s) failed" if failed else "",
@@ -402,6 +410,16 @@ def run_extract(job) -> None:
     note = f", {skipped} already reviewed" if skipped else ""
     library.heartbeat(job, total, total, f"{len(staged)} triples staged for review{note}")
     logger.info("extraction done doc=%s windows=%d triples=%d failed_calls=%d", doc.doc_key, len(windows), len(staged), failed)
+
+
+def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:
+    return Evidence(
+        source_kind=Evidence.Kind.TEXT, document=doc,
+        page_start=window.page_start, page_end=window.page_end, section_path=window.section_path,
+        chunk_index=i, window=params.get("chunking") or {}, extractor="llm-text",
+        model=settings.DGX_CHAT_MODEL, prompt=f"{preset.name} v{preset.version}", schema_version=schema.version,
+        excerpt=window.text[:EVIDENCE_CHARS], confidence=t.get("confidence"),
+    )
 
 
 def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset) -> CandidateTriple:

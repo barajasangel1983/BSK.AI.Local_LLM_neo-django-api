@@ -101,6 +101,50 @@ class ImportMapping(models.Model):
         return self.name
 
 
+class Evidence(models.Model):
+    """One place a fact was found (P8): a document window / page / region, a data-file row,
+    a figure (VLM), a human edit, later an OPC UA mapping.
+
+    Evidence rows belong to the triples staged from them; approved triples copy their
+    evidence IDs onto the Neo4j nodes and edges they write, so every graph fact points
+    back to its sources. Only a short excerpt is kept here; the text stays in the library.
+    """
+
+    class Kind(models.TextChoices):
+        TEXT = "text", "Document text"
+        STRUCTURED = "structured", "Structured import"
+        VISION = "vision", "Vision (VLM)"
+        HUMAN = "human", "Human"
+        OPC = "opc", "OPC UA"
+
+    source_kind = models.CharField(max_length=16, choices=Kind.choices)
+    document = models.ForeignKey("ingestion.Document", on_delete=models.CASCADE, related_name="evidence",
+                                 null=True, blank=True)
+    data_file = models.ForeignKey("DataFile", on_delete=models.CASCADE, related_name="evidence", null=True, blank=True)
+    page_start = models.PositiveIntegerField(null=True, blank=True)
+    page_end = models.PositiveIntegerField(null=True, blank=True)
+    section_path = models.JSONField(default=list, blank=True)
+    row_number = models.PositiveIntegerField(null=True, blank=True)
+    region = models.JSONField(default=dict, blank=True)          # {page, l, t, r, b, coord_origin} (figures, VLM)
+    figure_id = models.CharField(max_length=64, blank=True, default="")
+    chunk_index = models.PositiveIntegerField(null=True, blank=True)   # extraction window
+    window = models.JSONField(default=dict, blank=True)          # chunking strategy + params of that window
+    extractor = models.CharField(max_length=32, blank=True, default="")   # llm-text, column-mapping, vlm, human
+    model = models.CharField(max_length=100, blank=True, default="")
+    prompt = models.CharField(max_length=120, blank=True, default="")      # preset name + version
+    schema_version = models.PositiveIntegerField(null=True, blank=True)
+    excerpt = models.TextField(blank=True, default="")
+    confidence = models.FloatField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+
+    def __str__(self) -> str:
+        where = f"p.{self.page_start}" if self.page_start else f"row {self.row_number}" if self.row_number else ""
+        return f"{self.source_kind} {where}".strip()
+
+
 class CandidateTriple(models.Model):
     """A triple staged for review: extracted from a library document (LLM) or
     built from a structured data file (column mapping).
@@ -146,6 +190,9 @@ class CandidateTriple(models.Model):
     subject_props = models.JSONField(default=dict, blank=True)
     object_props = models.JSONField(default=dict, blank=True)
     applied_props = models.JSONField(default=dict, blank=True)   # {node id: [property names added to an existing node]}
+    applied_aliases = models.JSONField(default=dict, blank=True)  # {node id: [names added as aliases]}
+    # Every place this triple was found (all windows / rows); the evidence_* fields below keep the first one.
+    evidence = models.ManyToManyField(Evidence, related_name="triples", blank=True)
     confidence = models.FloatField(null=True, blank=True)
     issue = models.CharField(max_length=255, blank=True, default="")  # e.g. pair not allowed by the schema
 

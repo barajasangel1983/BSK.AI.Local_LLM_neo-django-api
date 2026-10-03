@@ -38,7 +38,8 @@ from django.utils import timezone
 from . import registry
 from .extraction import EntityIndex, normalize
 from .ids import clean_part, is_valid_id, make_id
-from .models import CandidateTriple, DataFile
+from . import evidence
+from .models import CandidateTriple, DataFile, Evidence
 from .schema import Schema, SchemaError
 
 KINDS = {".csv": "csv", ".tsv": "csv", ".txt": "csv", ".xlsx": "xlsx", ".xlsm": "xlsx"}
@@ -407,6 +408,7 @@ class BuildResult:
     skipped_rows: int = 0
     new_entities: int = 0
     existing_entities: int = 0
+    evidence: dict = field(default_factory=dict)   # id(triple) -> [Evidence] (one per row)
 
     def stats(self) -> dict:
         return {"rows": self.rows, "triples": len(self.triples), "skipped_rows": self.skipped_rows,
@@ -486,15 +488,18 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
                 continue
             emitted += 1
             key = (a.id, rel["type"], b.id)
-            if key in staged:
-                staged[key].occurrences += 1
-                continue
-            evidence = "; ".join(f"{c}: {v}" for c, v in values.items() if v)[:EVIDENCE_CHARS]
-            staged[key] = CandidateTriple(
-                data_file=df, source=CandidateTriple.Source.STRUCTURED, mode="schema",
-                subject_type=a.type, subject_id=a.id, predicate=rel["type"], object_type=b.type, object_id=b.id,
-                row_number=number, evidence_text=evidence, schema_version=schema.version,
-            )
+            excerpt = "; ".join(f"{c}: {v}" for c, v in values.items() if v)[:EVIDENCE_CHARS]
+            if key not in staged:
+                staged[key] = CandidateTriple(
+                    data_file=df, source=CandidateTriple.Source.STRUCTURED, mode="schema",
+                    subject_type=a.type, subject_id=a.id, predicate=rel["type"], object_type=b.type, object_id=b.id,
+                    row_number=number, evidence_text=excerpt, schema_version=schema.version,
+                )
+                result.evidence[id(staged[key])] = []
+            rows = result.evidence[id(staged[key])]
+            rows.append(Evidence(source_kind=Evidence.Kind.STRUCTURED, data_file=df, row_number=number,
+                                 extractor="column-mapping", schema_version=schema.version, excerpt=excerpt))
+            staged[key].occurrences = len(rows)
         if not emitted:
             result.skipped_rows += 1
             if not any(e["row"] == number for e in result.row_errors):
@@ -529,7 +534,8 @@ def stage(df: DataFile, mapping: dict, asset_id: str) -> dict:
                    .values_list("subject_id", "predicate", "object_id"))
     fresh = [t for t in result.triples if (t.subject_id, t.predicate, t.object_id) not in reviewed]
     df.triples.filter(status=CandidateTriple.Status.PENDING).delete()
-    CandidateTriple.objects.bulk_create(fresh)
+    evidence.attach(CandidateTriple.objects.bulk_create(fresh), result.evidence)
+    evidence.drop_orphans(data_file=df)
     df.mapping, df.asset_id, df.staged_at = mapping, asset_id or "", timezone.now()
     df.save(update_fields=["mapping", "asset_id", "staged_at"])
     return {**result.stats(), "staged": len(fresh), "already_reviewed": len(result.triples) - len(fresh),

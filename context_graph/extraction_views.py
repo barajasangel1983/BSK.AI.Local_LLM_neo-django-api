@@ -23,7 +23,8 @@ from ingestion.library_views import job_json
 from ingestion.models import Document, Job
 
 from . import extraction, registry, triples
-from .models import CandidateTriple, PromptPreset
+from .evidence import evidence_json
+from .models import CandidateTriple, Evidence, PromptPreset
 from .views import _int, graph_errors
 
 MAX_TRIPLES = 500
@@ -173,6 +174,8 @@ def triple_json(t: CandidateTriple) -> dict:
         "object": {"name": t.object_name, "type": t.object_type, "id": t.object_id or None, "existing": t.object_existing,
                    "properties": t.object_props or {}},
         "confidence": t.confidence, "issue": t.issue, "occurrences": t.occurrences, "edited": t.edited,
+        # Every place the triple was found (P8a); `evidence` below is the first one (kept for older clients).
+        "sources": [evidence_json(e) for e in t.evidence.all()],
         "evidence": {"chunk_index": t.chunk_index, "page_start": t.page_start, "page_end": t.page_end,
                      "section_path": t.section_path, "text": t.evidence_text, "row": t.row_number},
         "provenance": {"model": t.model, "preset": t.preset_name, "preset_version": t.preset_version,
@@ -185,7 +188,7 @@ def triple_json(t: CandidateTriple) -> dict:
 @api_view(["GET"])
 def triple_list(request):
     qp = request.query_params
-    qs = CandidateTriple.objects.select_related("document")
+    qs = CandidateTriple.objects.select_related("document").prefetch_related("evidence")
     if qp.get("document"):
         qs = qs.filter(document_id=qp["document"])
     if qp.get("data_file"):
@@ -215,6 +218,15 @@ def triple_list(request):
         "total": qs.count(), "counts": counts, "offset": offset, "limit": limit,
         "triples": [triple_json(t) for t in qs[offset:offset + limit]],
     })
+
+
+@api_view(["GET"])
+def evidence_detail(request, evidence_id):
+    """GET /api/graph/evidence/<id>/ — one evidence record and the triples staged from it."""
+    e = Evidence.objects.filter(pk=evidence_id).first()
+    if e is None:
+        return _error("evidence not found", status.HTTP_404_NOT_FOUND)
+    return Response({**evidence_json(e), "triple_ids": list(e.triples.values_list("id", flat=True))})
 
 
 @api_view(["PATCH"])
