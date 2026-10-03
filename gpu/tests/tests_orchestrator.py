@@ -2,6 +2,7 @@
 
 import fcntl
 import os
+import threading
 import tempfile
 from unittest.mock import MagicMock, patch
 
@@ -85,6 +86,25 @@ class ActivateTests(GpuTestCase):
 @patch("gpu.orchestrator.requests.get")
 @patch("gpu.orchestrator.requests.post")
 class UseTests(GpuTestCase):
+    def test_touches_while_holding_the_gpu_and_at_the_end(self, post, get):
+        post.return_value = OK_DOCLING
+        touched = threading.Event()
+        post.side_effect = lambda url, **kw: (touched.set() if url.endswith("/gpu/touch") else None) or OK_DOCLING
+        with override_settings(GPU_TOUCH_INTERVAL=0.01):
+            with gpu.use("docling"):
+                self.assertTrue(touched.wait(2), "heartbeat touched during the block")
+        urls = [c.args[0] for c in post.call_args_list]
+        self.assertEqual(urls[0], "http://bsk:5003/gpu/activate")
+        self.assertEqual(urls[-1], "http://bsk:5003/gpu/touch")              # final touch when the block ends
+
+    def test_touch_failures_never_break_the_job(self, post, get):
+        post.side_effect = lambda url, **kw: OK_DOCLING if url.endswith("/activate") else (_ for _ in ()).throw(
+            requests.ConnectionError("blip"))
+        with self.assertLogs("gpu", level="WARNING") as logs:
+            with gpu.use("docling"):
+                pass
+        self.assertIn("gpu touch failed", logs.output[-1])
+
     def test_activates_inside_the_lock_and_records_it(self, post, get):
         post.return_value = OK_DOCLING
         with gpu.use("docling"):
@@ -149,11 +169,14 @@ class DoclingThroughOrchestratorTests(GpuTestCase):
             if url.endswith("/gpu/activate"):
                 order.append("activate")
                 return activation.pop(0) if activation else OK_DOCLING
+            if url.endswith("/gpu/touch"):
+                order.append("touch")
+                return resp(200, {"ok": True})
             order.append("convert")
             return resp(200, {"status": "success", "document": {"md_content": "x"}})
         post.side_effect = fake
         self.assertEqual(DoclingClient(base_url="http://bsk:5001").convert_file(b"%PDF", "a.pdf")["document"]["md_content"], "x")
-        self.assertEqual(order, ["activate", "convert"])
+        self.assertEqual(order, ["activate", "convert", "touch"])     # the idle timer is reset after the parse
         self.assertEqual(sorted(ModelCall.objects.values_list("purpose", flat=True)), ["gpu", "parse"])
 
         failed = resp(200, {"active": "docling", "health": "error", "error_detail": "container exited"})

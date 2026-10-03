@@ -309,6 +309,7 @@ GPU_ORCHESTRATOR_URL = os.getenv("GPU_ORCHESTRATOR_URL", "http://100.86.26.4:500
 GPU_ACTIVATE_TIMEOUT = float(os.getenv("GPU_ACTIVATE_TIMEOUT", "90"))       # activate + health, seconds
 GPU_LOCK_PATH = os.getenv("GPU_LOCK_PATH", str(BASE_DIR / "data" / "gpu.lock"))
 GPU_LOCK_WAIT = float(os.getenv("GPU_LOCK_WAIT", "1800"))                   # pipeline jobs wait this long for the GPU
+GPU_TOUCH_INTERVAL = float(os.getenv("GPU_TOUCH_INTERVAL", "300"))        # idle-timer heartbeat while a job holds the GPU
 VLM_URL = os.getenv("VLM_URL", "http://100.86.26.4:5002/v1")
 VLM_MODEL = os.getenv("VLM_MODEL", "qwen3-vl-4b-instruct")
 VLM_TIMEOUT = float(os.getenv("VLM_TIMEOUT", "90"))
