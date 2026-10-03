@@ -83,7 +83,7 @@ def to_similarity(distance: float, space: str) -> float:
     return 1.0 - distance  # cosine and ip distances are 1 - similarity
 
 
-def _vector_search(query: str, n_candidates: int) -> list[V2Chunk]:
+def _vector_search(query: str, n_candidates: int, where: dict | None = None) -> list[V2Chunk]:
     collection = get_v2_collection()
     if collection is None or collection.count() == 0:
         return []
@@ -94,6 +94,7 @@ def _vector_search(query: str, n_candidates: int) -> list[V2Chunk]:
         query_embeddings=[embedding],
         n_results=min(n_candidates, collection.count()),
         include=["documents", "metadatas", "distances"],
+        **({"where": where} if where else {}),
     )
 
     chunks: list[V2Chunk] = []
@@ -141,11 +142,15 @@ def _rerank(query: str, chunks: list[V2Chunk], top_n: int) -> list[V2Chunk]:
     return ranked[:top_n]
 
 
-def search_v2(query: str, top_n: int, rerank: bool = True) -> SearchResult:
-    """Vector search + rerank over bsk_rag_v2. Raises if embedding/search fails."""
+def search_v2(query: str, top_n: int, rerank: bool = True, doc_keys: list[str] | None = None) -> SearchResult:
+    """Vector search + rerank over bsk_rag_v2. Raises if embedding/search fails.
+
+    `doc_keys` limits the search to those documents (chunk metadata `asset_id` holds the document key).
+    """
 
     start = time.time()
-    candidates = _vector_search(query, max(settings.RAG_V2_CANDIDATES, top_n))
+    where = {"asset_id": {"$in": list(doc_keys)}} if doc_keys else None
+    candidates = _vector_search(query, max(settings.RAG_V2_CANDIDATES, top_n), where)
 
     reranker = "skipped"
     chunks = candidates

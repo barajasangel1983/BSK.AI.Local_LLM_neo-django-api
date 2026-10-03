@@ -165,6 +165,7 @@ GROK_CHAT_MODEL = os.getenv("GROK_CHAT_MODEL", "grok-4-fast-reasoning")
 # === DGX Spark / vLLM backend (Qwen3.8-27B-FP8, main LLM :8004) ===
 DGX_API_BASE = os.getenv("DGX_API_BASE", "http://100.74.225.3:8004")
 DGX_CHAT_MODEL = os.getenv("DGX_CHAT_MODEL", "qwen38-27b-fp8")
+DGX_CHAT_TIMEOUT = float(os.getenv("DGX_CHAT_TIMEOUT", "180"))   # seconds per chat reply
 # RAG shared infra on DGX (Tailscale IP 100.74.225.3 = spark-ec99)
 DGX_EMBED_URL = os.getenv("DGX_EMBED_URL", "http://100.74.225.3:8010/v1/embeddings")
 DGX_EMBED_MODEL = os.getenv("DGX_EMBED_MODEL", "nemotron-3-embed-1b")
@@ -248,6 +249,9 @@ RAG_QUERY_MAX_TOP_K = int(os.getenv("RAG_QUERY_MAX_TOP_K", "10"))
 # Share of the model's CHAT_CONTEXT_MAX_CHARS* budget that RAG context may use;
 # history gets what is left.
 RAG_CONTEXT_SHARE = float(os.getenv("RAG_CONTEXT_SHARE", "0.5"))
+# Asset-scoped chat: shares of the same budget for the asset fact sheet and for document excerpts.
+ASSET_CONTEXT_SHARE = float(os.getenv("ASSET_CONTEXT_SHARE", "0.3"))
+ASSET_RAG_SHARE = float(os.getenv("ASSET_RAG_SHARE", "0.25"))
 # Reranker request timeout (seconds); on timeout we fall back to vector order.
 RAG_RERANK_TIMEOUT = float(os.getenv("RAG_RERANK_TIMEOUT", "10"))
 # Chat drops reranked chunks scoring below this (reranker scores are ~0.0 for

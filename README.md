@@ -106,6 +106,21 @@ LLM. Data files are kept apart from the document library (`GRAPH_DATA_BASE/<id>/
   those are removed again if the triple is deleted.
 - Samples for EXTR01 (derived from the seed, plus a few new rows): `context_graph/samples/`.
 
+### Asset-scoped chat (P7)
+
+`POST /api/chat/` accepts `asset_id` (`bsk:asset:...`; `""` clears it, absent keeps the conversation's scope, stored on
+`Conversation.asset_id`). For a scoped conversation the system prompt carries the asset's **fact sheet**
+(`chat/asset_context.py`) — location, component tree, signals with units and normal ranges, alarms with components and
+procedures, procedures, connections, linked documents — built from the curated graph (never the lab layer), independent
+of `use_rag`. Each signal line includes the **last RUNNING historian value** (`plc_1_historian`, via the signal's
+`historian_ref`) compared with its range; the latest sample's timestamp and machine state are stated. If the sheet exceeds
+`ASSET_CONTEXT_SHARE` (0.3) of the model's budget, lines matching the question are kept first.
+
+With RAG on, documents linked to the asset (DOCUMENTED_BY) are searched first (`search_v2(..., doc_keys=...)`), then the
+whole library; excerpts get `ASSET_RAG_SHARE` (0.25). Sources: `kind: "graph"` ([G], with the facts used),
+`"historian"` ([H]) and `"document"` ([1], [2], …). Unknown asset → 400; graph down when choosing → 503, mid-conversation →
+the answer says the facts are unavailable. DGX chat timeout: `DGX_CHAT_TIMEOUT` (180 s).
+
 ## Document library (shared by RAG Lab and GraphLab)
 
 Uploads go to a shared library (`/api/documents/`); each file is parsed once by Docling and cached under
