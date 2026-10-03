@@ -13,6 +13,10 @@ included. So:
   POST /gpu/activate; while `health` is "starting", poll GET /gpu/status
   every 2 s; 409 (another transition owns the orchestrator's lock) → back off
   and retry; `health: "error"` → one retry, then BSK counts as unavailable.
+- The orchestrator stops its GPU services after 30 min without POST /gpu/touch
+  (activating the already-active service is a no-op that does *not* reset the
+  timer). While a block holds the GPU, a heartbeat touches every
+  GPU_TOUCH_INTERVAL seconds, and once more when the block ends.
 - With GPU_ORCHESTRATOR_ENABLED off (until BSK's orchestrator is live) the
   Hub calls services directly, as before. When enabled but the orchestrator
   can't be reached, Docling is still called directly if its own health check
@@ -24,6 +28,7 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
+import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -113,6 +118,36 @@ def activate(service: str) -> dict:
             raise GpuUnavailable(f"{service} failed to start on BSK: {str(detail)[:300]}")
 
 
+def touch() -> bool:
+    """POST /gpu/touch: reset the orchestrator's idle timer. Failures are logged, never raised."""
+    try:
+        resp = requests.post(_url("/gpu/touch"), timeout=CONNECT_TIMEOUT)
+        resp.raise_for_status()
+        return True
+    except requests.RequestException as exc:
+        logger.warning("gpu touch failed: %s", exc)
+        return False
+
+
+@contextmanager
+def _heartbeat():
+    """Touch every GPU_TOUCH_INTERVAL seconds while the block runs, and once at the end."""
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(settings.GPU_TOUCH_INTERVAL):
+            touch()
+
+    thread = threading.Thread(target=beat, name="gpu-touch", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=CONNECT_TIMEOUT + 1)
+        touch()
+
+
 def _docling_answers() -> bool:
     try:
         return requests.get(settings.DOCLING_URL.rstrip("/") + "/health", timeout=5).status_code == 200
@@ -148,16 +183,22 @@ def _lock(wait: float):
 def use(service: str, wait: float | None = None):
     """Hold the GPU for `service` for the duration of the block (see module docstring)."""
     with _lock(settings.GPU_LOCK_WAIT if wait is None else wait):
+        activated = False
         if enabled():
             try:
                 with usage.track("gpu", f"gpu:{service}"):
                     activate(service)
+                activated = True
             except OrchestratorUnreachable:
                 if service == "docling" and _docling_answers():
                     logger.warning("gpu orchestrator unreachable; calling Docling directly (it answers)")
                 else:
                     raise
-        yield
+        if activated:
+            with _heartbeat():
+                yield
+        else:
+            yield
 
 
 def health_summary() -> dict:
