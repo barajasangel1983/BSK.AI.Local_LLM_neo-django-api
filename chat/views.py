@@ -974,7 +974,62 @@ TRACKED_ENDPOINTS = [
         "model": "graph",
         "can_restart": False,
     },
+    # BSK desktop: one GPU shared by Docling and the VLM, started on demand by the orchestrator.
+    {
+        "id": "gpu-orchestrator",
+        "name": "GPU orchestrator (BSK)",
+        "url": "",
+        "model": "gpu",
+        "can_restart": False,
+    },
+    {
+        "id": "docling-bsk",
+        "name": "Docling (BSK)",
+        "url": "",
+        "model": "docling",
+        "can_restart": False,
+    },
+    {
+        "id": "vlm-bsk",
+        "name": "VLM Qwen3-VL-4B (BSK)",
+        "url": "",
+        "model": "vlm",
+        "can_restart": False,
+    },
 ]
+
+
+_BSK_URLS = {
+    "gpu-orchestrator": lambda: f"{settings.GPU_ORCHESTRATOR_URL.rstrip('/')}/gpu/status",
+    "docling-bsk": lambda: settings.DOCLING_URL,
+    "vlm-bsk": lambda: settings.VLM_URL,
+}
+
+
+def _bsk_status(ep_id: str) -> tuple[str, int]:
+    """BSK services: never probe the VLM / Docling directly while the orchestrator owns them.
+
+    Returns (status, latency_ms). "idle" = not running by design (started on demand)."""
+    from gpu import orchestrator as gpu
+
+    summary = gpu.health_summary()
+    if not summary["enabled"]:
+        if ep_id == "docling-bsk":  # direct mode (as before the orchestrator)
+            start = time.time()
+            try:
+                ok = requests.get(f"{settings.DOCLING_URL.rstrip('/')}/health", timeout=5).status_code == 200
+            except requests.RequestException:
+                ok = False
+            return ("online" if ok else "offline"), round((time.time() - start) * 1000) if ok else 0
+        return "idle", 0     # orchestrator / VLM not in use yet
+    if not summary["reachable"]:
+        return "offline", 0
+    if ep_id == "gpu-orchestrator":
+        return ("degraded" if summary.get("health") == "error" else "online"), summary.get("latency_ms", 0)
+    service = "docling" if ep_id == "docling-bsk" else "vl"
+    if summary.get("active") != service:
+        return "idle", 0
+    return {"ok": "online", "starting": "degraded"}.get(summary.get("health"), "offline"), summary.get("latency_ms", 0)
 
 
 def _check_single_endpoint(ep: dict) -> dict:
@@ -1002,6 +1057,8 @@ def _check_single_endpoint(ep: dict) -> dict:
         # disabled / not_configured / offline all show as offline on the page.
         status_val = "online" if result["status"] == "online" else "offline"
         latency = result.get("latency_ms", 0)
+    elif ep_id in ("gpu-orchestrator", "docling-bsk", "vlm-bsk"):
+        status_val, latency = _bsk_status(ep_id)
     elif ep_id == "historian-db":
         start = time.time()
         try:
@@ -1038,14 +1095,14 @@ def _check_single_endpoint(ep: dict) -> dict:
 
     tracker = _uptime_tracker[ep_id]
     tracker["total"] += 1
-    if status_val == "online":
+    if status_val in ("online", "idle"):   # idle = stopped by design, started on demand
         tracker["ok"] += 1
     uptime = round(tracker["ok"] / tracker["total"] * 100, 1) if tracker["total"] > 0 else 100.0
 
     return {
         "id": ep_id,
         "name": ep["name"],
-        "url": settings.NEO4J_URI if ep_id == "context-graph" else ep.get("url", ""),
+        "url": settings.NEO4J_URI if ep_id == "context-graph" else _BSK_URLS.get(ep_id, lambda: ep.get("url", ""))(),
         "model": ep["model"],
         "status": status_val,
         "latency": latency,

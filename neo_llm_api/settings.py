@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     "context_graph",
     "ingestion",
     "usage",
+    "gpu",
 ]
 
 MIDDLEWARE = [
@@ -299,3 +300,15 @@ GRAPH_EXTRACT_MAX_TOKENS = int(os.getenv("GRAPH_EXTRACT_MAX_TOKENS", "2000"))  #
 GRAPH_DATA_BASE = os.getenv("GRAPH_DATA_BASE", str(BASE_DIR / "data" / "graph_data"))
 GRAPH_IMPORT_MAX_ROWS = int(os.getenv("GRAPH_IMPORT_MAX_ROWS", "5000"))
 GRAPH_IMPORT_MAX_UPLOAD_BYTES = int(os.getenv("GRAPH_IMPORT_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+
+# BSK GPU (one 8 GB card: Docling or the VLM) behind its orchestrator; contract in
+# the frontend repo's claude/VLM_service_brief.md (v1.2). Off until BSK's orchestrator
+# is live: then the Hub activates each service before using it.
+GPU_ORCHESTRATOR_ENABLED = os.getenv("GPU_ORCHESTRATOR_ENABLED", "false").lower() == "true"
+GPU_ORCHESTRATOR_URL = os.getenv("GPU_ORCHESTRATOR_URL", "http://100.86.26.4:5003")
+GPU_ACTIVATE_TIMEOUT = float(os.getenv("GPU_ACTIVATE_TIMEOUT", "90"))       # activate + health, seconds
+GPU_LOCK_PATH = os.getenv("GPU_LOCK_PATH", str(BASE_DIR / "data" / "gpu.lock"))
+GPU_LOCK_WAIT = float(os.getenv("GPU_LOCK_WAIT", "1800"))                   # pipeline jobs wait this long for the GPU
+VLM_URL = os.getenv("VLM_URL", "http://100.86.26.4:5002/v1")
+VLM_MODEL = os.getenv("VLM_MODEL", "qwen3-vl-4b-instruct")
+VLM_TIMEOUT = float(os.getenv("VLM_TIMEOUT", "90"))
