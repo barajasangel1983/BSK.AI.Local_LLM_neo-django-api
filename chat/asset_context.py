@@ -21,7 +21,7 @@ from decimal import Decimal
 
 from django.conf import settings
 
-from context_graph import services
+from context_graph import provenance, services
 from context_graph.ids import is_valid_id
 from context_graph.repository import NodeNotFound
 
@@ -41,6 +41,7 @@ class Line:
     section: str
     text: str
     pinned: bool = False   # always included
+    node_id: str = ""      # the entity the fact is about (for its source label, P8c)
 
 
 @dataclass
@@ -49,6 +50,7 @@ class AssetContext:
     name: str
     text: str                                         # prompt block
     facts: list[str] = field(default_factory=list)    # lines actually included (for the citation)
+    fact_sources: list[str] = field(default_factory=list)   # where each fact comes from (seed, document page, import row)
     total_facts: int = 0
     historian: dict | None = None                      # {"latest_ts", "state", "running_ts", "out_of_range": [...]}
     doc_keys: list[str] = field(default_factory=list)  # documents linked to the asset (DOCUMENTED_BY)
@@ -165,7 +167,8 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
         header += f" — {props['description']}"
     lines.append(Line("ASSET", header, pinned=True))
     if ctx["hierarchy"]:
-        lines.append(Line("ASSET", "Location: " + " > ".join(n["name"] for n in ctx["hierarchy"]), pinned=True))
+        lines.append(Line("ASSET", "Location: " + " > ".join(n["name"] for n in ctx["hierarchy"]), pinned=True,
+                          node_id=asset_id))
 
     historian = None
     if snap:
@@ -187,7 +190,7 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
             text += f": {c['properties']['description']}"
         if c["alarms"]:
             text += f"; alarms: {', '.join(alarm_names.get(a, a) for a in c['alarms'])}"
-        lines.append(Line("COMPONENTS", text))
+        lines.append(Line("COMPONENTS", text, node_id=c["id"]))
 
     for s, owner in signals:
         p = s["properties"]
@@ -204,7 +207,7 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
                 historian["out_of_range"].append(f"{s['name']}: {_fmt(value)} {unit} ({status})".strip())
         if detail:
             text += ": " + "; ".join(detail)
-        lines.append(Line("SIGNALS", text))
+        lines.append(Line("SIGNALS", text, node_id=s["id"]))
 
     for a in ctx["alarms"]:
         p = a["properties"]
@@ -217,7 +220,7 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
             text += f"; components: {', '.join(names.get(c, c) for c in a['components'])}"
         if a["procedures"]:
             text += f"; procedures: {', '.join(pr['name'] for pr in a['procedures'])}"
-        lines.append(Line("ALARMS", text))
+        lines.append(Line("ALARMS", text, node_id=a["id"]))
 
     for pr in ctx["procedures"]:
         p = pr["properties"]
@@ -231,20 +234,32 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
             text += f"; applies to: {', '.join(names.get(t, t) for t in pr['applies_to'])}"
         if pr.get("addresses"):
             text += f"; addresses: {', '.join(alarm_names.get(a, a) for a in pr['addresses'])}"
-        lines.append(Line("PROCEDURES", text))
+        lines.append(Line("PROCEDURES", text, node_id=pr["id"]))
 
     for conn in ctx["connections"]:
         kind = f" ({conn['kind']})" if conn.get("kind") else ""
-        lines.append(Line("CONNECTIONS", f"- {names.get(conn['source'], conn['source'])} → {names.get(conn['target'], conn['target'])}{kind}"))
+        lines.append(Line("CONNECTIONS", f"- {names.get(conn['source'], conn['source'])} → {names.get(conn['target'], conn['target'])}{kind}",
+                          node_id=f"edge:{conn['source']}>{conn['target']}"))
 
     for d in ctx["documents"]:
         lines.append(Line("DOCUMENTS", f"- {d['name']}" + (f" (doc_key {d['properties']['doc_key']})" if d["properties"].get("doc_key") else "")))
 
     selected = _fit(lines, question, budget_chars)
     text = _render(selected)
+    cited = [ln for ln in selected if not ln.pinned or ln.text.startswith(("Location", "Historian"))]
+    node_props = {asset_id: asset["properties"]}
+    node_props.update({c["id"]: c["properties"] for c, _ in flat})
+    node_props.update({s["id"]: s["properties"] for s, _ in signals})
+    node_props.update({a["id"]: a["properties"] for a in ctx["alarms"]})
+    node_props.update({pr["id"]: pr["properties"] for pr in ctx["procedures"]})
+    node_props.update({f"edge:{c['source']}>{c['target']}": {"source": c.get("origin"), "evidence_ids": c.get("evidence_ids")}
+                       for c in ctx["connections"]})
+    labels = provenance.fact_source_labels({ln.node_id: node_props.get(ln.node_id, {}) for ln in cited if ln.node_id})
     return AssetContext(
         asset_id=asset_id, name=asset["name"], text=text,
-        facts=[ln.text.strip() for ln in selected if not ln.pinned or ln.text.startswith(("Location", "Historian"))],
+        facts=[ln.text.strip() for ln in cited],
+        fact_sources=[labels.get(ln.node_id, "plc_1_historian" if ln.text.startswith("Historian") else "")
+                      for ln in cited],
         total_facts=len([ln for ln in lines if not ln.pinned]),
         historian=historian,
         doc_keys=sorted({d["properties"]["doc_key"] for d in ctx["documents"] if d["properties"].get("doc_key")}),
@@ -310,7 +325,7 @@ def citations(ctx: AssetContext) -> list[dict]:
         "kind": "graph", "source": "Context Graph", "asset_id": ctx.asset_id, "section_path": [ctx.name],
         "page_start": None, "page_end": None, "score": None,
         "snippet": f"{len(ctx.facts)} of {ctx.total_facts} facts about {ctx.name}",
-        "facts": ctx.facts,
+        "facts": ctx.facts, "fact_sources": ctx.fact_sources,
     }]
     if ctx.historian:
         h = ctx.historian

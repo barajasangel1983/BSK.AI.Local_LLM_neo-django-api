@@ -12,7 +12,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-from . import driver, registry, services
+from . import driver, provenance, registry, services
 from .repository import NodeNotFound
 from .schema import SchemaError
 from .services import SchemaConflict
@@ -157,6 +157,29 @@ def node_detail(request, node_id):
 def alarm_procedures(request, alarm_id):
     """GET /api/graph/alarms/<id>/procedures/"""
     return Response(services.alarm_procedures(alarm_id))
+
+
+@api_view(["GET"])
+@graph_errors
+def node_sources(request, node_id):
+    """GET /api/graph/nodes/<id>/sources/ — origin, aliases and every evidence record behind an entity (P8c)."""
+    return Response(provenance.node_sources(node_id))
+
+
+@api_view(["GET"])
+@graph_errors
+def edge_sources(request):
+    """GET /api/graph/edges/sources/?from=<id>&type=<REL>&to=<id>  (or ?triple_id=<n> for a lab relationship)."""
+    qp = request.query_params
+    if qp.get("triple_id"):
+        try:
+            return Response(provenance.triple_sources(int(qp["triple_id"])))
+        except ValueError:
+            raise ValueError("triple_id must be an integer")
+    missing = [k for k in ("from", "type", "to") if not qp.get(k)]
+    if missing:
+        raise ValueError(f"required: {', '.join(missing)}")
+    return Response(provenance.edge_sources(qp["from"], qp["type"], qp["to"]))
 
 
 @api_view(["GET"])

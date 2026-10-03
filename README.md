@@ -109,9 +109,17 @@ Each triple end records `match` (`id`, `tag`, `alias`, `name`, `possible` or `ne
 - `aliases` per relationship. A synonym becomes the schema relationship only when the pair is allowed.
 - Both are listed in extraction prompts and in `extract/config/`. Vocabulary changes count as a schema change.
 
-**Draft schema v2** (DRIVES / PROTECTS / CONTROLS, subtypes, aliases): `context_graph/schemas/industrial_v2.yaml`. It validates against the live graph with no conflicts.
+**Schema v2** (DRIVES / PROTECTS / CONTROLS, subtypes, aliases): `context_graph/schemas/industrial_v2.yaml`. Saved and active since 2026-10-03; version 1 can be re-activated.
 
 Units in imports are normalized (`context_graph/units.py`).
+
+### Traceability (P8c)
+
+`context_graph/provenance.py` answers "why is this in the graph?":
+
+- `GET /api/graph/nodes/<id>/sources/` returns `origin` (e.g. `Seed (extr01-v1)`, `Document extraction`, `Structured import`), `aliases`, `subtype`, `tag` and `sources`. `sources` is every evidence record behind the node: its own `evidence_ids` plus those of approved triples naming it. Each record has a short `label` ("manual.pdf p.4", "bom.csv row 2"), the file names and the approved `triples` that used it. Lab nodes (`lab:…`) collect the evidence of their `LAB_RELATION` triples.
+- `GET /api/graph/edges/sources/?from=&type=&to=` returns the same for one curated relationship (its `evidence_ids` plus those of its `triple_ids`). `?triple_id=` is for a lab relationship.
+- Asset chat: the graph citation carries `fact_sources`, one label per fact in `facts`, either the first evidence or the origin.
 
 ### Structured data import (P6)
 
