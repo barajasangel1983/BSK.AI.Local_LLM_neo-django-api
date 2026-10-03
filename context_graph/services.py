@@ -386,10 +386,11 @@ def get_asset_context(asset_id: str) -> dict:
             (parent["children"] if parent else roots).append(comp)
 
         connections = [
-            {"source": row["s"], "target": row["t"], "kind": row["kind"]}
+            {"source": row["s"], "target": row["t"], "kind": row["kind"],
+             "origin": row["origin"], "evidence_ids": row["evidence_ids"] or []}
             for row in tx.run(
                 "MATCH (a:Component)-[r:CONNECTED_TO]->(b:Component) WHERE a.id IN $ids "
-                "RETURN a.id AS s, b.id AS t, r.kind AS kind",
+                "RETURN a.id AS s, b.id AS t, r.kind AS kind, r.source AS origin, r.evidence_ids AS evidence_ids",
                 ids=list(components),
             )
         ]
