@@ -121,6 +121,16 @@ whole library; excerpts get `ASSET_RAG_SHARE` (0.25). Sources: `kind: "graph"` (
 `"historian"` ([H]) and `"document"` ([1], [2], …). Unknown asset → 400; graph down when choosing → 503, mid-conversation →
 the answer says the facts are unavailable. DGX chat timeout: `DGX_CHAT_TIMEOUT` (180 s).
 
+## Usage analytics
+
+Every call to a model or AI service is recorded in `usage.ModelCall` by `usage.recorder.track(...)`:
+
+- **Purposes:** chat, compare, regenerate, title, extract, embed, rerank, parse.
+- **Fields:** prompt / completion tokens from the provider's usage (estimated and flagged when absent), latency, ok / error / timeout.
+- Recording never changes the call.
+
+`GET /api/usage/summary/?days=7|14|30|90&purpose=` returns totals, per model, per purpose, a daily series, and conversations per model. The chat accepts `purpose: "compare" | "regenerate"` to label calls.
+
 ## Document library (shared by RAG Lab and GraphLab)
 
 Uploads go to a shared library (`/api/documents/`); each file is parsed once by Docling and cached under

@@ -26,6 +26,8 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from usage import recorder as usage
+
 from . import registry, repository
 from .driver import GraphUnavailable, session
 from .ids import clean_part, is_valid_id, make_id
@@ -174,6 +176,15 @@ def build_messages(preset: PromptPreset, schema: Schema, text: str, document: st
 
 
 def call_llm(messages: list[dict]) -> str:
+    with usage.track("extract", f"dgx-{settings.DGX_CHAT_MODEL}") as call:
+        data = _post_llm(messages)
+        content = data["choices"][0]["message"]["content"] or ""
+        call.from_response(data)
+        call.estimate(usage.messages_text(messages), content)
+    return content
+
+
+def _post_llm(messages: list[dict]) -> dict:
     resp = requests.post(
         f"{settings.DGX_API_BASE.rstrip('/')}/v1/chat/completions",
         json={
@@ -187,7 +198,7 @@ def call_llm(messages: list[dict]) -> str:
         timeout=settings.GRAPH_EXTRACT_TIMEOUT,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"] or ""
+    return resp.json()
 
 
 def parse_triples(content: str) -> list[dict]:

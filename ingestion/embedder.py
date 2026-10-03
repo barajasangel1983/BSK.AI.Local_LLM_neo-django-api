@@ -14,6 +14,8 @@ from __future__ import annotations
 from typing import List
 
 import requests
+
+from usage import recorder as usage
 from django.conf import settings
 
 
@@ -53,12 +55,14 @@ class Embedder:
         for i in range(0, len(texts), self.batch_size):
             batch = texts[i : i + self.batch_size]
             payload = {"model": self.model, "input": batch}
-            resp = requests.post(self.url, json=payload, timeout=self.timeout)
-            if resp.status_code >= 300:
-                raise EmbedderError(
-                    f"Embedding failed: HTTP {resp.status_code}: {resp.text[:300]}"
-                )
-            data = resp.json()
+            with usage.track("embed", f"embed:{self.model}") as call:
+                resp = requests.post(self.url, json=payload, timeout=self.timeout)
+                if resp.status_code >= 300:
+                    raise EmbedderError(
+                        f"Embedding failed: HTTP {resp.status_code}: {resp.text[:300]}"
+                    )
+                data = resp.json()
+                call.from_response(data)
             for item in data.get("data", []):
                 out.append(item["embedding"])
         return out

@@ -61,6 +61,7 @@ INSTALLED_APPS = [
     "historian",
     "context_graph",
     "ingestion",
+    "usage",
 ]
 
 MIDDLEWARE = [
