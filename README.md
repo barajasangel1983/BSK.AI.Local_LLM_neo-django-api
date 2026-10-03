@@ -121,6 +121,23 @@ whole library; excerpts get `ASSET_RAG_SHARE` (0.25). Sources: `kind: "graph"` (
 `"historian"` ([H]) and `"document"` ([1], [2], …). Unknown asset → 400; graph down when choosing → 503, mid-conversation →
 the answer says the facts are unavailable. DGX chat timeout: `DGX_CHAT_TIMEOUT` (180 s).
 
+## BSK GPU orchestrator (Docling + VLM)
+
+The BSK desktop has one 8 GB GPU that runs **either** Docling **or** the VLM (Qwen3-VL-4B). Its orchestrator (`:5003`) starts the requested service and stops the other, mid-request included. The contract is in the frontend repo's `claude/VLM_service_brief.md` (v1.2).
+
+`gpu.orchestrator.use(service)` makes the Hub the only, well-behaved client:
+- **Lock:** a Hub-wide file lock (`GPU_LOCK_PATH`, shared by the API and the library worker) for the whole call. Interactive requests wait ("GPU busy") rather than interrupting a parse.
+- **Activation:** `POST /gpu/activate`; while the service is starting, poll `/gpu/status` every 2 s. A 409 backs off; `health: "error"` is retried once, then BSK counts as unavailable.
+- **Switch:** `GPU_ORCHESTRATOR_ENABLED` (default `false`). Until BSK's orchestrator is live, Docling is called directly as before. When it's enabled but the orchestrator doesn't answer, Docling is still called directly if its `/health` answers (5 s connect timeout).
+- **Recording:** activations are recorded in Analytics (purpose `gpu`).
+- **Health page:** GPU orchestrator, Docling and VLM entries. `idle` = stopped by design, started on demand; the VLM is never probed directly.
+
+**Deploy order with the BSK side:**
+1. Ship this, switch off.
+2. BSK builds the orchestrator and VLM.
+3. Set `GPU_ORCHESTRATOR_ENABLED=true` and restart the API and worker.
+4. Only then does BSK switch Docling to `restart: no`.
+
 ## Usage analytics
 
 Every call to a model or AI service is recorded in `usage.ModelCall` by `usage.recorder.track(...)`:

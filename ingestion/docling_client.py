@@ -21,6 +21,7 @@ from typing import Optional
 
 import requests
 
+from gpu import orchestrator as gpu
 from usage import recorder as usage
 from django.conf import settings
 
@@ -75,17 +76,12 @@ class DoclingClient:
             ],
             "options": CONVERT_OPTIONS,
         }
-        with usage.track("parse", "docling"):
-            resp = requests.post(
-                url,
-                json=payload,
-                headers=self._headers(),
-                timeout=max(self.timeout, 300.0),
-            )
-            if resp.status_code >= 300:
-                raise DoclingError(
-                    f"Docling conversion failed: HTTP {resp.status_code}: {resp.text[:500]}"
-                )
+        try:
+            # Hold the BSK GPU (activating Docling through the orchestrator when enabled).
+            with gpu.use("docling"), usage.track("parse", "docling"):
+                resp = self._post(url, payload)
+        except gpu.GpuError as exc:
+            raise DoclingError(f"Docling unavailable: {exc}") from exc
         result = resp.json()
 
         # Check for errors in the response
@@ -93,6 +89,19 @@ class DoclingClient:
             raise DoclingError(f"Docling returned errors: {result['errors']}")
 
         return result
+
+    def _post(self, url: str, payload: dict):
+        resp = requests.post(
+            url,
+            json=payload,
+            headers=self._headers(),
+            timeout=max(self.timeout, 300.0),
+        )
+        if resp.status_code >= 300:
+            raise DoclingError(
+                f"Docling conversion failed: HTTP {resp.status_code}: {resp.text[:500]}"
+            )
+        return resp
 
 
 # Module-level convenience function (used by pipeline)
