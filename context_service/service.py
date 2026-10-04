@@ -282,6 +282,44 @@ def get_graph(asset_id: str, depth: int = 2) -> dict:
     }
 
 
+# --- reading a client's picture (BSKLAB EDGE chat attachments) ----------------------------
+
+IMAGE_READ_PROMPT = (
+    "You are reading a picture taken on a plant floor, for an assistant that cannot see it.\n"
+    "Answer in exactly this format:\n"
+    "Shows: <one or two sentences: what equipment, screen, label or drawing this is>\n"
+    "Text: <every legible label, tag number, alarm text, message and value, copied exactly, separated by '; ', or 'none'>\n"
+    "Notable: <anything that looks abnormal: an alarm, a warning light, damage, a leak, a value marked red; or 'nothing'>\n"
+    "Copy text and numbers exactly as written. Do not guess what is not legible."
+)
+IMAGE_MAX_BYTES = 8 * 1024 * 1024
+
+
+def describe_image(data: bytes, question: str = "") -> dict:
+    """What the vision model on BSK sees in a picture a client sends. The picture is processed
+    in memory and not kept. Raises ContextError starting with `gpu_busy:` / `gpu_unavailable:`
+    when the BSK GPU can't be used now, so the client can tell the user."""
+    from gpu import images, vlm
+    from gpu import orchestrator as gpu
+
+    if not data or len(data) > IMAGE_MAX_BYTES:
+        raise ContextError("the image is empty or larger than 8 MB")
+    try:
+        jpeg, width, height = images.to_jpeg(data)
+    except images.ImageError as exc:
+        raise ContextError(f"the image could not be read: {exc}")
+    prompt = IMAGE_READ_PROMPT + (f"\nThe user's question about it: {question.strip()[:400]}" if question.strip() else "")
+    try:
+        reading = vlm.complete(jpeg, prompt, max_tokens=500, purpose="mcp-image", wait=settings.VLM_CHAT_LOCK_WAIT)
+    except gpu.GpuBusy:
+        raise ContextError("gpu_busy: the vision model is busy with a document job; try again in a few minutes")
+    except gpu.GpuError as exc:
+        raise ContextError(f"gpu_unavailable: the vision model on the BSK PC is not reachable ({exc})"[:300])
+    # The model sometimes repeats the question line it was given; that is not part of what it saw.
+    lines = [line for line in reading.strip().splitlines() if not line.strip().lower().startswith("the user's question")]
+    return {"description": "\n".join(lines).strip(), "model": settings.VLM_MODEL, "width": width, "height": height}
+
+
 # --- the packet -----------------------------------------------------------------------
 
 def assemble(query: str, asset_id: str | None = None, include_documents: bool = True,

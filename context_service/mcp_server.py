@@ -85,6 +85,7 @@ def build_server() -> FastMCP:
     hosts = [f"{h}:{settings.MCP_PORT}" for h in ("127.0.0.1", "localhost", settings.MCP_TAILSCALE_HOST) if h]
     mcp = FastMCP(
         "BSKLab Context Studio", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
+        max_request_body_size=12 * 1024 * 1024,      # describe_image carries a base64 picture
         transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=hosts,
                                                      allowed_origins=[f"http://{h}" for h in hosts]),
     )
@@ -165,6 +166,19 @@ def build_server() -> FastMCP:
         """The curated graph around an asset, for a viewer: nodes (id, label, name, properties) and
         links (source, target, type). depth 1 to 3."""
         return await _call("get_graph", service.get_graph, asset_id, depth)
+
+    @mcp.tool()
+    async def describe_image(image_base64: str, question: str = "") -> dict:
+        """What the vision model sees in a picture (base64 JPEG / PNG / WebP, at most 8 MB; send it
+        downscaled to about 1280 px): what it shows, the legible text and tags, anything abnormal.
+        The picture is not kept. Errors starting with gpu_busy / gpu_unavailable mean: try later."""
+        import base64
+        import binascii
+        try:
+            data = base64.b64decode(image_base64, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError("image_base64 is not valid base64")
+        return await _call("describe_image", service.describe_image, data, question)
 
     @mcp.tool()
     async def get_system_health() -> dict:
