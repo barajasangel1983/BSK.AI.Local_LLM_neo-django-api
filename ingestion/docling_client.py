@@ -59,8 +59,11 @@ class DoclingClient:
             headers["X-Api-Key"] = self.api_key
         return headers
 
-    def convert_file(self, file_bytes: bytes, filename: str) -> dict:
+    def convert_file(self, file_bytes: bytes, filename: str, wait: Optional[float] = None) -> dict:
         """Convert a file and return the result document.
+
+        `wait` is how long to wait for the BSK GPU when another Hub call holds it
+        (default: GPU_LOCK_WAIT, for pipeline jobs; chat passes a short wait).
 
         Uses a ``kind: "file"`` source with the payload base64-encoded.
         Returns the full conversion result dict (including 'document', 'status', 'errors').
@@ -78,7 +81,7 @@ class DoclingClient:
         }
         try:
             # Hold the BSK GPU (activating Docling through the orchestrator when enabled).
-            with gpu.use("docling"), usage.track("parse", "docling"):
+            with gpu.use("docling", wait=wait), usage.track("parse", "docling"):
                 resp = self._post(url, payload)
         except gpu.GpuError as exc:
             raise DoclingError(f"Docling unavailable: {exc}") from exc
@@ -108,6 +111,6 @@ class DoclingClient:
 _client = DoclingClient()
 
 
-def convert_file(file_bytes: bytes, filename: str) -> dict:
+def convert_file(file_bytes: bytes, filename: str, wait: Optional[float] = None) -> dict:
     """Convert a file and return the result document."""
-    return _client.convert_file(file_bytes, filename)
+    return _client.convert_file(file_bytes, filename, wait=wait)

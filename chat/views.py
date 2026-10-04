@@ -8,6 +8,7 @@
 # - PATCH /api/conversations/<uuid>/   (rename: {"title": ...})
 # - DELETE /api/conversations/<uuid>/
 # - GET  /api/models/
+# - /api/chat/attachments/...   (chat/attachments.py)
 # - POST /api/rag/query/
 # - POST /api/rag/upload/   (legacy; RAG Lab now uploads via /api/rag/ingest/)
 # - GET  /api/usage/summary/
@@ -22,6 +23,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db.models import Max, Count
 from django.http import JsonResponse
 from django.contrib.auth.models import User
@@ -55,6 +57,10 @@ from .legacy_retrieval import query_chunks
 from context_graph.driver import GraphUnavailable
 
 from . import asset_context
+from . import attachments
+from gpu import orchestrator as gpu
+from gpu import vlm
+from ingestion.docling_client import DoclingError
 
 
 # Base directory for RAG uploads (raw docs). For now, point directly at the
@@ -360,6 +366,7 @@ def generate_reply_backend(
     use_rag: bool,
     history: list[tuple[str, str]],
     system_prompt: str | None = None,
+    extra_context: str = "",
 ) -> tuple[str, int]:
     """Central routing for model calls.
 
@@ -371,6 +378,7 @@ def generate_reply_backend(
     `history` is the conversation's prior (role, content) messages, oldest
     first. When `use_rag` is True, callers can pass a `system_prompt` that
     already includes RAG context; otherwise each backend's default is used.
+    `extra_context` (attached-document text) is appended to whichever prompt is used.
 
     Returns (reply_text, history_messages_sent).
     """
@@ -389,11 +397,45 @@ def generate_reply_backend(
     messages = build_chat_messages(
         history=history,
         user_message=message,
-        system_prompt=system_prompt or default_prompt,
+        system_prompt=(system_prompt or default_prompt) + (f"\n\n{extra_context}" if extra_context else ""),
         max_messages=settings.CHAT_HISTORY_MAX_MESSAGES,
         max_chars=context_budget_chars(model_id),
     )
     return backend(messages), len(messages) - 2
+
+
+VLM_SYSTEM_PROMPT = ("You are Neo, an assistant for industrial engineers. When an image is attached, answer from what "
+                     "is visible in it: read labels, tag numbers and values exactly, and say so when something is "
+                     "not legible.")
+
+
+def generate_vlm_reply(message: str, history: list[tuple[str, str]], jpeg: bytes | None) -> tuple[str, int]:
+    """Reply from the vision model on BSK: a short text history plus at most one image
+    (on the current message). Raises gpu.GpuBusy / gpu.GpuUnavailable."""
+
+    from django.conf import settings
+
+    messages = build_chat_messages(
+        history=history,
+        user_message=message,
+        system_prompt=VLM_SYSTEM_PROMPT,
+        max_messages=settings.CHAT_HISTORY_MAX_MESSAGES,
+        max_chars=settings.VLM_CONTEXT_MAX_CHARS,
+    )
+    if jpeg:
+        messages[-1] = {"role": "user", "content": [{"type": "text", "text": message}, vlm.image_part(jpeg)]}
+    reply = vlm.chat(messages, max_tokens=settings.VLM_CHAT_MAX_TOKENS, wait=settings.VLM_CHAT_LOCK_WAIT)
+    return reply, len(messages) - 2
+
+
+def _gpu_response(exc: Exception) -> Response:
+    """503 for the two ways the BSK GPU can be unavailable to a chat request."""
+    busy = isinstance(exc, gpu.GpuBusy) or isinstance(exc.__cause__, gpu.GpuBusy)
+    if busy:
+        return Response({"error": "The GPU on BSK is busy with another job. Try again in a few minutes.",
+                         "code": "gpu_busy"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    return Response({"error": f"The BSK PC isn't reachable or its service didn't start: {exc}",
+                     "code": "gpu_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 @api_view(["POST"])
@@ -499,7 +541,15 @@ def _chat(request):
       "model": "local-small",
       "use_rag": true/false   (default true)
       "asset_id": "bsk:asset:EXTR01" | "" | absent   (scope; absent = keep the conversation's)
+      "attachment_id": "uuid"   (optional; an image or PDF uploaded to /api/chat/attachments/)
+      "page": 3                 (optional; show this page of the PDF to the vision model)
     }
+
+    Attachments stay with the conversation (never added to the library / RAG):
+    - an image, or a PDF page, is answered by the vision model (bsk-qwen3-vl-4b); follow-up
+      questions to that model re-send the most recent image only
+    - a PDF without `page` is read as text (Docling, cached) and added to the prompt of the
+      text models for this message and the following ones
 
     Behavior:
     - If conversation_id is null -> create a new Conversation.
@@ -532,9 +582,42 @@ def _chat(request):
         except GraphUnavailable as exc:
             return Response({"error": f"Context Graph unavailable: {exc}"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    # --- Get or create conversation ---
-
     owner = get_current_user()
+    is_vlm = model_id == settings.VLM_CHAT_MODEL_ID
+
+    # --- Attachment: validated before anything is saved ---
+
+    attachment, attachment_page = None, None
+    if request.data.get("attachment_id"):
+        try:
+            attachment = attachments.ChatAttachment.objects.filter(pk=request.data["attachment_id"], owner=owner).first()
+        except (ValueError, ValidationError):
+            attachment = None
+        if attachment is None:
+            return Response({"error": "attachment not found"}, status=status.HTTP_404_NOT_FOUND)
+        if attachment.conversation_id and str(attachment.conversation_id) != str(conversation_id or ""):
+            return Response({"error": "the attachment belongs to another conversation"},
+                            status=status.HTTP_400_BAD_REQUEST)
+        page_raw = request.data.get("page")
+        if page_raw not in (None, ""):
+            try:
+                attachment_page = int(page_raw)
+            except (TypeError, ValueError):
+                attachment_page = 0
+            if attachment.kind != attachments.ChatAttachment.Kind.PDF or not (
+                    1 <= attachment_page <= (attachment.page_count or 0)):
+                return Response({"error": f"page must be between 1 and {attachment.page_count or 1} of a PDF attachment"},
+                                status=status.HTTP_400_BAD_REQUEST)
+        shows_image = attachment.kind == attachments.ChatAttachment.Kind.IMAGE or bool(attachment_page)
+        if shows_image and not is_vlm:
+            return Response({"error": "This model can't read images. Choose Qwen3-VL 4B (BSK).",
+                             "code": "vision_model_required"}, status=status.HTTP_400_BAD_REQUEST)
+        if not shows_image and is_vlm:
+            return Response({"error": "The vision model reads one page at a time: choose a page of the PDF, "
+                                      "or pick a text model to read the whole document.",
+                             "code": "text_model_required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    # --- Get or create conversation ---
 
     if conversation_id:
         try:
@@ -549,8 +632,11 @@ def _chat(request):
 
     usage.set_conversation(conversation.id)
 
+    if attachment is not None and attachment.conversation_id is None:
+        attachment.conversation = conversation
+        attachment.save(update_fields=["conversation"])
+
     # --- Prior messages (before saving this one), oldest first ---
-    from django.conf import settings
 
     # Fetch a little more than the window so orphaned user messages can be skipped.
     recent = conversation.messages.order_by("-created_at").values_list("role", "content")[
@@ -564,6 +650,8 @@ def _chat(request):
         conversation=conversation,
         role="user",
         content=user_message,
+        attachment=attachment,
+        attachment_page=attachment_page,
     )
 
     if requested_asset is not None and conversation.asset_id != (requested_asset or ""):
@@ -571,9 +659,35 @@ def _chat(request):
         conversation.save(update_fields=["asset_id"])
     scope = conversation.asset_id
 
+    total_budget = context_budget_chars(model_id)
+
+    # --- Attached PDFs read as text (this message's and earlier ones in the conversation) ---
+
+    document_block, attachment_citations = "", []
+    reads_documents = model_id in DGX_MODEL_IDS or model_id in ("external-gpt", "ollama-qwen3-8b")
+    if reads_documents:
+        text_docs = attachments.text_documents(conversation)
+        if text_docs:
+            try:
+                document_block, attachment_citations = attachments.build_document_context(
+                    text_docs, int(total_budget * settings.CHAT_ATTACHMENT_SHARE), wait=settings.VLM_CHAT_LOCK_WAIT)
+            except gpu.GpuError as exc:
+                return _gpu_response(exc)
+            except DoclingError as exc:
+                logger.warning("attachment parse failed conversation=%s: %s", conversation.id, exc)
+                if isinstance(exc.__cause__, gpu.GpuError):
+                    return _gpu_response(exc.__cause__)
+                return Response({"error": f"The attached PDF could not be read: {exc}"},
+                                status=status.HTTP_502_BAD_GATEWAY)
+            # Asset facts and RAG share what is left.
+            total_budget -= len(document_block)
+
+    # The vision model's context is small: no asset facts or RAG for it.
+    if is_vlm:
+        scope, use_rag = "", False
+
     # --- Asset facts (independent of the RAG toggle) ---
 
-    total_budget = context_budget_chars(model_id)
     asset_ctx = None
     asset_note = ""
     if scope:
@@ -653,15 +767,26 @@ def _chat(request):
 
     # --- Generate assistant reply ---
 
+    citations = attachment_citations + citations
+
     start = time.time()
     try:
-        assistant_reply, history_sent = generate_reply_backend(
-            message=user_message,
-            model_id=model_id,
-            use_rag=use_rag or bool(scope),
-            history=history,
-            system_prompt=system_prompt,
-        )
+        if is_vlm:
+            shown = (attachment, attachment_page) if attachment is not None else attachments.latest_image(conversation)
+            jpeg = attachments.image_bytes(*shown) if shown else None
+            assistant_reply, history_sent = generate_vlm_reply(user_message, history, jpeg)
+        else:
+            assistant_reply, history_sent = generate_reply_backend(
+                message=user_message,
+                model_id=model_id,
+                use_rag=use_rag or bool(scope),
+                history=history,
+                system_prompt=system_prompt,
+                extra_context=document_block,
+            )
+    except gpu.GpuError as exc:
+        logger.warning("chat gpu unavailable conversation=%s model=%s: %s", conversation.id, model_id, exc)
+        return _gpu_response(exc)
     except Exception as exc:
         logger.exception(
             "chat failed conversation=%s model=%s latency_ms=%d",
@@ -797,6 +922,13 @@ def list_models(request):
             "id": "external-gpt",
             "label": "External GPT (Grok)",
             "description": "xAI Grok backend (external GPT-style API).",
+        },
+        {
+            "id": settings.VLM_CHAT_MODEL_ID,
+            "label": "Qwen3-VL 4B (BSK)",
+            "description": "Vision model on the BSK PC: answers questions about an attached image or PDF page. "
+                           "Starts on demand (about 20 s).",
+            "vision": True,
         },
     ]
     return Response(data)

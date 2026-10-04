@@ -51,6 +51,11 @@ class Message(models.Model):
     # RAG citations for assistant messages: [{source, asset_id, section_path,
     # page_start, page_end, snippet, score, vector_score, rerank_score}, ...]
     sources = models.JSONField(default=list, blank=True)
+    # File the user attached to this message (image or PDF); `attachment_page` is the PDF
+    # page shown to the vision model (empty = the PDF was read as text).
+    attachment = models.ForeignKey("ChatAttachment", null=True, blank=True, on_delete=models.SET_NULL,
+                                   related_name="messages")
+    attachment_page = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     # Default ordering: oldest → newest.
@@ -59,3 +64,32 @@ class Message(models.Model):
 
     def __str__(self) -> str:
         return f"{self.role}: {self.content[:50]}"
+
+
+class ChatAttachment(models.Model):
+    """An image or PDF attached in a chat. It stays with its conversation: it is never
+    added to the document library, Chroma or the Context Graph, and is deleted with the
+    conversation. Files live under CHAT_FILES_DIR/<id>/ (see chat/attachments.py)."""
+
+    class Kind(models.TextChoices):
+        IMAGE = "image", "Image"
+        PDF = "pdf", "PDF"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="chat_attachments", null=True, blank=True)
+    # Empty until the first message that uses it is sent (uploads come before the message).
+    conversation = models.ForeignKey(Conversation, related_name="attachments", on_delete=models.CASCADE,
+                                     null=True, blank=True)
+    kind = models.CharField(max_length=8, choices=Kind.choices)
+    filename = models.CharField(max_length=512)
+    size = models.PositiveBigIntegerField(default=0)
+    page_count = models.PositiveIntegerField(null=True, blank=True)     # PDFs
+    width = models.PositiveIntegerField(null=True, blank=True)          # images, as stored
+    height = models.PositiveIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.kind} {self.filename}"

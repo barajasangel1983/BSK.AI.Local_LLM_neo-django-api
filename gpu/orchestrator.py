@@ -107,8 +107,9 @@ def activate(service: str) -> dict:
         while body.get("health") == "starting" and time.monotonic() < deadline:
             time.sleep(POLL_SECONDS)
             body = status()
-        if body.get("health") == "ok" and body.get("active") == service:
-            return body
+        if body.get("active") == service and (
+                body.get("health") == "ok" or (service == "idle" and body.get("health") == "idle")):
+            return body      # the orchestrator reports the idle state as health "idle"
         if body.get("health") == "starting":
             continue  # deadline check at the top of the loop
         failures += 1
