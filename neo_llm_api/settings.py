@@ -256,6 +256,9 @@ ASSET_CONTEXT_SHARE = float(os.getenv("ASSET_CONTEXT_SHARE", "0.3"))
 ASSET_RAG_SHARE = float(os.getenv("ASSET_RAG_SHARE", "0.25"))
 # Reranker request timeout (seconds); on timeout we fall back to vector order.
 RAG_RERANK_TIMEOUT = float(os.getenv("RAG_RERANK_TIMEOUT", "10"))
+# The reranker's context is 1024 tokens for query + one chunk; longer chunks are cut for
+# scoring only (the chunk given to the chat model is not cut). Margin for tokenizer differences.
+RAG_RERANK_MAX_TOKENS = int(os.getenv("RAG_RERANK_MAX_TOKENS", "800"))
 # Chat drops reranked chunks scoring below this (reranker scores are ~0.0 for
 # unrelated text, 0.6+ for relevant). Not applied when the reranker fell back,
 # nor to the RAG Lab debugger.
@@ -328,6 +331,8 @@ FIGURE_MAX_AREA = float(os.getenv("FIGURE_MAX_AREA", "0.95"))        # larger = 
 FIGURE_MIN_SIDE_PX = int(os.getenv("FIGURE_MIN_SIDE_PX", "80"))      # after rendering
 FIGURE_PADDING = float(os.getenv("FIGURE_PADDING", "0.05"))          # around the box, each side
 FIGURE_RENDER_MAX_SCALE = float(os.getenv("FIGURE_RENDER_MAX_SCALE", "4"))   # 4 = 288 DPI
+# Drawings to triples (Generate triples with include_drawings): the answer budget per figure.
+DRAWING_MAX_TOKENS = int(os.getenv("DRAWING_MAX_TOKENS", "1000"))
 FIGURE_RETRY_MINUTES = [int(m) for m in os.getenv("FIGURE_RETRY_MINUTES", "5,15").split(",") if m.strip()]
 
 # Chat attachments (images, PDFs): kept with the conversation, never added to the library / RAG.

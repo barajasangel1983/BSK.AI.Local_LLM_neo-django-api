@@ -9,6 +9,9 @@ Runs as a library-worker job (kind "extract"):
       -> entity matching against the curated graph (existing ids or proposed ids)
       -> de-duplicated CandidateTriple rows, pending review
 
+With `include_drawings`, the figures that Describe figures classified as drawings are also
+sent to the VLM on BSK (context_graph/drawings.py) and staged the same way, with vision evidence.
+
 The DGX's constrained decoding (guided_json / json_schema) was too slow to use
 (80+ s and invalid output per window), so JSON is requested in the prompt with
 `response_format: json_object` and validated here.
@@ -20,6 +23,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import requests
 from django.conf import settings
@@ -133,6 +137,8 @@ def validate_params(params: dict | None) -> dict:
         "chunking": {"strategy": chunking.get("strategy", "fixed"), "params": resolved},
         "presets": presets,
         "asset_id": asset_id,
+        # Also read the document's described drawings with the VLM on BSK.
+        "include_drawings": bool(params.get("include_drawings")),
     }
 
 
@@ -281,15 +287,21 @@ def run_extract(job) -> None:
         doc.refresh_from_db()
 
     windows = chunk_parsed(library.load_parsed(doc), params["chunking"]["strategy"], params["chunking"]["params"])
-    if not windows:
+    drawing_figures: list[dict] = []
+    if params.get("include_drawings"):
+        from ingestion import figures as figure_store
+        from . import drawings
+        drawing_figures = drawings.eligible(figure_store.load(doc))
+    if not windows and not drawing_figures:
         raise ExtractionError("the document produced no text windows")
 
     schema = registry.active_schema()
     presets = {m: PromptPreset.objects.get(pk=pk) for m, pk in params["presets"].items()}
     index = EntityIndex.load()
     scope_key = scope_key_for(params, doc)
-    total = len(windows) * len(presets)
-    library.heartbeat(job, 0, total, f"extracting from {len(windows)} windows ({', '.join(presets)})")
+    total = (len(windows) + len(drawing_figures)) * len(presets)
+    library.heartbeat(job, 0, total, f"extracting from {len(windows)} windows"
+                      + (f" and {len(drawing_figures)} drawing(s)" if drawing_figures else "") + f" ({', '.join(presets)})")
 
     staged: dict[tuple, CandidateTriple] = {}
     found: dict[int, list[Evidence]] = {}   # id(triple) -> one Evidence per window it was found in
@@ -298,6 +310,29 @@ def run_extract(job) -> None:
         for t in CandidateTriple.objects.filter(document=doc).exclude(status=CandidateTriple.Status.PENDING)
     }
     done = failed = skipped = 0
+
+    def stage(raw, mode, window, i, preset, make_evidence, model=None):
+        """Stage the raw triples found in one place (a text window or a figure)."""
+        nonlocal skipped
+        for t in raw:
+            if mode == "schema" and (t["subject_type"] in EVIDENCE_TYPES or t["object_type"] in EVIDENCE_TYPES):
+                continue  # evidence structure is written on approval, not extracted
+            candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model)
+            key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
+                             candidate.object_name, candidate.object_type)
+            if key in reviewed:
+                skipped += 1
+                continue
+            if key in staged:
+                if (t["confidence"] or 0) > (staged[key].confidence or 0):
+                    staged[key].confidence = t["confidence"]
+            else:
+                staged[key] = candidate
+            places = found.setdefault(id(staged[key]), [])
+            if all(e.chunk_index != i for e in places):   # same place twice = one place
+                places.append(make_evidence(t))
+                staged[key].occurrences = len(places)
+
     for i, window in enumerate(windows):
         section = " > ".join(window.section_path)
         for mode, preset in presets.items():
@@ -318,26 +353,34 @@ def run_extract(job) -> None:
                     failed += 1
                     logger.warning("extraction window failed doc=%s window=%d mode=%s: %s", doc.doc_key, i, mode, exc)
                     break
-            for t in raw:
-                if mode == "schema" and (t["subject_type"] in EVIDENCE_TYPES or t["object_type"] in EVIDENCE_TYPES):
-                    continue  # evidence structure is written on approval, not extracted
-                candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset)
-                key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
-                                 candidate.object_name, candidate.object_type)
-                if key in reviewed:
-                    skipped += 1
-                    continue
-                if key in staged:
-                    if (t["confidence"] or 0) > (staged[key].confidence or 0):
-                        staged[key].confidence = t["confidence"]
-                else:
-                    staged[key] = candidate
-                windows_seen = found.setdefault(id(staged[key]), [])
-                if all(e.chunk_index != i for e in windows_seen):   # same window twice = one place
-                    windows_seen.append(_evidence(doc, window, i, preset, schema, t, params))
-                    staged[key].occurrences = len(windows_seen)
+            stage(raw, mode, window, i, preset,
+                  lambda t, window=window, i=i, preset=preset: _evidence(doc, window, i, preset, schema, t, params))
             done += 1
             library.heartbeat(job, done, total)
+
+    drawings_note = ""
+    if drawing_figures:
+        from gpu import orchestrator as gpu
+        preset = SimpleNamespace(name=drawings.PROMPT_NAME, version=drawings.PROMPT_VERSION)
+        try:
+            for figure in drawing_figures:
+                place = drawings.FIGURE_CHUNK_BASE + figure["index"]
+                for mode in presets:
+                    library.heartbeat(job, done, total, f"drawing: figure {figure['index'] + 1} (p.{figure['page']})")
+                    raw = []
+                    try:
+                        raw = drawings.extract(doc, figure, mode, schema)
+                    except gpu.GpuError:
+                        raise
+                    except Exception as exc:  # invalid answer after the retry etc.: one bad figure doesn't fail the run
+                        failed += 1
+                        logger.warning("drawing triples failed doc=%s figure=%d mode=%s: %s", doc.doc_key, figure["index"], mode, exc)
+                    stage(raw, mode, drawings.window_for(figure), place, preset,
+                          lambda t, figure=figure: drawings.evidence_for(doc, figure, schema, t), model=settings.VLM_MODEL)
+                    done += 1
+        except gpu.GpuError as exc:  # BSK asleep / busy: the text triples are still staged
+            drawings_note = "drawings were not read: the BSK PC was not reachable"
+            logger.warning("drawing triples skipped doc=%s: %s", doc.doc_key, exc)
 
     with transaction.atomic():
         # A new run replaces the document's pending triples of the modes it ran; reviewed ones are kept.
@@ -347,7 +390,7 @@ def run_extract(job) -> None:
         evidence.drop_orphans(document=doc)
     Document.objects.filter(pk=doc.pk).update(
         graph_status=Document.PipelineStatus.DONE, graph_updated_at=timezone.now(),
-        graph_error=f"{failed} window call(s) failed" if failed else "",
+        graph_error="; ".join(n for n in (f"{failed} window call(s) failed" if failed else "", drawings_note) if n),
     )
     note = f", {skipped} already reviewed" if skipped else ""
     library.heartbeat(job, total, total, f"{len(staged)} triples staged for review{note}")
@@ -364,7 +407,7 @@ def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:
     )
 
 
-def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset) -> CandidateTriple:
+def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=None) -> CandidateTriple:
     issue = ""
     subject_id = object_id = ""
     subject_existing = object_existing = False
@@ -402,7 +445,7 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset) -
         confidence=t["confidence"], issue=issue,
         chunk_index=i, page_start=window.page_start, page_end=window.page_end, section_path=window.section_path,
         evidence_text=window.text[:EVIDENCE_CHARS],
-        model=settings.DGX_CHAT_MODEL, preset_name=preset.name, preset_version=preset.version,
+        model=model or settings.DGX_CHAT_MODEL, preset_name=preset.name, preset_version=preset.version,
         schema_version=schema.version, **matches,
         subject_props=props.get("subject", {}), object_props=props.get("object", {}),
     )

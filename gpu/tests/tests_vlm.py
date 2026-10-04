@@ -61,6 +61,23 @@ class ImageTests(SimpleTestCase):
             with self.assertRaises(images.ImageError):
                 images.render_pdf_page(f.name, 4)
 
+    def test_pdf_rendering_is_safe_from_several_threads(self):
+        """PDFium isn't thread-safe; concurrent figure thumbnails once crashed the API process."""
+        from concurrent.futures import ThreadPoolExecutor
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
+            f.write(pdf(pages=4))
+            f.flush()
+            box = {"l": 50, "t": 700, "r": 400, "b": 300, "coord_origin": "BOTTOMLEFT"}
+            size = {"width": 600, "height": 800}
+
+            def work(i):
+                images.pdf_page_count(f.name)
+                images.render_pdf_page(f.name, i % 4 + 1)
+                return images.crop_pdf_figure(f.name, i % 4 + 1, box, size)[1]
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                widths = list(pool.map(work, range(48)))
+        self.assertEqual(len(set(widths)), 1)
+
     def test_unreadable_pdf(self):
         with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
             f.write(b"not a pdf")

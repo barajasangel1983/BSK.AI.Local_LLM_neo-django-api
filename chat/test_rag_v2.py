@@ -49,6 +49,20 @@ class SearchV2Tests(SimpleTestCase):
         self.assertEqual(result.chunks[0].section_path, ["Paper", "S2"])
         mock_embedder.return_value.embed_queries.assert_called_once_with(["q"])
 
+    def test_long_chunks_are_cut_for_the_reranker_only(self, mock_coll, mock_embedder):
+        """One chunk over the reranker's 1024-token context made it refuse the whole request."""
+        from chat.retrieval import V2Chunk, _post_rerank
+        long_chunk = V2Chunk(id="1", text="pressure " * 3000, source="a.pdf", asset_id="A")
+        short_chunk = V2Chunk(id="2", text="short text", source="a.pdf", asset_id="A")
+        with patch("chat.retrieval.requests.post") as post:
+            _post_rerank("BX80 limits", [long_chunk, short_chunk], 2)
+        sent = post.call_args.kwargs["json"]["documents"]
+        enc = __import__("tiktoken").get_encoding("cl100k_base")
+        self.assertLessEqual(len(enc.encode(sent[0])) + len(enc.encode("BX80 limits")), 800)
+        self.assertEqual(sent[1], "short text")
+        self.assertEqual(len(long_chunk.text), 27000)            # the chunk itself is untouched
+
+
     def test_falls_back_to_vector_order_when_reranker_fails(self, mock_coll, mock_embedder):
         mock_coll.return_value = _collection(["a", "b", "c"], [0.3, 0.1, 0.2])
         mock_embedder.return_value.embed_queries.return_value = [[0.0] * 4]
