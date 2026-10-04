@@ -1,4 +1,5 @@
-# Neo LLM API (Django runserver on :8000) as a self-restarting user service.
+# Neo LLM API (Django runserver on 127.0.0.1:8000) as a self-restarting user service.
+# Never bind it to 0.0.0.0: the VPS has a public address and the API has no sign-in.
 #
 # It keeps the development server on purpose: it reloads itself when the code in this
 # checkout changes (git pull / switch), which the deploy flow relies on. systemd adds what
@@ -7,7 +8,8 @@
 # Install:
 #   mkdir -p ~/.config/systemd/user
 #   cp deploy/systemd/neo-llm-api.service ~/.config/systemd/user/
-#   systemctl --user daemon-reload && systemctl --user enable --now neo-llm-api
+#   cp deploy/systemd/neo-llm-api-tunnel.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now neo-llm-api neo-llm-api-tunnel
 # Status:  systemctl --user status neo-llm-api
 # Logs:    /tmp/django.log (requests and errors), journalctl --user -u neo-llm-api (starts / restarts)
 # Restart: systemctl --user restart neo-llm-api   (needed for a new .env value; code changes reload by themselves)
@@ -21,7 +23,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 WorkingDirectory=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api
-ExecStart=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api/.venv/bin/python manage.py runserver 0.0.0.0:8000
+# Listens on this machine only; neo-llm-api-tunnel.service makes it reachable on the Tailscale address.
+ExecStart=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api/.venv/bin/python manage.py runserver 127.0.0.1:8000
 Environment=PYTHONUNBUFFERED=1
 StandardOutput=append:/tmp/django.log
 StandardError=append:/tmp/django.log

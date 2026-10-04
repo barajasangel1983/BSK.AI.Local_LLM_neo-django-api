@@ -1,0 +1,17 @@
+# Makes the Neo LLM API reachable on the Tailscale address only (not on the public one).
+# Same pattern as the other tunnels on this host. Install with neo-llm-api.service.
+[Unit]
+Description=Neo LLM API tunnel (Tailscale 100.92.170.72:8000 -> 127.0.0.1:8000)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/socat TCP-LISTEN:8000,bind=100.92.170.72,fork,reuseaddr TCP:127.0.0.1:8000
+# The Tailscale address may not be up yet at boot: keep trying.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
