@@ -27,8 +27,9 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--url", help="MCP address (default: the one for the current exposure setting).")
         parser.add_argument("--ask", action="store_true", help="Also call the ask tool.")
+        parser.add_argument("--image", action="store_true", help="Also call describe_image (uses the BSK GPU).")
 
-    def handle(self, *args, url=None, ask=False, **options):
+    def handle(self, *args, url=None, ask=False, image=False, **options):
         exposure = McpSettings.get().exposure
         if not url:
             if exposure == "off":
@@ -49,7 +50,7 @@ class Command(BaseCommand):
 
         record, token = mcp_access.create_token("mcp_smoke (temporary)")
         try:
-            results += asyncio.run(self._tools(url, token, ask))
+            results += asyncio.run(self._tools(url, token, ask, image))
         finally:
             record.delete()
 
@@ -59,7 +60,7 @@ class Command(BaseCommand):
         if not all(ok for _, ok, _ in results):
             raise CommandError("mcp_smoke failed")
 
-    async def _tools(self, url, token, ask):
+    async def _tools(self, url, token, ask, image=False):
         from mcp import ClientSession
         from mcp.client.streamable_http import streamablehttp_client
 
@@ -114,6 +115,17 @@ class Command(BaseCommand):
                         ok = not result.isError and getattr(image, "type", "") == "image"
                         out.append(("get_figure_image", ok, f"{getattr(image, 'mimeType', '?')}, "
                                     f"{len(getattr(image, 'data', '')) * 3 // 4} bytes ({time.monotonic() - start:.1f} s)"))
+                if image:
+                    import base64
+                    import io
+                    from PIL import Image, ImageDraw, ImageFont
+                    picture = Image.new("RGB", (900, 300), "white")
+                    ImageDraw.Draw(picture).text((60, 100), "ALARM DIE_PLUG 104 bar", fill="black", font=ImageFont.load_default(size=56))
+                    buf = io.BytesIO()
+                    picture.save(buf, format="JPEG")
+                    await call("describe_image", {"image_base64": base64.b64encode(buf.getvalue()).decode(), "question": "What does it say?"},
+                               lambda d: ("read the text" if "DIE_PLUG" in d["description"].upper().replace(" ", "_") else "text NOT read")
+                               + f": {d['description'][:80]!r}")
                 if ask:
                     await call("ask", {"query": question, "asset_id": asset or ""}, lambda d: f"{len(d['answer'] or '')} characters from {d['model']}")
         return out

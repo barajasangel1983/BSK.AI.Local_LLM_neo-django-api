@@ -100,6 +100,7 @@ def ask(request):
 MCP_TOOLS = ["list_assets", "resolve_entity", "get_entity_context", "get_sources", "search_documents",
              "assemble_context", "ask", "get_operational_state",
              "list_documents", "get_document", "get_document_page", "get_figure_image", "get_graph",
+             "describe_image",
              "get_system_health"]
 
 

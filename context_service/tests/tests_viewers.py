@@ -100,3 +100,36 @@ class ToolTests(TransactionTestCase):
             result = asyncio.run(server.call_tool("get_figure_image", {"document_id": "d", "figure_index": 0}))
         content = result[0] if isinstance(result, tuple) else result
         self.assertEqual((content[0].type, content[0].mimeType), ("image", "image/jpeg"))
+
+
+class DescribeImageTests(TestCase):
+    def png(self):
+        buf = io.BytesIO()
+        Image.new("RGB", (2600, 1300), "white").save(buf, format="PNG")
+        return buf.getvalue()
+
+    @patch("gpu.vlm.complete", return_value="Shows: an HMI screen.\nText: DIE_PLUG; 104 bar\nNotable: an active alarm\n"
+                                            "The user's question about it: What does this alarm mean?")
+    def test_reads_a_downscaled_picture_and_keeps_nothing(self, complete):
+        out = service.describe_image(self.png(), "What does this alarm mean?")
+        self.assertEqual((out["width"], out["height"]), (1280, 640))
+        self.assertIn("DIE_PLUG", out["description"])
+        self.assertTrue(out["description"].endswith("Notable: an active alarm"))      # the echoed question is dropped
+        jpeg, prompt = complete.call_args.args
+        self.assertEqual(Image.open(io.BytesIO(jpeg)).format, "JPEG")
+        self.assertIn("The user's question about it: What does this alarm mean?", prompt)
+        self.assertEqual(complete.call_args.kwargs["purpose"], "mcp-image")
+        self.assertEqual(Document.objects.count(), 0)          # not added to the library
+
+    def test_gpu_states_and_bad_input_are_named(self):
+        from gpu import orchestrator as gpu
+        with patch("gpu.vlm.complete", side_effect=gpu.GpuBusy("busy")):
+            with self.assertRaisesMessage(service.ContextError, "gpu_busy:"):
+                service.describe_image(self.png())
+        with patch("gpu.vlm.complete", side_effect=gpu.GpuUnavailable("BSK asleep")):
+            with self.assertRaisesMessage(service.ContextError, "gpu_unavailable:"):
+                service.describe_image(self.png())
+        with self.assertRaisesMessage(service.ContextError, "could not be read"):
+            service.describe_image(b"not an image")
+        with self.assertRaisesMessage(service.ContextError, "larger than 8 MB"):
+            service.describe_image(b"")
