@@ -325,6 +325,12 @@ VLM_CONTEXT_MAX_CHARS = int(os.getenv("VLM_CONTEXT_MAX_CHARS", "8000"))
 VLM_IMAGE_LONG_SIDE = int(os.getenv("VLM_IMAGE_LONG_SIDE", "1280"))           # contract v1.2: <= 1280 px, JPEG 85
 VLM_IMAGE_JPEG_QUALITY = int(os.getenv("VLM_IMAGE_JPEG_QUALITY", "85"))
 
+# Context MCP server (P10b): `manage.py mcp_server`. It listens on 127.0.0.1 and, when the Studio's
+# exposure setting says so, on the Tailscale address. Never on all interfaces (the host has a public address).
+MCP_PORT = int(os.getenv("MCP_PORT", "8002"))
+MCP_TAILSCALE_HOST = os.getenv("MCP_TAILSCALE_HOST", "100.92.170.72")
+MCP_STUDIO_API = os.getenv("MCP_STUDIO_API", "http://127.0.0.1:8000/api")
+
 # Describe figures (library): the Hub crops each figure Docling found and asks the VLM about it.
 FIGURE_MAX_TOKENS = int(os.getenv("FIGURE_MAX_TOKENS", "400"))
 FIGURE_MIN_AREA = float(os.getenv("FIGURE_MIN_AREA", "0.02"))        # share of the page; smaller = decorative

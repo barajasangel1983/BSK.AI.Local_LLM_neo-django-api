@@ -1147,6 +1147,14 @@ TRACKED_ENDPOINTS = [
         "model": "vlm",
         "can_restart": False,
     },
+    # What BSKLAB EDGE and other agents connect to (Settings → MCP decides where it listens).
+    {
+        "id": "context-mcp",
+        "name": "Context MCP server",
+        "url": "",
+        "model": "mcp",
+        "can_restart": False,
+    },
 ]
 
 
@@ -1210,6 +1218,16 @@ def _check_single_endpoint(ep: dict) -> dict:
         latency = result.get("latency_ms", 0)
     elif ep_id in ("gpu-orchestrator", "docling-bsk", "vlm-bsk"):
         status_val, latency = _bsk_status(ep_id)
+    elif ep_id == "context-mcp":
+        from context_service import mcp_access
+        from context_service.views import mcp_answers
+
+        if not mcp_access.listen_hosts():       # exposure "Off": stopped by design
+            status_val, latency = "idle", 0
+        else:
+            start = time.time()
+            ok = mcp_answers()
+            status_val, latency = ("online" if ok else "offline"), round((time.time() - start) * 1000) if ok else 0
     elif ep_id == "historian-db":
         start = time.time()
         try:
@@ -1253,7 +1271,9 @@ def _check_single_endpoint(ep: dict) -> dict:
     return {
         "id": ep_id,
         "name": ep["name"],
-        "url": settings.NEO4J_URI if ep_id == "context-graph" else _BSK_URLS.get(ep_id, lambda: ep.get("url", ""))(),
+        "url": settings.NEO4J_URI if ep_id == "context-graph"
+        else f"http://127.0.0.1:{settings.MCP_PORT}/mcp" if ep_id == "context-mcp"
+        else _BSK_URLS.get(ep_id, lambda: ep.get("url", ""))(),
         "model": ep["model"],
         "status": status_val,
         "latency": latency,

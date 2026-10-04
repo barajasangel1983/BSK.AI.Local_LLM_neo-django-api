@@ -14,6 +14,8 @@ neo4j==5.28.6                    # Context Graph
 openpyxl==3.1.5              # GraphLab Import: Excel files
 pillow==12.3.0               # chat attachments / VLM images (JPEG, <= 1280 px)
 pypdfium2==5.13.0            # PDF page count and page rendering
+mcp==1.30.0                  # Context MCP server (the 1.x API; 2.x renamed FastMCP)
+uvicorn==0.42.0              # serves the MCP server
 
 # Tests
 pytest==9.1.1
