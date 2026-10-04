@@ -54,6 +54,9 @@ class AssetContext:
     total_facts: int = 0
     historian: dict | None = None                      # {"latest_ts", "state", "running_ts", "out_of_range": [...]}
     doc_keys: list[str] = field(default_factory=list)  # documents linked to the asset (DOCUMENTED_BY)
+    # Structured forms of the above, for the Context Service (context_service/service.py):
+    items: list[dict] = field(default_factory=list)    # {text, section, entity_id, source, focus} per included fact
+    values: list[dict] = field(default_factory=list)   # {signal_id, name, value, unit, low, high, status} (last RUNNING sample)
 
 
 def check_asset(asset_id: str) -> str:
@@ -134,8 +137,10 @@ def _tokens(text: str) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in STOPWORDS and len(t) > 1}
 
 
-def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
-    """Fact sheet for `asset_id` within `budget_chars` (raises GraphUnavailable / AssetScopeError)."""
+def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] | None = None) -> AssetContext:
+    """Fact sheet for `asset_id` within `budget_chars` (raises GraphUnavailable / AssetScopeError).
+
+    `focus_ids`: entities the question is about; their facts are kept first when the sheet is cut."""
     try:
         ctx = services.get_asset_context(asset_id)
     except NodeNotFound:
@@ -171,6 +176,7 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
                           node_id=asset_id))
 
     historian = None
+    values: list[dict] = []
     if snap:
         latest, running = snap["latest"], snap["running"]
         state = f"Historian (plc_1_historian, simulated data): latest sample {latest['ts']:%Y-%m-%d %H:%M} UTC, machine state {latest['machine_state']}"
@@ -202,6 +208,8 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
         if snap and snap["running"] and column in snap["running"]:
             value = snap["running"][column]
             status = _range_status(value, limit)
+            values.append({"signal_id": s["id"], "name": s["name"], "value": _num(value), "unit": unit,
+                           "low": (limit or {}).get("low"), "high": (limit or {}).get("high"), "status": status})
             detail.append(f"last running value {_fmt(value)}{(' ' + unit) if unit else ''}{f' ({status})' if status else ''}")
             if status.endswith("normal range"):
                 historian["out_of_range"].append(f"{s['name']}: {_fmt(value)} {unit} ({status})".strip())
@@ -244,7 +252,8 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
     for d in ctx["documents"]:
         lines.append(Line("DOCUMENTS", f"- {d['name']}" + (f" (doc_key {d['properties']['doc_key']})" if d["properties"].get("doc_key") else "")))
 
-    selected = _fit(lines, question, budget_chars)
+    focus_ids = focus_ids or set()
+    selected = _fit(lines, question, budget_chars, focus_ids)
     text = _render(selected)
     cited = [ln for ln in selected if not ln.pinned or ln.text.startswith(("Location", "Historian"))]
     node_props = {asset_id: asset["properties"]}
@@ -263,7 +272,39 @@ def build(asset_id: str, question: str, budget_chars: int) -> AssetContext:
         total_facts=len([ln for ln in lines if not ln.pinned]),
         historian=historian,
         doc_keys=sorted({d["properties"]["doc_key"] for d in ctx["documents"] if d["properties"].get("doc_key")}),
+        items=[{"text": ln.text.strip(), "section": ln.section.lower(), "entity_id": ln.node_id,
+                "source": labels.get(ln.node_id, "plc_1_historian" if ln.text.startswith("Historian") else ""),
+                "focus": ln.node_id in focus_ids} for ln in cited],
+        values=values,
     )
+
+
+def entities(asset_id: str) -> list[dict]:
+    """The asset's components, signals, alarms and procedures with the names they go by:
+    [{id, label, name, keys}] — used to find what a question is about."""
+    ctx = services.get_asset_context(asset_id)
+    out: list[dict] = []
+
+    def add(node, label):
+        p = node.get("properties") or {}
+        keys = [node["name"], *(p.get("aliases") or []), p.get("code"), p.get("tag"),
+                node["id"].rsplit("/", 1)[-1].replace("_", " ").replace("-", " ")]
+        out.append({"id": node["id"], "label": label, "name": node["name"], "keys": [str(k) for k in keys if k]})
+
+    def walk(components):
+        for c in components:
+            add(c, "Component")
+            for sig in c["signals"]:
+                add(sig, "Signal")
+            walk(c["children"])
+    walk(ctx["components"])
+    for sig in ctx["signals"]:
+        add(sig, "Signal")
+    for alarm in ctx["alarms"]:
+        add(alarm, "Alarm")
+    for proc in ctx["procedures"]:
+        add(proc, "Procedure")
+    return out
 
 
 SECTION_TITLES = {
@@ -283,14 +324,16 @@ def _render(lines: list[Line]) -> str:
     return "\n".join(out)
 
 
-def _fit(lines: list[Line], question: str, budget: int) -> list[Line]:
-    """All lines if they fit; otherwise pinned lines + the best-matching ones, in original order."""
+def _fit(lines: list[Line], question: str, budget: int, focus_ids: set[str] | None = None) -> list[Line]:
+    """All lines if they fit; otherwise pinned lines + the facts about the focus entities,
+    then the best-matching ones, in original order."""
     if len(_render(lines)) <= budget:
         return lines
     q = _tokens(question)
+    focus_ids = focus_ids or set()
     scored = sorted(
         (i for i, ln in enumerate(lines) if not ln.pinned),
-        key=lambda i: (-len(q & _tokens(lines[i].text)), i),
+        key=lambda i: (lines[i].node_id not in focus_ids, -len(q & _tokens(lines[i].text)), i),
     )
     keep = {i for i, ln in enumerate(lines) if ln.pinned}
     for i in scored:
