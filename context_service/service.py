@@ -156,10 +156,23 @@ def _operational(ctx) -> dict:
     }
 
 
+MAX_SEARCH_QUERIES = 4      # the question as asked, and up to three topics
+CLOSEST_DOCUMENTS = 3
+CLOSEST_MIN_SCORE = 0.005     # under this a document is not near in any useful sense
+
+
 def search_documents(query: str, asset_id: str | None = None, top_k: int | None = None,
-                     doc_keys: list[str] | None = None) -> dict:
-    """Reranked document excerpts: the asset's own documents first, then the whole library."""
+                     doc_keys: list[str] | None = None, queries: list[str] | None = None) -> dict:
+    """Reranked document excerpts: the asset's own documents first, then the whole library.
+
+    `queries`: a question with several topics is also searched once per topic (a client's question
+    agent writes them); the excerpts are merged in turn, so each topic is represented.
+    Excerpts under RAG_MIN_RERANK_SCORE are never returned. When nothing passes, `closest`
+    names the documents that came nearest, so a client can say where it looked.
+    """
     top_k = max(1, min(int(top_k or settings.RAG_CHAT_TOP_N), settings.RAG_QUERY_MAX_TOP_K))
+    # The question as asked is always searched too: a rewritten topic can miss what the full sentence finds.
+    queries = list(dict.fromkeys([query.strip(), *(q.strip() for q in (queries or []) if q and q.strip())]))[:MAX_SEARCH_QUERIES]
     if doc_keys is None and asset_id:
         try:
             doc_keys = asset_context.build(asset_id, query, MIN_BUDGET).doc_keys
@@ -167,20 +180,50 @@ def search_documents(query: str, asset_id: str | None = None, top_k: int | None 
             raise ContextError(str(exc))
     relevant = lambda result: [c for c in result.chunks  # noqa: E731
                                if c.rerank_score is None or c.rerank_score >= settings.RAG_MIN_RERANK_SCORE]
-    found, scope, reranker = [], "library", "skipped"
-    if doc_keys:
-        result = search_v2(query, top_n=top_k, doc_keys=doc_keys)
-        found, scope, reranker = relevant(result), "asset", result.reranker
-    if not found:
-        result = search_v2(query, top_n=top_k)
-        found, scope, reranker = relevant(result), "library", result.reranker
-    return {"scope": scope, "reranker": reranker, "results": [_excerpt(c, scope) for c in found]}
+    per_query, scopes, rerankers, missed = [], [], [], []
+    for q in queries:
+        found, scope, reranker = [], "library", "skipped"
+        if doc_keys:
+            result = search_v2(q, top_n=top_k, doc_keys=doc_keys)
+            found, scope, reranker = relevant(result), "asset", result.reranker
+        if not found:
+            result = search_v2(q, top_n=top_k)
+            found, scope, reranker = relevant(result), "library", result.reranker
+            if not found:
+                missed.extend(result.chunks)
+        per_query.append([_excerpt(c, scope) | {"_id": c.id} for c in found])
+        scopes.append(scope)
+        rerankers.append(reranker)
+
+    merged, seen = [], set()
+    for rank in range(max((len(r) for r in per_query), default=0)):     # each query's best first
+        for results in per_query:
+            if rank < len(results) and results[rank]["_id"] not in seen:
+                seen.add(results[rank].pop("_id"))
+                merged.append(results[rank])
+    closest: list[dict] = []
+    if not merged:
+        for c in sorted(missed, key=lambda c: c.score, reverse=True):
+            if c.score >= CLOSEST_MIN_SCORE and c.source not in {d["document"] for d in closest}:
+                closest.append({"document": c.source, "page": c.page_start, "score": round(c.score, 4)})
+        closest = closest[:CLOSEST_DOCUMENTS]
+    return {"scope": "asset" if "asset" in scopes else "library",
+            "reranker": "fallback" if "fallback" in rerankers else rerankers[0],
+            "queries": queries, "closest": closest, "results": merged[:top_k + len(queries) - 1]}
+
+
+def _squeeze(text: str) -> str:
+    """Tables parsed from PDFs are padded with runs of spaces, dots and dashes: they carry nothing
+    and would use most of a small model's context."""
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\.{4,}", "…", text)
+    return re.sub(r"-{4,}", "---", text)
 
 
 def _excerpt(chunk, scope: str) -> dict:
     return {"document": chunk.source, "doc_key": chunk.asset_id, "page": chunk.page_start, "page_end": chunk.page_end,
             "section_path": chunk.section_path, "kind": "figure" if chunk.content_type == "figure" else "text",
-            "text": chunk.text, "score": chunk.score, "scope": scope}
+            "text": _squeeze(chunk.text), "score": chunk.score, "scope": scope}
 
 
 # --- read-only views for clients (BSKLAB EDGE's RAG and Graph tabs) ---------------------
@@ -323,8 +366,11 @@ def describe_image(data: bytes, question: str = "") -> dict:
 # --- the packet -----------------------------------------------------------------------
 
 def assemble(query: str, asset_id: str | None = None, include_documents: bool = True,
-             budget_chars: int | None = None) -> dict:
-    """The Context Packet for a question (see the module docstring)."""
+             budget_chars: int | None = None, search_queries: list[str] | None = None) -> dict:
+    """The Context Packet for a question (see the module docstring).
+
+    `search_queries`: what to search the documents for, when the client has split or cleaned the
+    question (one per topic). The asset and its facts are still resolved from `query`."""
     query = (query or "").strip()
     if not query:
         raise ContextError("query is required")
@@ -364,13 +410,21 @@ def assemble(query: str, asset_id: str | None = None, include_documents: bool = 
     used = len(ctx.text) if ctx else 0
 
     documents: list[dict] = []
+    document_search = None
     if include_documents:
         try:
-            found = timed("documents", lambda: search_documents(query, doc_keys=ctx.doc_keys if ctx else None))
+            found = timed("documents", lambda: search_documents(query, doc_keys=ctx.doc_keys if ctx else None,
+                                                                queries=search_queries))
+            document_search = {"queries": found["queries"], "closest": found["closest"]}
             if found["reranker"] == "fallback":
                 warnings.append("reranker unavailable: document order is by vector similarity")
             remaining = budget - used
-            for excerpt in found["results"]:
+            # Several topics share the space, so the first long excerpt does not take all of it.
+            topics = min(len(found["queries"]), len(found["results"]))
+            share = remaining // topics if topics > 1 else 0
+            for n, excerpt in enumerate(found["results"]):
+                if share >= 400 and n < topics and len(excerpt["text"]) > share:
+                    excerpt = {**excerpt, "text": excerpt["text"][:share], "truncated": True}
                 if len(excerpt["text"]) > remaining:
                     if documents or remaining < 400:
                         continue
@@ -390,6 +444,7 @@ def assemble(query: str, asset_id: str | None = None, include_documents: bool = 
         "relationships": [{"from": f["entity_id"][5:].split(">")[0], "to": f["entity_id"][5:].split(">")[1], "text": f["text"],
                            "source": f["source"]} for f in facts if f["entity_id"].startswith("edge:")],
         "document_evidence": documents,
+        "document_search": document_search,       # what was searched for, and the nearest documents when nothing passed
         "operational_context": _operational(ctx) if ctx else None,
         "provenance": {
             "graph_entities": sorted({f["entity_id"] for f in facts if f["entity_id"] and not f["entity_id"].startswith("edge:")}),
@@ -420,7 +475,9 @@ def render(packet: dict, ctx=None) -> str:
     if packet["document_evidence"]:
         lines = []
         for n, d in enumerate(packet["document_evidence"], 1):
-            where = f"{d['document']}" + (f", p.{d['page']}" if d.get("page") else "") + (" (figure)" if d["kind"] == "figure" else "")
+            section = (d.get("section_path") or [""])[-1]
+            where = f"{d['document']}" + (f", § {section}" if section else "") + (f", p.{d['page']}" if d.get("page") else "") \
+                + (" (figure)" if d["kind"] == "figure" else "")
             lines.append(f"[{n}] ({where})\n{d['text']}")
         parts.append("DOCUMENT EXCERPTS:\n" + "\n\n".join(lines))
     if not parts:

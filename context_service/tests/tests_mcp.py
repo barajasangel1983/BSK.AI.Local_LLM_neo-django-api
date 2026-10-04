@@ -105,9 +105,9 @@ class ToolTests(TransactionTestCase):
     def test_assemble_context_passes_arguments_and_records_usage(self):
         with patch.object(service, "assemble", return_value={"packet_version": "1"}) as assemble:
             self.call("assemble_context", {"query": "die pressure", "asset_id": "bsk:asset:EXTR01", "budget_chars": 3000})
-            assemble.assert_called_once_with("die pressure", "bsk:asset:EXTR01", True, 3000)
+            assemble.assert_called_once_with("die pressure", "bsk:asset:EXTR01", True, 3000, None)
             self.call("assemble_context", {"query": "anything"})
-            assemble.assert_called_with("anything", None, True, None)       # "" and 0 mean "not given"
+            assemble.assert_called_with("anything", None, True, None, None)       # "" and 0 mean "not given"
         calls = ModelCall.objects.filter(purpose="mcp")
         self.assertEqual([(c.model_id, c.status) for c in calls], [("mcp:assemble_context", "ok")] * 2)
 

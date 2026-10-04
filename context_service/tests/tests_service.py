@@ -104,7 +104,7 @@ class PacketTests(ContextTestCase):
         text = p["context_text"]
         self.assertIn("GRAPH FACTS [G]", text)
         self.assertIn("Out of normal range in the last running sample: Die pressure: 104.0 bar", text)
-        self.assertIn("[2] (Manual.pdf, p.7 (figure))", text)
+        self.assertIn("[2] (Manual.pdf, § Die, p.7 (figure))", text)
 
     def test_small_budget_keeps_the_focus_facts(self):
         p = service.assemble("What is the die pressure limit?", ASSET, include_documents=False, budget_chars=2000)
@@ -132,6 +132,31 @@ class PacketTests(ContextTestCase):
         self.search.side_effect = [result(), result(chunk("From another manual.", source="Other.pdf", key="OTHER"))]
         p = service.assemble("die", ASSET)
         self.assertEqual([(d["document"], d["scope"]) for d in p["document_evidence"]], [("Other.pdf", "library")])
+
+    def test_one_search_per_topic_shares_the_space(self):
+        long = lambda word, **kw: chunk(f"{word} " * 1000, **kw)        # noqa: E731
+        question = "Explain the installation and the warranty of the BX80"
+        self.search.side_effect = [result(chunk("Barely related.", rerank=0.02)),       # the question as asked: nothing passes
+                                   result(long("install")), result(long("warranty", page=9), chunk("Weak.", rerank=0.02))]
+        p = service.assemble(question, budget_chars=6000, search_queries=["BX80 installation", "BX80 warranty", "  "])
+        self.assertEqual([c.args[0] for c in self.search.call_args_list], [question, "BX80 installation", "BX80 warranty"])
+        self.assertEqual([(d["page"], len(d["text"]), d["truncated"]) for d in p["document_evidence"]],
+                         [(4, 3000, True), (9, 3000, True)])
+        self.assertEqual(p["document_search"], {"queries": [question, "BX80 installation", "BX80 warranty"], "closest": []})
+
+    def test_weak_matches_are_never_passed_on_but_the_nearest_documents_are_named(self):
+        self.search.side_effect = None
+        self.search.return_value = result(chunk("Table of contents", source="BX80 Manual.pdf", page=2, rerank=0.02),
+                                          chunk("Index", source="BX80 Manual.pdf", rerank=0.01),
+                                          chunk("Other", source="CX0.pdf", rerank=0.001))
+        p = service.assemble("installation, process and warranty of the BX80")
+        self.assertEqual(p["document_evidence"], [])
+        self.assertEqual(p["document_search"]["closest"], [{"document": "BX80 Manual.pdf", "page": 2, "score": 0.02}])   # not CX0
+        self.assertEqual(p["context_text"], "(nothing relevant was found)")
+
+    def test_table_padding_is_squeezed_out_of_excerpts(self):
+        self.search.return_value = result(chunk("| 1.0      | GENERAL ..........................3      |\n|----------|"))
+        self.assertEqual(service.assemble("general")["document_evidence"][0]["text"], "| 1.0 | GENERAL …3 |\n|---|")
 
     def test_sources_down_become_warnings(self):
         self.search.side_effect = RuntimeError("chroma down")

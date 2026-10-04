@@ -13,6 +13,7 @@ keeps working. The embedder is required: without it v2 cannot be queried
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass, field
 
@@ -151,13 +152,25 @@ def _fit_for_reranker(query: str, text: str) -> str:
     return text if len(tokens) <= budget else enc.decode(tokens[:budget])
 
 
+def _rerank_text(chunk: V2Chunk) -> str:
+    """What the reranker scores: the chunk under its document name and section headings.
+
+    A chunk's own text often does not name what it is about (the warranty paragraph of the BX80
+    manual says neither "BX80" nor "warranty": both are in its headings), so scored alone it
+    gets ~0 for "BX80 warranty conditions".
+    """
+    name = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", chunk.source or "")
+    heading = " > ".join(dict.fromkeys(p for p in [name, *(chunk.section_path or [])] if p))
+    return f"{heading}\n{chunk.text}" if heading else chunk.text
+
+
 def _post_rerank(query: str, chunks: list[V2Chunk], top_n: int):
     resp = requests.post(
         settings.DGX_RERANK_URL,
         json={
             "model": settings.DGX_RERANK_MODEL,
             "query": query,
-            "documents": [_fit_for_reranker(query, c.text) for c in chunks],
+            "documents": [_fit_for_reranker(query, _rerank_text(c)) for c in chunks],
             "top_n": top_n,
         },
         timeout=settings.RAG_RERANK_TIMEOUT,
