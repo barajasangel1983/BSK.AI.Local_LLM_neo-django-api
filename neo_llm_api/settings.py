@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     "ingestion",
     "usage",
     "gpu",
+    "context_service",
 ]
 
 MIDDLEWARE = [
