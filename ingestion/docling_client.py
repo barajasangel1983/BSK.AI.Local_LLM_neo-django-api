@@ -59,11 +59,14 @@ class DoclingClient:
             headers["X-Api-Key"] = self.api_key
         return headers
 
-    def convert_file(self, file_bytes: bytes, filename: str, wait: Optional[float] = None) -> dict:
+    def convert_file(self, file_bytes: bytes, filename: str, wait: Optional[float] = None,
+                     with_layout: bool = False) -> dict:
         """Convert a file and return the result document.
 
         `wait` is how long to wait for the BSK GPU when another Hub call holds it
         (default: GPU_LOCK_WAIT, for pipeline jobs; chat passes a short wait).
+        `with_layout` also asks for Docling's JSON (`document.json_content`): the
+        page and box of every figure, used by Describe figures.
 
         Uses a ``kind: "file"`` source with the payload base64-encoded.
         Returns the full conversion result dict (including 'document', 'status', 'errors').
@@ -77,7 +80,7 @@ class DoclingClient:
                     "base64_string": base64.b64encode(file_bytes).decode("ascii"),
                 }
             ],
-            "options": CONVERT_OPTIONS,
+            "options": {**CONVERT_OPTIONS, "to_formats": ["md", "json"]} if with_layout else CONVERT_OPTIONS,
         }
         try:
             # Hold the BSK GPU (activating Docling through the orchestrator when enabled).
@@ -111,6 +114,6 @@ class DoclingClient:
 _client = DoclingClient()
 
 
-def convert_file(file_bytes: bytes, filename: str, wait: Optional[float] = None) -> dict:
+def convert_file(file_bytes: bytes, filename: str, wait: Optional[float] = None, with_layout: bool = False) -> dict:
     """Convert a file and return the result document."""
-    return _client.convert_file(file_bytes, filename, wait=wait)
+    return _client.convert_file(file_bytes, filename, wait=wait, with_layout=with_layout)

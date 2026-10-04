@@ -38,6 +38,8 @@ MAX_TOKENS = 800  # Must be well under 4096 to account for "passage: " prefix + 
 OVERLAP_SENTENCES = 1
 # Passed to Docling as `md_page_break_placeholder`; must not occur in real text.
 PAGE_BREAK = "<!-- page-break -->"
+IMAGE_PLACEHOLDER = "<!-- image -->"     # Docling's marker for a picture
+FIGURE_PREFIX = "[Figure p."             # a VLM figure description put in its place (ingestion/figures.py)
 
 _LIST_ITEM = re.compile(r"^\s*([-*+\u2022]|\d+[.)])\s+")
 
@@ -48,7 +50,7 @@ class Chunk:
     section_path: List[str]
     page_start: int
     page_end: int
-    content_type: str  # paragraph | table | list
+    content_type: str  # paragraph | table | list | figure
     tables_or_figure_refs: List[str] = field(default_factory=list)
     token_count: int = 0
 
@@ -142,6 +144,8 @@ def _content_type(text: str) -> str:
     lines = [l for l in text.split("\n") if l.strip()]
     if not lines:
         return "paragraph"
+    if lines[0].lstrip().startswith(FIGURE_PREFIX):
+        return "figure"
     if sum(l.lstrip().startswith("|") for l in lines) * 2 > len(lines):
         return "table"
     if sum(bool(_LIST_ITEM.match(l)) for l in lines) * 2 > len(lines):

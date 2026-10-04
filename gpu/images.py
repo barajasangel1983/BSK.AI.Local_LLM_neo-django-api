@@ -74,3 +74,49 @@ def render_pdf_page(path: str | Path, page: int, long_side: int | None = None) -
         return _encode(img, limit)
     finally:
         pdf.close()
+
+
+def crop_pdf_figure(path: str | Path, page: int, bbox: dict, page_size: dict, padding: float = 0.05,
+                    max_scale: float = 4.0, long_side: int | None = None) -> tuple[bytes, int, int, int, int]:
+    """Crop a figure from a PDF page (contract v1.2 crop spec).
+
+    `bbox` is Docling's box in PDF points: {l, t, r, b, coord_origin} with origin
+    BOTTOMLEFT (y grows upwards) or TOPLEFT; `page_size` is Docling's {width, height}.
+    The page is rendered so the figure gets up to `long_side` pixels (at most
+    `max_scale` x 72 DPI, at least the page at `long_side`), cropped with `padding`
+    on each side (clamped to the page) and only ever downscaled.
+
+    Returns (jpeg, width, height, crop width before downscaling, crop height before downscaling).
+    """
+    import pypdfium2 as pdfium
+
+    limit = long_side or settings.VLM_IMAGE_LONG_SIDE
+    page_w, page_h = float(page_size["width"]), float(page_size["height"])
+    left, right = sorted((float(bbox["l"]), float(bbox["r"])))
+    if str(bbox.get("coord_origin", "BOTTOMLEFT")).upper() == "TOPLEFT":
+        top, bottom = sorted((float(bbox["t"]), float(bbox["b"])))
+    else:       # y flips: the top of the box has the larger y
+        top, bottom = sorted((page_h - float(bbox["t"]), page_h - float(bbox["b"])))
+    box_w, box_h = right - left, bottom - top
+    if box_w <= 0 or box_h <= 0:
+        raise ImageError("the figure box is empty")
+    pad_x, pad_y = box_w * padding, box_h * padding
+    left, right = max(0.0, left - pad_x), min(page_w, right + pad_x)
+    top, bottom = max(0.0, top - pad_y), min(page_h, bottom + pad_y)
+
+    scale = max(limit / max(page_w, page_h), min(max_scale, limit / max(right - left, bottom - top)))
+    try:
+        pdf = pdfium.PdfDocument(str(path))
+    except pdfium.PdfiumError as exc:
+        raise ImageError("not a readable PDF") from exc
+    try:
+        if not 1 <= page <= len(pdf):
+            raise ImageError(f"page {page} is out of range (1–{len(pdf)})")
+        img = pdf[page - 1].render(scale=scale).to_pil()
+    finally:
+        pdf.close()
+    # Normalised by Docling's page size, so a different render size still lines up.
+    fx, fy = img.width / page_w, img.height / page_h
+    crop = img.crop((round(left * fx), round(top * fy), round(right * fx), round(bottom * fy)))
+    jpeg, width, height = _encode(crop, limit)
+    return jpeg, width, height, crop.width, crop.height
