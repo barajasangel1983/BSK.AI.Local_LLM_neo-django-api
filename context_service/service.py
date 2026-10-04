@@ -183,6 +183,105 @@ def _excerpt(chunk, scope: str) -> dict:
             "text": chunk.text, "score": chunk.score, "scope": scope}
 
 
+# --- read-only views for clients (BSKLAB EDGE's RAG and Graph tabs) ---------------------
+
+GRAPH_MAX_NODES = 600
+_HIDDEN_PROPS = ("evidence_ids", "created_at", "updated_at")
+
+
+def _document(doc_id):
+    from ingestion.models import Document
+    try:
+        doc = Document.objects.filter(pk=doc_id).first()
+    except (ValueError, Exception):     # not a UUID
+        doc = None
+    if doc is None:
+        raise ContextError(f"unknown document {doc_id!r}")
+    return doc
+
+
+def _document_json(doc, data=...) -> dict:
+    from ingestion import figures
+    if data is ...:
+        data = figures.load(doc) if doc.parse_status == "parsed" else None
+    counts = figures.summary(data)
+    return {
+        "id": str(doc.id), "filename": doc.filename, "doc_key": doc.doc_key, "pages": doc.page_count,
+        "parsed": doc.parse_status == "parsed", "searchable": doc.rag_status == "done", "chunks": doc.rag_chunk_count,
+        "figures_found": counts["found"], "figures_described": counts["described"],
+        "uploaded_at": doc.uploaded_at.isoformat(),
+    }
+
+
+def list_documents() -> dict:
+    """The document library: what exists, whether it is searchable, how many figures are described."""
+    from ingestion.models import Document
+    return {"documents": [_document_json(d) for d in Document.objects.all()]}
+
+
+def get_document(document_id: str) -> dict:
+    """One document with its described figures (page, kind, caption, description)."""
+    from ingestion import figures
+    doc = _document(document_id)
+    data = figures.load(doc) if doc.parse_status == "parsed" else None
+    shown = [{"index": f["index"], "page": f["page"], "kind": f.get("kind", ""), "caption": f.get("caption", ""),
+              "description": f.get("description", "")}
+             for f in (data or {}).get("figures", []) if f.get("status") == "done"]
+    return {**_document_json(doc, data), "figures": shown}
+
+
+def get_document_page(document_id: str, page: int) -> dict:
+    """The text of one page (Markdown as parsed, with figure descriptions in place)."""
+    from ingestion import library
+    from ingestion.chunker import IMAGE_PLACEHOLDER, PAGE_BREAK
+    doc = _document(document_id)
+    if doc.parse_status != "parsed" or not library.parsed_path(doc).exists():
+        raise ContextError("the document is not parsed yet")
+    md = (library.load_parsed(doc).get("document") or {}).get("md_content") or ""
+    pages = md.split(PAGE_BREAK)
+    if not 1 <= int(page) <= len(pages):
+        raise ContextError(f"page must be between 1 and {len(pages)}")
+    text = pages[int(page) - 1].replace(IMAGE_PLACEHOLDER, "").strip()
+    return {"document_id": str(doc.id), "filename": doc.filename, "page": int(page), "pages": len(pages), "text": text}
+
+
+def figure_image(document_id: str, figure_index: int) -> bytes:
+    """A described figure as JPEG (the same crop the vision model saw)."""
+    from gpu import images
+    from ingestion import figures
+    doc = _document(document_id)
+    data = figures.load(doc) or {}
+    figure = next((f for f in data.get("figures", []) if f["index"] == int(figure_index) and f.get("status") == "done"), None)
+    if figure is None:
+        raise ContextError(f"unknown figure {figure_index} of document {document_id}")
+    path = figures.image_path(doc, figure["index"])
+    if not path.exists():
+        try:
+            figures.crop(doc, figure)
+        except images.ImageError as exc:
+            raise ContextError(f"the figure can't be shown: {exc}")
+    return path.read_bytes()
+
+
+def get_graph(asset_id: str, depth: int = 2) -> dict:
+    """The curated graph around an asset, for a viewer: {nodes: [{id, label, name, properties}],
+    links: [{source, target, type}]}. The lab layer is never included."""
+    try:
+        asset_context.check_asset(asset_id)
+    except asset_context.AssetScopeError as exc:
+        raise ContextError(str(exc))
+    depth = max(1, min(int(depth or 2), 3))
+    data = services.graph_data(asset_id, depth=depth, limit=GRAPH_MAX_NODES, layer="curated")
+    return {
+        "asset_id": asset_id, "depth": depth,
+        "nodes": [{"id": n["id"], "label": n.get("label"), "name": n.get("name"),
+                   "properties": {k: v for k, v in (n.get("properties") or {}).items() if k not in _HIDDEN_PROPS}}
+                  for n in data["nodes"]],
+        "links": [{"source": l["source"], "target": l["target"], "type": l["type"]} for l in data["links"]],
+        "truncated": len(data["nodes"]) >= GRAPH_MAX_NODES,
+    }
+
+
 # --- the packet -----------------------------------------------------------------------
 
 def assemble(query: str, asset_id: str | None = None, include_documents: bool = True,

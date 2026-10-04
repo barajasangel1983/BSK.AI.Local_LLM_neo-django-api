@@ -28,7 +28,7 @@ import uvicorn
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.db import close_old_connections
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.responses import JSONResponse
 
@@ -139,6 +139,32 @@ def build_server() -> FastMCP:
     async def get_operational_state(asset_id: str) -> dict:
         """Current machine state and signal values against their normal range (historian data)."""
         return await _call("get_operational_state", service.operational_state, asset_id)
+
+    @mcp.tool()
+    async def list_documents() -> dict:
+        """The document library: each document with its pages, whether it is searchable, and its figures."""
+        return await _call("list_documents", service.list_documents)
+
+    @mcp.tool()
+    async def get_document(document_id: str) -> dict:
+        """One document with its described figures (page, kind, caption, description)."""
+        return await _call("get_document", service.get_document, document_id)
+
+    @mcp.tool()
+    async def get_document_page(document_id: str, page: int) -> dict:
+        """The text of one page of a document (Markdown, with figure descriptions in place)."""
+        return await _call("get_document_page", service.get_document_page, document_id, page)
+
+    @mcp.tool()
+    async def get_figure_image(document_id: str, figure_index: int) -> Image:
+        """A described figure of a document as a JPEG image."""
+        return Image(data=await _call("get_figure_image", service.figure_image, document_id, figure_index), format="jpeg")
+
+    @mcp.tool()
+    async def get_graph(asset_id: str, depth: int = 2) -> dict:
+        """The curated graph around an asset, for a viewer: nodes (id, label, name, properties) and
+        links (source, target, type). depth 1 to 3."""
+        return await _call("get_graph", service.get_graph, asset_id, depth)
 
     @mcp.tool()
     async def get_system_health() -> dict:
