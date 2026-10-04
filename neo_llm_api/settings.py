@@ -256,6 +256,9 @@ ASSET_CONTEXT_SHARE = float(os.getenv("ASSET_CONTEXT_SHARE", "0.3"))
 ASSET_RAG_SHARE = float(os.getenv("ASSET_RAG_SHARE", "0.25"))
 # Reranker request timeout (seconds); on timeout we fall back to vector order.
 RAG_RERANK_TIMEOUT = float(os.getenv("RAG_RERANK_TIMEOUT", "10"))
+# The reranker's context is 1024 tokens for query + one chunk; longer chunks are cut for
+# scoring only (the chunk given to the chat model is not cut). Margin for tokenizer differences.
+RAG_RERANK_MAX_TOKENS = int(os.getenv("RAG_RERANK_MAX_TOKENS", "800"))
 # Chat drops reranked chunks scoring below this (reranker scores are ~0.0 for
 # unrelated text, 0.6+ for relevant). Not applied when the reranker fell back,
 # nor to the RAG Lab debugger.

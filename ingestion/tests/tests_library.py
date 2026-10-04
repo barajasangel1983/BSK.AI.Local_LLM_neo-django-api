@@ -61,6 +61,14 @@ class ChunkingTests(SimpleTestCase):
     def test_structure_default_matches_existing_chunker(self):
         self.assertEqual(chunk_parsed(PARSED, "structure"), chunk_document(PARSED))
 
+    def test_structure_chunks_never_exceed_max_tokens(self):
+        """A table flattened into one very long 'sentence' used to come out as one oversized chunk."""
+        row = "| Zone 1 | 185 C | 190 C | 195 C | alarm at 210 C "
+        md = "# Limits\n\nIntro sentence about the limits of the machine in normal operation. " + row * 400 + "\n\nNext paragraph with a normal sentence about the screw."
+        chunks = chunk_document({"md_content": md}, max_tokens=800, overlap_sentences=1)
+        self.assertGreater(len(chunks), 3)
+        self.assertLessEqual(max(c.token_count for c in chunks), 800)
+
     def test_sentence_chunks(self):
         chunks = chunk_parsed(PARSED, "sentence", {"max_tokens": 64, "overlap_sentences": 1})
         paragraphs = [c for c in chunks if c.content_type == "paragraph"]

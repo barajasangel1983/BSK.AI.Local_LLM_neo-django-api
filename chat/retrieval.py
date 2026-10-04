@@ -136,13 +136,28 @@ def _rerank(query: str, chunks: list[V2Chunk], top_n: int) -> list[V2Chunk]:
     return ranked[:top_n]
 
 
+def _fit_for_reranker(query: str, text: str) -> str:
+    """Cut a chunk so query + chunk stay inside the reranker's context.
+
+    The reranker refuses the whole request (400) when any single document is over
+    its limit, which would lose reranking for every other chunk too. The token
+    count is an estimate (cl100k, not the reranker's tokenizer), hence the margin.
+    """
+    import tiktoken
+
+    enc = tiktoken.get_encoding("cl100k_base")
+    budget = max(64, settings.RAG_RERANK_MAX_TOKENS - len(enc.encode(query)))
+    tokens = enc.encode(text)
+    return text if len(tokens) <= budget else enc.decode(tokens[:budget])
+
+
 def _post_rerank(query: str, chunks: list[V2Chunk], top_n: int):
     resp = requests.post(
         settings.DGX_RERANK_URL,
         json={
             "model": settings.DGX_RERANK_MODEL,
             "query": query,
-            "documents": [c.text for c in chunks],
+            "documents": [_fit_for_reranker(query, c.text) for c in chunks],
             "top_n": top_n,
         },
         timeout=settings.RAG_RERANK_TIMEOUT,

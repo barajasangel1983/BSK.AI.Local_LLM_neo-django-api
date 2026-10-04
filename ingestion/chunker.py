@@ -224,19 +224,16 @@ def chunk_document(
                 for sent in sents:
                     trial = (buf + " " + sent).strip() if buf else sent
                     if _count_tokens(trial) > max_tokens and buf:
-                        # Flush current buf as a chunk
-                        chunks.append(make_chunk(buf))
+                        # Flush current buf as a chunk. A single "sentence" can itself be over the
+                        # limit (a table flattened into one line): hard-split it.
+                        chunks.extend(make_chunk(piece) for piece in _within_limit(buf, max_tokens))
                         buf = sent
                     else:
                         buf = trial
                 if buf:
                     overlap_buffer = " ".join(_split_sentences(buf)[-overlap_sentences:]) if overlap_sentences else ""
-                    if _count_tokens(buf) <= max_tokens:
-                        chunks.append(make_chunk(buf))
-                    else:
-                        # Last resort: hard split by token count (no sentence boundary found)
-                        for hc in _hard_split_by_tokens(buf, max_tokens):
-                            chunks.append(make_chunk(hc))
+                    # Last resort inside: hard split by token count (no sentence boundary found)
+                    chunks.extend(make_chunk(piece) for piece in _within_limit(buf, max_tokens))
 
     # Final cleanup: drop any empty or tiny chunks
     chunks = [c for c in chunks if c.token_count >= 20]
@@ -247,6 +244,11 @@ def chunk_document(
             c.section_path = ["Document"]
 
     return chunks
+
+
+def _within_limit(text: str, max_tokens: int) -> List[str]:
+    """The text as one piece, or hard-split when it is over `max_tokens`."""
+    return [text] if _count_tokens(text) <= max_tokens else _hard_split_by_tokens(text, max_tokens)
 
 
 def _hard_split_by_tokens(text: str, max_tokens: int) -> List[str]:

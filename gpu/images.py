@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import io
+import threading
 from pathlib import Path
 
 from django.conf import settings
+
+
+# PDFium is not thread-safe: two requests rendering at the same time corrupt its heap and
+# kill the whole process (the API runs requests in threads). Every pdfium call holds this lock.
+_PDFIUM_LOCK = threading.Lock()
 
 
 class ImageError(ValueError):
@@ -46,14 +52,15 @@ def _encode(img, long_side: int | None = None) -> tuple[bytes, int, int]:
 def pdf_page_count(path: str | Path) -> int:
     import pypdfium2 as pdfium
 
-    try:
-        pdf = pdfium.PdfDocument(str(path))
-    except pdfium.PdfiumError as exc:
-        raise ImageError("not a readable PDF") from exc
-    try:
-        return len(pdf)
-    finally:
-        pdf.close()
+    with _PDFIUM_LOCK:
+        try:
+            pdf = pdfium.PdfDocument(str(path))
+        except pdfium.PdfiumError as exc:
+            raise ImageError("not a readable PDF") from exc
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
 
 
 def render_pdf_page(path: str | Path, page: int, long_side: int | None = None) -> tuple[bytes, int, int]:
@@ -61,19 +68,20 @@ def render_pdf_page(path: str | Path, page: int, long_side: int | None = None) -
     import pypdfium2 as pdfium
 
     limit = long_side or settings.VLM_IMAGE_LONG_SIDE
-    try:
-        pdf = pdfium.PdfDocument(str(path))
-    except pdfium.PdfiumError as exc:
-        raise ImageError("not a readable PDF") from exc
-    try:
-        if not 1 <= page <= len(pdf):
-            raise ImageError(f"page {page} is out of range (1–{len(pdf)})")
-        pdf_page = pdf[page - 1]
-        width, height = pdf_page.get_size()
-        img = pdf_page.render(scale=limit / max(width, height)).to_pil()
-        return _encode(img, limit)
-    finally:
-        pdf.close()
+    with _PDFIUM_LOCK:
+        try:
+            pdf = pdfium.PdfDocument(str(path))
+        except pdfium.PdfiumError as exc:
+            raise ImageError("not a readable PDF") from exc
+        try:
+            if not 1 <= page <= len(pdf):
+                raise ImageError(f"page {page} is out of range (1–{len(pdf)})")
+            pdf_page = pdf[page - 1]
+            width, height = pdf_page.get_size()
+            img = pdf_page.render(scale=limit / max(width, height)).to_pil().copy()
+        finally:
+            pdf.close()
+    return _encode(img, limit)
 
 
 def crop_pdf_figure(path: str | Path, page: int, bbox: dict, page_size: dict, padding: float = 0.05,
@@ -105,16 +113,17 @@ def crop_pdf_figure(path: str | Path, page: int, bbox: dict, page_size: dict, pa
     top, bottom = max(0.0, top - pad_y), min(page_h, bottom + pad_y)
 
     scale = max(limit / max(page_w, page_h), min(max_scale, limit / max(right - left, bottom - top)))
-    try:
-        pdf = pdfium.PdfDocument(str(path))
-    except pdfium.PdfiumError as exc:
-        raise ImageError("not a readable PDF") from exc
-    try:
-        if not 1 <= page <= len(pdf):
-            raise ImageError(f"page {page} is out of range (1–{len(pdf)})")
-        img = pdf[page - 1].render(scale=scale).to_pil()
-    finally:
-        pdf.close()
+    with _PDFIUM_LOCK:
+        try:
+            pdf = pdfium.PdfDocument(str(path))
+        except pdfium.PdfiumError as exc:
+            raise ImageError("not a readable PDF") from exc
+        try:
+            if not 1 <= page <= len(pdf):
+                raise ImageError(f"page {page} is out of range (1–{len(pdf)})")
+            img = pdf[page - 1].render(scale=scale).to_pil().copy()   # own pixels: nothing of pdfium outlives the lock
+        finally:
+            pdf.close()
     # Normalised by Docling's page size, so a different render size still lines up.
     fx, fy = img.width / page_w, img.height / page_h
     crop = img.crop((round(left * fx), round(top * fy), round(right * fx), round(bottom * fy)))
