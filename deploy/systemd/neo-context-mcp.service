@@ -1,0 +1,30 @@
+# Context MCP server (BSKLAB EDGE, Claude and other agents connect to it) as a self-restarting user service.
+#
+# It listens on port 8002 of 127.0.0.1 and, when the Studio's Settings → MCP says "Tailscale",
+# on the Tailscale address too (it binds that address itself; no tunnel service). It never
+# listens on all interfaces: the VPS has a public address.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/neo-context-mcp.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now neo-context-mcp
+# Status:  systemctl --user status neo-context-mcp
+# Logs:    journalctl --user -u neo-context-mcp -f     (tool calls are in logs/chat.log)
+# Deploy:  systemctl --user restart neo-context-mcp    (it does not reload code by itself)
+[Unit]
+Description=BSKLab Context MCP server (:8002)
+After=network-online.target neo-llm-api.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api
+ExecStart=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api/.venv/bin/python manage.py mcp_server
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

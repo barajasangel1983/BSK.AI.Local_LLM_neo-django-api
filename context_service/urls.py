@@ -11,4 +11,7 @@ urlpatterns = [
     path("search/", views.search, name="context-search"),
     path("assemble/", views.assemble, name="context-assemble"),
     path("ask/", views.ask, name="context-ask"),
+    path("mcp/", views.mcp_settings, name="context-mcp"),
+    path("mcp/tokens/", views.mcp_tokens, name="context-mcp-tokens"),
+    path("mcp/tokens/<uuid:token_id>/", views.mcp_token, name="context-mcp-token"),
 ]
