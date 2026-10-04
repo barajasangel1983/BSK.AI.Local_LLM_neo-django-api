@@ -8,6 +8,8 @@ cp .env.example .env   # then fill in keys/passwords
 .venv/bin/python manage.py runserver 0.0.0.0:8000
 ```
 
+On the VPS the API runs as a systemd user service (`deploy/systemd/neo-llm-api.service`; install steps in the file): the same `runserver`, started at boot and restarted after a crash. It still reloads itself on code changes; `systemctl --user restart neo-llm-api` is only needed for a new `.env` value.
+
 Tests: `.venv/bin/python manage.py test` (Django tests) and `.venv/bin/python -m pytest ingestion/tests` (pure unit tests).
 
 ## Context Graph (Neo4j)

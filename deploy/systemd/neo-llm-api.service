@@ -1,0 +1,34 @@
+# Neo LLM API (Django runserver on :8000) as a self-restarting user service.
+#
+# It keeps the development server on purpose: it reloads itself when the code in this
+# checkout changes (git pull / switch), which the deploy flow relies on. systemd adds what
+# was missing: start at boot (lingering is enabled) and restart after a crash.
+#
+# Install:
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/neo-llm-api.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now neo-llm-api
+# Status:  systemctl --user status neo-llm-api
+# Logs:    /tmp/django.log (requests and errors), journalctl --user -u neo-llm-api (starts / restarts)
+# Restart: systemctl --user restart neo-llm-api   (needed for a new .env value; code changes reload by themselves)
+[Unit]
+Description=Neo LLM API (Django runserver :8000)
+After=network-online.target docker.service
+Wants=network-online.target
+# Keep trying: a crash loop is slowed down by RestartSec, never given up on.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api
+ExecStart=/home/barajas_angel/repos/BSK.AI.Local_LLM_neo-django-api/.venv/bin/python manage.py runserver 0.0.0.0:8000
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=append:/tmp/django.log
+StandardError=append:/tmp/django.log
+# Any exit is unexpected for a server, including a clean one.
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target
