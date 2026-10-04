@@ -82,6 +82,14 @@ class Document(models.Model):
         DONE = "done", "Done"
         FAILED = "failed", "Failed"
 
+    class FiguresStatus(models.TextChoices):
+        NONE = "none", "Not described"
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        DONE = "done", "Done"
+        PENDING = "pending", "Visual interpretation pending"    # BSK was unreachable
+        FAILED = "failed", "Failed"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     filename = models.CharField(max_length=512)
     doc_key = models.CharField(max_length=128, unique=True)
@@ -107,6 +115,12 @@ class Document(models.Model):
     graph_error = models.TextField(blank=True, default="")
     graph_updated_at = models.DateTimeField(null=True, blank=True)
 
+    # "Describe figures" (VLM on BSK): status of the latest run. The figures themselves
+    # (position, description) are in LIBRARY_BASE/<id>/figures.json.
+    figures_status = models.CharField(max_length=16, choices=FiguresStatus.choices, default=FiguresStatus.NONE)
+    figures_error = models.TextField(blank=True, default="")
+    figures_updated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = "library_document"
         ordering = ["-uploaded_at"]
@@ -122,6 +136,7 @@ class Job(models.Model):
         PARSE = "parse", "Parse"
         EMBED = "embed", "Generate embeddings"
         EXTRACT = "extract", "Generate triples"
+        FIGURES = "figures", "Describe figures"
 
     class Status(models.TextChoices):
         QUEUED = "queued", "Queued"
@@ -144,6 +159,8 @@ class Job(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
+    # A queued job is not started before this time (retry with back-off).
+    run_after = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "library_job"

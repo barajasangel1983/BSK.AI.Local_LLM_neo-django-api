@@ -7,6 +7,9 @@
     POST   /api/documents/<id>/embed/           Generate embeddings {strategy, params}
     DELETE /api/documents/<id>/embeddings/      remove the document's chunks from RAG
     POST   /api/documents/embed/                bulk: {ids: [...], strategy, params}
+    GET    /api/documents/<id>/figures/         figures found by Docling, with their descriptions
+    GET    /api/documents/<id>/figures/<n>/image/   the cropped figure (JPEG)
+    POST   /api/documents/<id>/figures/describe/    Describe figures {figures?: [n], force?: bool}
     GET    /api/jobs/?document=<id>&active=1    jobs
     GET    /api/jobs/<id>/                      job status / progress
     POST   /api/jobs/<id>/cancel/               cancel a queued or running job
@@ -20,7 +23,11 @@ from rest_framework.response import Response
 
 from context_graph.driver import GraphUnavailable
 
-from . import library
+from django.http import FileResponse
+
+from gpu import images
+
+from . import figures, library
 from .chunking import ChunkingError
 from .models import Document, Job
 
@@ -74,7 +81,22 @@ def document_json(doc: Document, active_jobs=None) -> dict:
             "updated_at": doc.graph_updated_at.isoformat() if doc.graph_updated_at else None,
             **graph_counts(doc),
         },
+        "figures": figures_json(doc),
         "active_jobs": [job_json(j) for j in active_jobs],
+    }
+
+
+def figures_json(doc: Document, data=...) -> dict:
+    if data is ...:
+        data = figures.load(doc) if doc.parse_status == Document.ParseStatus.PARSED else None
+    return {
+        "status": doc.figures_status,
+        "error": doc.figures_error,
+        "updated_at": doc.figures_updated_at.isoformat() if doc.figures_updated_at else None,
+        "supported": figures.is_pdf(doc) or figures.is_image(doc),
+        # Parsed before figures existed: Describe figures parses the document again first.
+        "needs_parse": data is None,
+        **figures.summary(data),
     }
 
 
@@ -168,6 +190,49 @@ def document_embeddings(request, doc_id):
     for job in doc.jobs.filter(kind=Job.Kind.EMBED, status__in=library.ACTIVE):
         library.cancel(job)
     return Response({"document_id": str(doc.id), "chunks_deleted": library.remove_embeddings(doc)})
+
+
+@api_view(["GET"])
+def document_figures(request, doc_id):
+    doc = _get_document(doc_id)
+    if doc is None:
+        return Response({"error": "document not found"}, status=status.HTTP_404_NOT_FOUND)
+    data = figures.load(doc)
+    items = [{k: f.get(k) for k in ("index", "page", "caption", "area", "status", "skip_reason", "kind",
+                                    "description", "error", "model", "described_at")}
+             for f in (data or {}).get("figures", [])]
+    return Response({"document_id": str(doc.id), **figures_json(doc, data), "figures": items})
+
+
+@api_view(["GET"])
+def document_figure_image(request, doc_id, index: int):
+    doc = _get_document(doc_id)
+    data = figures.load(doc) if doc else None
+    figure = next((f for f in (data or {}).get("figures", []) if f["index"] == index), None)
+    if figure is None:
+        return Response({"error": "figure not found"}, status=status.HTTP_404_NOT_FOUND)
+    path = figures.image_path(doc, index)
+    if not path.exists():
+        if figure.get("bbox") is None and not figures.is_image(doc):
+            return Response({"error": "the figure has no position"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            figures.crop(doc, figure)       # CPU only: thumbnails exist before anything is described
+        except images.ImageError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+    return FileResponse(path.open("rb"), content_type="image/jpeg")
+
+
+@api_view(["POST"])
+def document_figures_describe(request, doc_id):
+    doc = _get_document(doc_id)
+    if doc is None:
+        return Response({"error": "document not found"}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        job = library.enqueue(doc, Job.Kind.FIGURES, {"figures": request.data.get("figures"),
+                                                     "force": request.data.get("force")})
+    except library.LibraryError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(job_json(job), status=status.HTTP_202_ACCEPTED)
 
 
 @api_view(["GET"])

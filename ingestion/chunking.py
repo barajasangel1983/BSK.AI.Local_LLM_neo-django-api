@@ -104,7 +104,7 @@ def chunk_parsed(doc: Dict[str, Any], strategy: str = DEFAULT_STRATEGY, params: 
     else:
         chunks = _fixed_chunks(sections, resolved["size"], resolved["overlap"])
     # Drop tiny paragraph fragments, but never short tables/lists (e.g. a 3-step procedure).
-    return [c for c in chunks if c.token_count >= MIN_CHUNK_TOKENS or c.content_type in ("table", "list")]
+    return [c for c in chunks if c.token_count >= MIN_CHUNK_TOKENS or c.content_type in ("table", "list", "figure")]
 
 
 # --- helpers -------------------------------------------------------------------
@@ -164,7 +164,7 @@ def _sentence_chunks(sections, max_tokens: int, overlap: int) -> List[Chunk]:
 
         for para, p_start, p_end in _paragraphs(section["lines"]):
             ctype = _content_type(para)
-            if ctype in ("table", "list"):
+            if ctype in ("table", "list", "figure"):
                 emit_whole(para, [p_start, p_end], ctype)
                 continue
             for sentence in (s.strip() for s in _segmenter().segment(para)):

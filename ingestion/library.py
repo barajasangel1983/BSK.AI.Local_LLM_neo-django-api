@@ -2,6 +2,7 @@
 
     upload ──► Document (+ parse job) ──► worker: Docling → LIBRARY_BASE/<id>/parsed.json
     "Generate embeddings" ──► embed job ──► worker: chunk (strategy) → DGX embed → bsk_rag_v2
+    "Describe figures"    ──► figures job ──► worker: crop each figure → VLM on BSK → figures.json
 
 Long steps run in `manage.py library_worker` (separate from runserver, so
 reloads can't kill them); jobs record progress and a heartbeat, and stale
@@ -21,13 +22,14 @@ from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
 from .chunker import PAGE_BREAK
 from .chunking import DEFAULT_STRATEGY, chunk_parsed, resolve_params, variant_key
 from .docling_client import convert_file
 from .embedder import Embedder
+from . import figures
 from .models import Document, IngestionJob, Job
 from .vector_store import VectorStore
 
@@ -100,8 +102,14 @@ def add_document(uploaded_file, doc_key: str | None = None) -> tuple[Document, b
     return doc, True
 
 
-def load_parsed(doc: Document) -> dict:
-    return json.loads(parsed_path(doc).read_text())
+def load_parsed(doc: Document, with_figures: bool = True) -> dict:
+    """The cached Docling result. With `with_figures`, figure descriptions (Describe
+    figures) replace their image placeholders in the Markdown."""
+    parsed = json.loads(parsed_path(doc).read_text())
+    document = parsed.get("document")
+    if with_figures and isinstance(document, dict) and document.get("md_content"):
+        document["md_content"] = figures.apply_to_markdown(document["md_content"], figures.load(doc))
+    return parsed
 
 
 # --- jobs -------------------------------------------------------------------
@@ -119,6 +127,13 @@ def enqueue(doc: Document, kind: str, params: dict | None = None) -> Job:
     elif kind == Job.Kind.EXTRACT:
         from context_graph.extraction import validate_params  # graph app depends on the library, not vice versa
         params = validate_params(params or {})
+    elif kind == Job.Kind.FIGURES:
+        if not (figures.is_pdf(doc) or figures.is_image(doc)):
+            raise LibraryError("figures need a PDF or an image")
+        only = (params or {}).get("figures")
+        if only is not None and not (isinstance(only, list) and all(isinstance(i, int) for i in only)):
+            raise LibraryError("figures must be a list of figure numbers")
+        params = {"figures": only, "force": bool((params or {}).get("force"))}
     elif kind != Job.Kind.PARSE:
         raise LibraryError(f"unknown job kind {kind!r}")
 
@@ -129,6 +144,8 @@ def enqueue(doc: Document, kind: str, params: dict | None = None) -> Job:
         Document.objects.filter(pk=doc.pk).update(rag_status=Document.PipelineStatus.QUEUED, rag_error="")
     elif kind == Job.Kind.EXTRACT:
         Document.objects.filter(pk=doc.pk).update(graph_status=Document.PipelineStatus.QUEUED, graph_error="")
+    elif kind == Job.Kind.FIGURES:
+        Document.objects.filter(pk=doc.pk).update(figures_status=Document.FiguresStatus.QUEUED, figures_error="")
     else:
         Document.objects.filter(pk=doc.pk).update(parse_status=Document.ParseStatus.QUEUED, parse_error="")
     return Job.objects.create(document=doc, kind=kind, params=params or {})
@@ -151,7 +168,11 @@ def requeue_stale() -> int:
 
 def claim_next() -> Job | None:
     """Atomically take the oldest queued job (safe with several workers)."""
-    for job in Job.objects.filter(status=Job.Status.QUEUED).order_by("created_at")[:5]:
+    now = timezone.now()
+    ready = Job.objects.filter(status=Job.Status.QUEUED).filter(Q(run_after__isnull=True) | Q(run_after__lte=now))
+    # Parse jobs first: Docling and the VLM share one GPU, so this avoids switching back and forth.
+    queue = list(ready.filter(kind=Job.Kind.PARSE).order_by("created_at")[:5]) or list(ready.order_by("created_at")[:5])
+    for job in queue:
         now = timezone.now()
         claimed = Job.objects.filter(pk=job.pk, status=Job.Status.QUEUED).update(
             status=Job.Status.RUNNING, started_at=now, heartbeat_at=now, attempts=F("attempts") + 1)
@@ -184,12 +205,17 @@ def run_job(job: Job) -> None:
         elif job.kind == Job.Kind.EXTRACT:
             from context_graph.extraction import run_extract
             run_extract(job)
+        elif job.kind == Job.Kind.FIGURES:
+            run_figures(job)
         else:
             raise LibraryError(f"unknown job kind {job.kind!r}")
     except JobCancelled:
         Job.objects.filter(pk=job.pk).update(finished_at=timezone.now(), message="cancelled")
         _settle_document(job, cancelled=True)
         logger.info("library job cancelled job=%s kind=%s doc=%s", job.id, job.kind, job.document.doc_key)
+        return
+    except figures.BskUnavailable as exc:
+        _figures_postponed(job, str(exc))
         return
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
@@ -209,6 +235,15 @@ def _settle_document(job: Job, error: str = "", cancelled: bool = False) -> None
             Document.ParseStatus.PENDING if cancelled else doc.parse_status)
         doc.parse_error = error
         doc.save(update_fields=["parse_status", "parse_error"])
+    elif job.kind == Job.Kind.FIGURES:
+        if cancelled:  # figures described so far are kept
+            counts = figures.summary(figures.load(doc))
+            doc.figures_status = (Document.FiguresStatus.DONE if counts["described"] and not counts["pending"]
+                                  else Document.FiguresStatus.NONE)
+        else:
+            doc.figures_status = Document.FiguresStatus.FAILED
+        doc.figures_error = error
+        doc.save(update_fields=["figures_status", "figures_error"])
     elif job.kind == Job.Kind.EXTRACT:
         if cancelled:  # staged triples from earlier runs are untouched
             doc.graph_status = Document.PipelineStatus.DONE if doc.triples.exists() else Document.PipelineStatus.NONE
@@ -231,8 +266,12 @@ def run_parse(job: Job) -> None:
     doc = job.document
     Document.objects.filter(pk=doc.pk).update(parse_status=Document.ParseStatus.PARSING)
     heartbeat(job, 0, 1, "parsing with Docling")
-    result = convert_file(file_path(doc).read_bytes(), doc.filename)
-    md = (result.get("document") or {}).get("md_content") or ""
+    result = convert_file(file_path(doc).read_bytes(), doc.filename, with_layout=True)
+    document = result.get("document") or {}
+    md = document.get("md_content") or ""
+    # Docling's JSON is only needed for the figure positions; it isn't kept (it is large).
+    layout = document.pop("json_content", None) if isinstance(document, dict) else None
+    figures.save(doc, figures.from_docling(doc, layout))
     parsed_path(doc).write_text(json.dumps(result))
     Document.objects.filter(pk=doc.pk).update(
         parse_status=Document.ParseStatus.PARSED, parse_error="", parsed_at=timezone.now(),
@@ -293,6 +332,53 @@ def run_embed(job: Job) -> None:
         rag_status=Document.PipelineStatus.DONE, rag_strategy=strategy, rag_params=params,
         rag_chunk_count=written, rag_error="", rag_updated_at=timezone.now(),
     )
+
+
+def run_figures(job: Job) -> None:
+    """Describe the document's figures with the VLM on BSK, one GPU lock per figure
+    (a waiting chat image gets in between two figures). Results are saved after each
+    figure, so nothing is sent twice."""
+    doc = Document.objects.get(pk=job.document_id)
+    Document.objects.filter(pk=doc.pk).update(figures_status=Document.FiguresStatus.RUNNING, figures_error="")
+
+    if doc.parse_status != Document.ParseStatus.PARSED or figures.load(doc) is None:
+        heartbeat(job, message="parsing first (finding the figures)")
+        run_parse(job)
+        doc.refresh_from_db()
+
+    data = figures.load(doc)
+    todo = figures.targets(data, job.params.get("figures"), bool(job.params.get("force")))
+    heartbeat(job, 0, len(todo), f"describing {len(todo)} figure(s)")
+    for n, figure in enumerate(todo):
+        figures.describe(doc, figure)       # BskUnavailable → the job is postponed (see run_job)
+        figures.save(doc, data)
+        heartbeat(job, n + 1, len(todo), f"figure {n + 1} of {len(todo)} (p.{figure['page']})")
+
+    counts = figures.summary(data)
+    Document.objects.filter(pk=doc.pk).update(
+        figures_status=Document.FiguresStatus.DONE, figures_updated_at=timezone.now(),
+        figures_error="" if not counts["failed"] else f"{counts['failed']} figure(s) could not be described",
+    )
+
+
+def _figures_postponed(job: Job, reason: str) -> None:
+    """BSK is asleep or unreachable: retry later with back-off, then leave the figures pending."""
+    delays = settings.FIGURE_RETRY_MINUTES
+    job.refresh_from_db()
+    if job.attempts <= len(delays):
+        minutes = delays[job.attempts - 1]
+        Job.objects.filter(pk=job.pk).update(
+            status=Job.Status.QUEUED, run_after=timezone.now() + timedelta(minutes=minutes),
+            message=f"BSK not reachable; trying again in {minutes} min"[:255])
+        Document.objects.filter(pk=job.document_id).update(figures_status=Document.FiguresStatus.QUEUED)
+        logger.warning("figures postponed job=%s doc=%s attempt=%d: %s", job.id, job.document.doc_key, job.attempts, reason)
+        return
+    Job.objects.filter(pk=job.pk).update(status=Job.Status.DONE, finished_at=timezone.now(),
+                                         message="visual interpretation pending: BSK not reachable")
+    Document.objects.filter(pk=job.document_id).update(
+        figures_status=Document.FiguresStatus.PENDING, figures_updated_at=timezone.now(),
+        figures_error=f"BSK was not reachable: {reason}"[:1000])
+    logger.warning("figures pending job=%s doc=%s: %s", job.id, job.document.doc_key, reason)
 
 
 def remove_embeddings(doc: Document) -> int:

@@ -272,6 +272,7 @@ def to_citation(entry: dict) -> dict:
         "section_path": entry.get("section_path") or [],
         "page_start": entry.get("page_start"),
         "page_end": entry.get("page_end"),
+        "content_type": entry.get("content_type", ""),      # "figure" = a VLM figure description
         "snippet": (entry.get("text") or "").strip()[:200],
         "score": entry.get("score"),
         "vector_score": entry.get("vector_score"),
