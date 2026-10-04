@@ -6,7 +6,7 @@
     GET  /api/context/entities/<id>/sources/
     GET  /api/context/state/<asset id>/
     POST /api/context/search/             {query, asset_id?, top_k?}
-    POST /api/context/assemble/           {query, asset_id?, include_documents?, budget_chars?}  → Context Packet
+    POST /api/context/assemble/           {query, asset_id?, include_documents?, budget_chars?, search_queries?}  → Context Packet
     POST /api/context/ask/                {query, asset_id?, model?, include_documents?}        → {answer, model, packet}
 
 MCP server settings (the Studio's Settings → MCP):
@@ -83,7 +83,8 @@ def search(request):
 @api_view(["POST"])
 def assemble(request):
     return _call(service.assemble, str(request.data.get("query") or ""), request.data.get("asset_id") or None,
-                 _flag(request.data.get("include_documents")), request.data.get("budget_chars"))
+                 _flag(request.data.get("include_documents")), request.data.get("budget_chars"),
+                 [str(q) for q in queries] if isinstance(queries := request.data.get("search_queries"), list) else None)
 
 
 @api_view(["POST"])

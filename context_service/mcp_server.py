@@ -118,17 +118,21 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     async def search_documents(query: str, asset_id: str = "", top_k: int = 5) -> dict:
-        """Reranked excerpts from the document library. With asset_id, that asset's documents are searched first."""
+        """Reranked excerpts from the document library. With asset_id, that asset's documents are searched first.
+        Weak matches are not returned; when nothing passes, `closest` names the nearest documents."""
         return await _call("search_documents", service.search_documents, query, asset_id or None, top_k)
 
     @mcp.tool()
     async def assemble_context(query: str, asset_id: str = "", include_documents: bool = True,
-                               budget_chars: int = 0) -> dict:
+                               budget_chars: int = 0, search_queries: list[str] | None = None) -> dict:
         """The Context Packet for a question: resolved asset and focus, graph facts with sources,
         document excerpts, current values against their normal range, and `context_text` (the same
-        content as prompt text). budget_chars limits its size for small models (0 = default)."""
+        content as prompt text). budget_chars limits its size for small models (0 = default).
+        search_queries: for a question with several topics, one short document search per topic
+        (up to 4); `document_search` in the packet says what was searched and, when nothing was
+        relevant enough, which documents came closest."""
         return await _call("assemble_context", service.assemble, query, asset_id or None, include_documents,
-                           budget_chars or None)
+                           budget_chars or None, search_queries or None)
 
     @mcp.tool()
     async def ask(query: str, asset_id: str = "", model: str = "", include_documents: bool = True) -> dict:

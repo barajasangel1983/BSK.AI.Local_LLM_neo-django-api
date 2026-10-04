@@ -59,8 +59,19 @@ class SearchV2Tests(SimpleTestCase):
         sent = post.call_args.kwargs["json"]["documents"]
         enc = __import__("tiktoken").get_encoding("cl100k_base")
         self.assertLessEqual(len(enc.encode(sent[0])) + len(enc.encode("BX80 limits")), 800)
-        self.assertEqual(sent[1], "short text")
+        self.assertEqual(sent[1], "a\nshort text")
         self.assertEqual(len(long_chunk.text), 27000)            # the chunk itself is untouched
+
+    def test_the_reranker_scores_a_chunk_under_its_document_and_section(self, mock_coll, mock_embedder):
+        """The BX80 warranty paragraph names neither "BX80" nor "warranty": both are in its headings."""
+        from chat.retrieval import V2Chunk, _post_rerank
+        warranty = V2Chunk(id="1", text="warrants for a period of three (3) years", source="BX80 Manual.pdf", asset_id="BX80",
+                           section_path=["SERIE BX80", "Warranty - MD Micro Detectors S.p.A"])
+        with patch("chat.retrieval.requests.post") as post:
+            _post_rerank("BX80 warranty conditions", [warranty], 1)
+        self.assertEqual(post.call_args.kwargs["json"]["documents"][0],
+                         "BX80 Manual > SERIE BX80 > Warranty - MD Micro Detectors S.p.A\nwarrants for a period of three (3) years")
+        self.assertEqual(warranty.text, "warrants for a period of three (3) years")
 
 
     def test_falls_back_to_vector_order_when_reranker_fails(self, mock_coll, mock_embedder):
