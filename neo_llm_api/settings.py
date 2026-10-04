@@ -313,3 +313,19 @@ GPU_TOUCH_INTERVAL = float(os.getenv("GPU_TOUCH_INTERVAL", "300"))        # idle
 VLM_URL = os.getenv("VLM_URL", "http://100.86.26.4:5002/v1")
 VLM_MODEL = os.getenv("VLM_MODEL", "qwen3-vl-4b-instruct")
 VLM_TIMEOUT = float(os.getenv("VLM_TIMEOUT", "90"))
+VLM_CHAT_MODEL_ID = "bsk-qwen3-vl-4b"                                          # the Hub's model id for the VLM
+VLM_CHAT_LOCK_WAIT = float(os.getenv("VLM_CHAT_LOCK_WAIT", "120"))            # chat waits this long for the GPU (DEFER rule)
+VLM_CHAT_MAX_TOKENS = int(os.getenv("VLM_CHAT_MAX_TOKENS", "1024"))
+# The VLM's context is 8192 tokens: one image (~1000) + the reply leave room for a short history.
+VLM_CONTEXT_MAX_CHARS = int(os.getenv("VLM_CONTEXT_MAX_CHARS", "8000"))
+VLM_IMAGE_LONG_SIDE = int(os.getenv("VLM_IMAGE_LONG_SIDE", "1280"))           # contract v1.2: <= 1280 px, JPEG 85
+VLM_IMAGE_JPEG_QUALITY = int(os.getenv("VLM_IMAGE_JPEG_QUALITY", "85"))
+
+# Chat attachments (images, PDFs): kept with the conversation, never added to the library / RAG.
+CHAT_FILES_DIR = os.getenv("CHAT_FILES_DIR", str(BASE_DIR / "data" / "chat_files"))
+CHAT_ATTACHMENT_MAX_BYTES = int(os.getenv("CHAT_ATTACHMENT_MAX_BYTES", str(20 * 1024 * 1024)))
+CHAT_ATTACHMENT_MAX_PAGES = int(os.getenv("CHAT_ATTACHMENT_MAX_PAGES", "50"))
+# Share of the model's context budget that attached-document text may use.
+CHAT_ATTACHMENT_SHARE = float(os.getenv("CHAT_ATTACHMENT_SHARE", "0.5"))
+# Uploaded but never sent attachments are removed after this many hours.
+CHAT_ATTACHMENT_ORPHAN_HOURS = int(os.getenv("CHAT_ATTACHMENT_ORPHAN_HOURS", "24"))

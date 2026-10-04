@@ -12,6 +12,8 @@ pysbd==0.3.4                 # sentence chunking
 PyYAML==6.0.3                # Context Graph schema / seed files
 neo4j==5.28.6                    # Context Graph
 openpyxl==3.1.5              # GraphLab Import: Excel files
+pillow==12.3.0               # chat attachments / VLM images (JPEG, <= 1280 px)
+pypdfium2==5.13.0            # PDF page count and page rendering
 
 # Tests
 pytest==9.1.1

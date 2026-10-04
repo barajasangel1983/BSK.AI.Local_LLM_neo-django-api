@@ -30,9 +30,16 @@ class MessageSerializer(serializers.ModelSerializer):
     # "created_at": "2025-03-28T21:00:00Z"
     # }
 
+    # {id, kind, filename, size, page_count, width, height, page} or null
+    attachment = serializers.SerializerMethodField()
+
     class Meta:
         model = Message
-        fields = ["id", "role", "content", "sources", "created_at"]
+        fields = ["id", "role", "content", "sources", "attachment", "created_at"]
+
+    def get_attachment(self, obj):
+        from .attachments import to_json
+        return to_json(obj.attachment, obj.attachment_page) if obj.attachment_id else None
 
 
 class ConversationSummarySerializer(serializers.ModelSerializer):
