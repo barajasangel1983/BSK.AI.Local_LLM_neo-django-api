@@ -98,7 +98,9 @@ def ask(request):
 # --- MCP server settings ------------------------------------------------------------------
 
 MCP_TOOLS = ["list_assets", "resolve_entity", "get_entity_context", "get_sources", "search_documents",
-             "assemble_context", "ask", "get_operational_state", "get_system_health"]
+             "assemble_context", "ask", "get_operational_state",
+             "list_documents", "get_document", "get_document_page", "get_figure_image", "get_graph",
+             "get_system_health"]
 
 
 def mcp_answers(host: str = "127.0.0.1") -> bool:

@@ -98,6 +98,22 @@ class Command(BaseCommand):
                     await call("get_sources", {"entity_id": asset}, lambda d: f"origin {d.get('origin')}")
                     await call("get_operational_state", {"asset_id": asset},
                                lambda d: f"{len(d['values'])} values, state {(d['current_state'] or {}).get('machine_state')}")
+                    await call("get_graph", {"asset_id": asset}, lambda d: f"{len(d['nodes'])} nodes, {len(d['links'])} links")
+                docs = await call("list_documents", {}, lambda d: f"{len(d['documents'])} document(s)")
+                described = next((d for d in (docs or {}).get("documents", []) if d["figures_described"]), None)
+                if described:
+                    detail = await call("get_document", {"document_id": described["id"]},
+                                        lambda d: f"{d['filename']}: {len(d['figures'])} described figure(s)")
+                    await call("get_document_page", {"document_id": described["id"], "page": 1},
+                               lambda d: f"page 1 of {d['pages']}, {len(d['text'])} characters")
+                    if detail and detail["figures"]:
+                        start = time.monotonic()
+                        result = await session.call_tool("get_figure_image", {"document_id": described["id"],
+                                                                              "figure_index": detail["figures"][0]["index"]})
+                        image = result.content[0] if result.content else None
+                        ok = not result.isError and getattr(image, "type", "") == "image"
+                        out.append(("get_figure_image", ok, f"{getattr(image, 'mimeType', '?')}, "
+                                    f"{len(getattr(image, 'data', '')) * 3 // 4} bytes ({time.monotonic() - start:.1f} s)"))
                 if ask:
                     await call("ask", {"query": question, "asset_id": asset or ""}, lambda d: f"{len(d['answer'] or '')} characters from {d['model']}")
         return out
