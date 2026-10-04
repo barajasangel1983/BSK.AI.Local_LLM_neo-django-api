@@ -47,14 +47,14 @@ def evidence_items(evidence_ids) -> list[dict]:
 
 
 def short_label(e: Evidence) -> str:
-    """e.g. "Extruder manual.pdf p.4", "tags.csv row 12"."""
+    """e.g. "Extruder manual.pdf p.4", "drawing.pdf p.17 (figure)", "tags.csv row 12"."""
     if e.data_file_id:
         return f"{e.data_file.filename} row {e.row_number}" if e.row_number else e.data_file.filename
     if e.document_id:
         page = ""
         if e.page_start:
             page = f" p.{e.page_start}" + (f"–{e.page_end}" if e.page_end and e.page_end != e.page_start else "")
-        return f"{e.document.filename}{page}"
+        return f"{e.document.filename}{page}" + (" (figure)" if e.source_kind == Evidence.Kind.VISION else "")
     return e.source_kind
 
 

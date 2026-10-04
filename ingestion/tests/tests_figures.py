@@ -139,7 +139,7 @@ class ParseTests(FigureTestCase):
         self.assertEqual(data["figures"][0]["page"], 1)
         self.assertNotIn("json_content", json.loads(library.parsed_path(doc).read_text())["document"])
         self.assertEqual(figures.summary(data), {"found": 3, "eligible": 1, "described": 0, "pending": 1,
-                                                 "failed": 0, "skipped": 2})
+                                                 "failed": 0, "skipped": 2, "drawings": 0})
 
 
 class DescribeTests(FigureTestCase):

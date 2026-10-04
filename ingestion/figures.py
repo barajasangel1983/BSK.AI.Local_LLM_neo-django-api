@@ -143,8 +143,10 @@ def summary(data: dict | None) -> dict:
     """Counts for the document list."""
     figures = (data or {}).get("figures", [])
     by = lambda status: sum(1 for f in figures if f["status"] == status)  # noqa: E731
+    drawings = sum(1 for f in figures if f["status"] == "done" and f.get("kind") in DRAWING_KINDS)
     return {"found": len(figures), "eligible": len(figures) - by("skipped"), "described": by("done"),
-            "pending": by("pending"), "failed": by("failed"), "skipped": by("skipped")}
+            "pending": by("pending"), "failed": by("failed"), "skipped": by("skipped"),
+            "drawings": drawings}      # described drawings / schematics / diagrams: Generate triples can read them
 
 
 # --- crop + describe ---------------------------------------------------------------

@@ -153,7 +153,7 @@ def extract(request):
     missing = [i for i in ids if str(i) not in docs]
     if missing:
         return _error(f"unknown document(s): {', '.join(map(str, missing))}", status.HTTP_404_NOT_FOUND)
-    params = {k: request.data.get(k) for k in ("mode", "chunking", "presets", "asset_id") if request.data.get(k)}
+    params = {k: request.data.get(k) for k in ("mode", "chunking", "presets", "asset_id", "include_drawings") if request.data.get(k)}
     try:
         params = extraction.validate_params(params)   # validate once, before anything is queued
         jobs = [library.enqueue(docs[str(i)], Job.Kind.EXTRACT, params) for i in ids]
