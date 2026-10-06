@@ -146,6 +146,16 @@ def build_server() -> FastMCP:
         return await _call("get_operational_state", service.operational_state, asset_id)
 
     @mcp.tool()
+    async def get_signal_history(asset_id: str, start: str, end: str, signals: list[str] | None = None,
+                                 bucket_minutes: int = 0) -> dict:
+        """Recorded values of an asset's signals between two times (ISO, start < ts <= end), oldest first,
+        by column: `ts` and `series[<signal key>]`, with each signal's name, unit and normal range.
+        signals: ids or keys to limit the columns (default all). bucket_minutes > 1 averages each bucket.
+        At most 1,500 points and 31 days per call. Historian data (get_operational_state gives its latest time)."""
+        return await _call("get_signal_history", service.signal_history, asset_id, start, end, signals or None,
+                           bucket_minutes or None)
+
+    @mcp.tool()
     async def list_documents() -> dict:
         """The document library: each document with its pages, whether it is searchable, and its figures."""
         return await _call("list_documents", service.list_documents)
