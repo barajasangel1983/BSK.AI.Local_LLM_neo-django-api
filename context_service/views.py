@@ -5,6 +5,7 @@
     GET  /api/context/entities/<id>/      (ids contain ':' and '/')
     GET  /api/context/entities/<id>/sources/
     GET  /api/context/state/<asset id>/
+    GET  /api/context/history/<asset id>/?start=&end=&signals=&bucket_minutes=
     POST /api/context/search/             {query, asset_id?, top_k?}
     POST /api/context/assemble/           {query, asset_id?, include_documents?, budget_chars?, search_queries?}  → Context Packet
     POST /api/context/ask/                {query, asset_id?, model?, include_documents?}        → {answer, model, packet}
@@ -72,6 +73,13 @@ def state(request, asset_id):
     return _call(service.operational_state, asset_id)
 
 
+@api_view(["GET"])
+def history(request, asset_id):
+    q = request.query_params
+    return _call(service.signal_history, asset_id, q.get("start", ""), q.get("end", ""),
+                 [s for s in q.get("signals", "").split(",") if s] or None, q.get("bucket_minutes") or None)
+
+
 @api_view(["POST"])
 def search(request):
     if not str(request.data.get("query") or "").strip():
@@ -99,7 +107,7 @@ def ask(request):
 # --- MCP server settings ------------------------------------------------------------------
 
 MCP_TOOLS = ["list_assets", "resolve_entity", "get_entity_context", "get_sources", "search_documents",
-             "assemble_context", "ask", "get_operational_state",
+             "assemble_context", "ask", "get_operational_state", "get_signal_history",
              "list_documents", "get_document", "get_document_page", "get_figure_image", "get_graph",
              "describe_image",
              "get_system_health"]

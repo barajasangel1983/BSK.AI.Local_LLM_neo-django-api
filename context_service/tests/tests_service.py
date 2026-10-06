@@ -189,6 +189,31 @@ class LookupTests(ContextTestCase):
         found = service.search_documents("die pressure", ASSET, top_k=3)
         self.assertEqual((found["scope"], len(found["results"])), ("asset", 2))
 
+    def test_signal_history_by_column_with_ranges_and_buckets(self):
+        from datetime import datetime, timedelta, timezone
+        t0 = datetime(2026, 3, 5, 14, 0, tzinfo=timezone.utc)
+        rows = [{"ts": t0 + timedelta(minutes=i + 1), "die_pressure_bar": 90 + i, "head_temp_c": 100.0} for i in range(4)]
+        with patch("chat.asset_context.historian_rows", return_value=rows) as read:
+            h = service.signal_history(ASSET, "2026-03-05T14:00:00Z", "2026-03-05T14:04:00Z", ["die_pressure_bar"])
+            self.assertEqual(read.call_args.args[:2], ("EXTR01", ["die_pressure_bar"]))
+            self.assertEqual((h["points"], h["series"]), (4, {"die_pressure_bar": [90.0, 91.0, 92.0, 93.0]}))
+            self.assertEqual(h["ts"][0], "2026-03-05T14:01:00+00:00")
+            self.assertEqual(h["signals"], [{"key": "die_pressure_bar", "signal_id": DIE_PRESSURE, "name": "Die pressure",
+                                             "unit": "bar", "low": 84.3, "high": 99.2}])
+            b = service.signal_history(ASSET, "2026-03-05T14:00:00Z", "2026-03-05T14:04:00Z", [DIE_PRESSURE], bucket_minutes=2)
+            self.assertEqual((b["ts"], b["series"]["die_pressure_bar"]),
+                             (["2026-03-05T14:00:00+00:00", "2026-03-05T14:02:00+00:00", "2026-03-05T14:04:00+00:00"], [90.0, 91.5, 93.0]))
+        for args, why in ((("2026-03-05T14:00:00Z", "yesterday"), "ISO date"), (("2026-03-05T14:00:00Z", "2026-03-05T13:00:00Z"), "after start"),
+                          (("2026-03-01T00:00:00Z", "2026-03-20T00:00:00Z"), "too many points"),
+                          (("2026-01-01T00:00:00Z", "2026-03-20T00:00:00Z"), "at most 31 days")):
+            with self.assertRaisesMessage(service.ContextError, why):
+                service.signal_history(ASSET, *args)
+        with self.assertRaisesMessage(service.ContextError, "unknown signal"):
+            service.signal_history(ASSET, "2026-03-05T14:00:00Z", "2026-03-05T15:00:00Z", ["nope"])
+        with patch("chat.asset_context.historian_rows", side_effect=RuntimeError("postgres down")):
+            with self.assertRaisesMessage(service.ContextError, "historian is not available"):
+                service.signal_history(ASSET, "2026-03-05T14:00:00Z", "2026-03-05T15:00:00Z")
+
     @patch("chat.views.requests.post")
     def test_ask_answers_from_the_packet(self, post):
         post.return_value.json.return_value = {"choices": [{"message": {"content": "It is above its range [G]."}}]}

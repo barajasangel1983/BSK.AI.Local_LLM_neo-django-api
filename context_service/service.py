@@ -145,6 +145,82 @@ def operational_state(asset_id: str) -> dict:
     return _operational(ctx)
 
 
+HISTORY_MAX_ROWS = 1500          # one day of minute samples, and a margin
+HISTORY_MAX_HOURS = 31 * 24
+
+
+def _when(value, name: str):
+    from datetime import datetime, timezone
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        raise ContextError(f"{name} must be an ISO date and time, e.g. 2026-03-05T14:00:00Z")
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def signal_history(asset_id: str, start: str, end: str, signals: list[str] | None = None,
+                   bucket_minutes: int | None = None) -> dict:
+    """Recorded values of an asset's signals between two times (start < ts <= end), oldest first.
+
+    Returned by column, to stay small: `ts` and one list per signal in `series`, keyed by the signal's
+    historian column (the last part of its id). `signals` limits the columns (ids or keys; default all).
+    With `bucket_minutes` > 1 each bucket holds the mean of the numbers and the last text value
+    (machine state, alarm code); `ts` is the bucket's start. Source: the historian (OPC UA later).
+    """
+    from collections import defaultdict
+    from datetime import timedelta
+
+    begin, finish = _when(start, "start"), _when(end, "end")
+    if finish <= begin:
+        raise ContextError("end must be after start")
+    if finish - begin > timedelta(hours=HISTORY_MAX_HOURS):
+        raise ContextError(f"at most {HISTORY_MAX_HOURS // 24} days per request")
+    bucket = max(1, int(bucket_minutes or 1))
+    try:
+        known = asset_context.signal_columns(asset_id)
+    except asset_context.AssetScopeError as exc:
+        raise ContextError(str(exc))
+    if signals:
+        wanted = {str(x).rsplit("/", 1)[-1] for x in signals}
+        unknown = wanted - {k["column"] for k in known}
+        if unknown:
+            raise ContextError(f"unknown signal(s) for this asset: {', '.join(sorted(unknown))}")
+        known = [k for k in known if k["column"] in wanted]
+    columns = [k["column"] for k in known]
+    if (finish - begin).total_seconds() / 60 / bucket > HISTORY_MAX_ROWS:
+        raise ContextError(f"too many points: ask for a shorter period or a larger bucket_minutes (at most {HISTORY_MAX_ROWS} points)")
+    try:
+        rows = asset_context.historian_rows(asset_id.split(":", 2)[2], columns, begin, finish, HISTORY_MAX_ROWS * bucket)
+    except Exception as exc:
+        logger.warning("signal history failed asset=%s: %s", asset_id, exc)
+        raise ContextError("the historian is not available")
+
+    number = lambda v: v if isinstance(v, (str, bool)) or v is None else float(v)      # noqa: E731
+    if bucket > 1:
+        groups: dict = defaultdict(list)
+        for row in rows:
+            minute = int((row["ts"] - begin).total_seconds() // 60)
+            groups[begin + timedelta(minutes=(minute // bucket) * bucket)].append(row)
+        merged = []
+        for ts in sorted(groups):
+            out = {"ts": ts}
+            for column in columns:
+                values = [number(r[column]) for r in groups[ts] if r.get(column) is not None]
+                numbers = [v for v in values if isinstance(v, float)]
+                out[column] = round(sum(numbers) / len(numbers), 3) if numbers and len(numbers) == len(values) \
+                    else (values[-1] if values else None)
+            merged.append(out)
+        rows = merged
+    return {
+        "asset_id": asset_id, "source": "plc_1_historian", "start": begin.isoformat(), "end": finish.isoformat(),
+        "bucket_minutes": bucket, "points": len(rows),
+        "signals": [{"key": k["column"], "signal_id": k["signal_id"], "name": k["name"], "unit": k["unit"],
+                     "low": k["low"], "high": k["high"]} for k in known],
+        "ts": [r["ts"].isoformat() for r in rows],
+        "series": {c: [number(r.get(c)) for r in rows] for c in columns},
+    }
+
+
 def _operational(ctx) -> dict:
     h = ctx.historian
     return {

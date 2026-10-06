@@ -110,6 +110,40 @@ def historian_snapshot(asset_key: str, columns: list[str]) -> dict | None:
     return {"latest": latest, "running": running, "state_since": since}
 
 
+def signal_columns(asset_id: str) -> list[dict]:
+    """The asset's signals that have a historian column: [{column, signal_id, name, unit, low, high}].
+
+    Raises AssetScopeError / GraphUnavailable like `build`."""
+    try:
+        ctx = services.get_asset_context(asset_id)
+    except NodeNotFound:
+        raise AssetScopeError(f"unknown asset {asset_id!r}")
+
+    def walk(components):
+        for c in components:
+            yield c
+            yield from walk(c["children"])
+
+    out = []
+    for s in list(ctx["signals"]) + [s for c in walk(ctx["components"]) for s in c["signals"]]:
+        ref = str(s["properties"].get("historian_ref", ""))
+        if not ref.startswith(HISTORIAN_PREFIX):
+            continue
+        limit = s["limits"][0]["properties"] if s["limits"] else {}
+        out.append({"column": ref[len(HISTORIAN_PREFIX):], "signal_id": s["id"], "name": s["name"],
+                    "unit": s["properties"].get("unit", ""), "low": limit.get("low"), "high": limit.get("high")})
+    return out
+
+
+def historian_rows(asset_key: str, columns: list[str], start, end, limit: int) -> list[dict]:
+    """Historian samples with start < ts <= end, oldest first: [{ts, <column>: value…}]. Raises when Postgres is down."""
+    from historian.models import ExtruderSample
+    fields = {f.name for f in ExtruderSample._meta.fields}
+    columns = [c for c in columns if c in fields]
+    rows = ExtruderSample.objects.filter(extruder_id=asset_key, ts__gt=start, ts__lte=end).order_by("ts")
+    return list(rows.values("ts", *columns)[:limit])
+
+
 def _range_status(value, limit: dict | None) -> str:
     if value is None or not limit:
         return ""
