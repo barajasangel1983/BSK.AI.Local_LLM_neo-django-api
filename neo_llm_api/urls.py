@@ -23,4 +23,5 @@ urlpatterns = [
     path("api/", include("ingestion.urls")),
     path("api/graph/", include("context_graph.urls")),
     path("api/context/", include("context_service.urls")),
+    path("api/historian/", include("historian.urls")),
 ]
