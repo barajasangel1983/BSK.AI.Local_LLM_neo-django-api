@@ -28,6 +28,10 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class ClientSelectionTests(SimpleTestCase):
+    def setUp(self):
+        chroma_client._http_clients.clear()
+        self.addCleanup(chroma_client._http_clients.clear)
+
     def test_tests_never_use_the_live_server(self):
         self.assertEqual(settings.CHROMA_HOST, "")  # forced by neo_llm_api.test_runner
 
@@ -39,6 +43,17 @@ class ClientSelectionTests(SimpleTestCase):
         self.assertEqual(mock_http.call_args.kwargs["host"], "127.0.0.1")
         self.assertEqual(mock_http.call_args.kwargs["port"], 8100)
         self.assertEqual(chroma_client.describe(), "http://127.0.0.1:8100")
+
+    @override_settings(CHROMA_HOST="127.0.0.1", CHROMA_PORT=8100)
+    @patch("ingestion.chroma_client.chromadb.HttpClient")
+    def test_server_mode_reuses_one_client(self, mock_http):
+        first = chroma_client.get_client()
+        for _ in range(20):
+            self.assertIs(chroma_client.get_client(), first)
+        self.assertEqual(mock_http.call_count, 1)       # a client per call leaked a socket each time
+        with override_settings(CHROMA_PORT=8102):
+            chroma_client.get_client()
+        self.assertEqual(mock_http.call_count, 2)       # another server gets its own client
 
     @patch("ingestion.chroma_client.chromadb.PersistentClient")
     def test_embedded_mode_without_host(self, mock_persistent):
@@ -99,3 +114,12 @@ class MultiProcessRegressionTests(SimpleTestCase):
             by_id = dict(zip(data["ids"], zip(data["documents"], data["metadatas"])))
             self.assertEqual(by_id["fresh"], ("written by another process", {"asset_id": "DOC", "source": "fresh.pdf"}))
             chroma_client.get_client().delete_collection(name)
+
+    def test_many_calls_keep_one_connection(self):
+        url = urlparse(TEST_URL)
+        with override_settings(CHROMA_HOST=url.hostname, CHROMA_PORT=url.port):
+            chroma_client.get_client().heartbeat()
+            before = len(os.listdir("/proc/self/fd"))
+            for _ in range(30):
+                chroma_client.get_client().heartbeat()
+            self.assertLessEqual(len(os.listdir("/proc/self/fd")) - before, 2)
