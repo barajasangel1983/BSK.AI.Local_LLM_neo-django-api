@@ -114,7 +114,23 @@ DATABASES = {
         "HOST": os.getenv("HIST_DB_HOST", "127.0.0.1"),
         "PORT": os.getenv("HIST_DB_PORT", "5432"),
     },
+
+    # The live historian: the PLC's rows in TimescaleDB (repository BSKLAB_OPC_collector_node).
+    # Read-only role; nothing here ever writes to it or migrates it.
+    "historian_live": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.getenv("HIST_LIVE_DB_NAME", "historian"),
+        "USER": os.getenv("HIST_LIVE_DB_USER", "app_readonly"),
+        "PASSWORD": os.getenv("HIST_LIVE_DB_PASSWORD", ""),
+        "HOST": os.getenv("HIST_LIVE_DB_HOST", "127.0.0.1"),
+        "PORT": os.getenv("HIST_LIVE_DB_PORT", "5433"),
+        "OPTIONS": {"connect_timeout": 5},
+    },
 }
+
+# Which historian the Studio serves (asset chat, Context Service, MCP): "march" is the simulated
+# month in plc_1_historian, "live" the PLC's rows. The Health page can show either.
+HISTORIAN_SOURCE = os.getenv("HISTORIAN_SOURCE", "march")
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
