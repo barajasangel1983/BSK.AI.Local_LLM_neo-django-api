@@ -1119,6 +1119,13 @@ TRACKED_ENDPOINTS = [
         "can_restart": False,
     },
     {
+        "id": "historian-live",
+        "name": "Live historian (TimescaleDB, PLC rows)",
+        "url": "",
+        "model": "historian",
+        "can_restart": False,
+    },
+    {
         "id": "context-graph",
         "name": "Context Graph (Neo4j)",
         "url": "",
@@ -1228,6 +1235,15 @@ def _check_single_endpoint(ep: dict) -> dict:
             start = time.time()
             ok = mcp_answers()
             status_val, latency = ("online" if ok else "offline"), round((time.time() - start) * 1000) if ok else 0
+    elif ep_id == "historian-live":
+        # online = a row in the last 90 s; degraded = the database answers but nothing is arriving
+        # (generator paused, PLC or its link down, collector not delivering); offline = no database.
+        from historian import pipeline as historian_pipeline
+
+        start = time.time()
+        state = historian_pipeline.status()["state"]
+        status_val = {"online": "online", "stale": "degraded"}.get(state, "offline")
+        latency = round((time.time() - start) * 1000) if status_val != "offline" else 0
     elif ep_id == "historian-db":
         start = time.time()
         try:
