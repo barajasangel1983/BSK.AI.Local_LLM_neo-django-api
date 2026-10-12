@@ -31,6 +31,13 @@ def ingest_health() -> dict:
         return {"ok": False, "version": None, "schema_version": None}
 
 
+def is_restart(counter, boot, previous, previous_boot) -> bool:
+    """True when a row is the first of another PLC run: its counter began again, or its boot time moved."""
+    if counter <= previous:
+        return True
+    return bool(boot and previous_boot) and abs((boot - previous_boot).total_seconds()) > BOOT_JITTER_SECONDS
+
+
 def _window(now) -> dict:
     """Rows of the last 24 hours: how many, how many are missing, PLC restarts, suspect rows, anomalies."""
     since = now - timedelta(hours=WINDOW_HOURS)
@@ -38,7 +45,7 @@ def _window(now) -> dict:
                 .values_list("period_counter", "plc_boot_utc", "quality"))
     missing = restarts = 0
     for (counter, boot, _), (previous, previous_boot, _) in zip(meta[1:], meta):
-        if counter <= previous or abs((boot - previous_boot).total_seconds()) > BOOT_JITTER_SECONDS:
+        if is_restart(counter, boot, previous, previous_boot):
             restarts += 1                       # the counter began again: another PLC run
         else:
             missing += counter - previous - 1   # the counter moved on without a row reaching us
