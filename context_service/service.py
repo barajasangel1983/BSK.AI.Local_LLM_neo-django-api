@@ -233,8 +233,12 @@ def _operational(ctx) -> dict:
         "source": h["source"] if h else None,
         # age_seconds and stale are for the live historian: stale = no row has arrived for more than 90 s,
         # so `machine_state` is the last known state and not the present one. Both are null/false for March.
+        # no_data_reason (when stale): "collector_not_reporting" (the collector or its link is down; it keeps the
+        # rows) or "no_rows_from_plc" (the collector reports with nothing to deliver: generator paused, or the PLC
+        # or its link down). collector_age_seconds: how long ago a collector last reported.
         "current_state": {"ts": h["latest_ts"], "machine_state": h["state"], "running_ts": h["running_ts"],
-                          "age_seconds": h["age_seconds"], "stale": h["stale"]} if h else None,
+                          "age_seconds": h["age_seconds"], "stale": h["stale"], "no_data_reason": h["no_data_reason"],
+                          "collector_age_seconds": h["collector_age_seconds"]} if h else None,
         "values": [{**v, "out_of_range": v["status"].endswith("normal range")} for v in ctx.values],
         "recent_events": [],        # filled by monitoring (P11)
         "trends": [],
