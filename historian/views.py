@@ -1,9 +1,13 @@
 """Read-only view of the historian (the Studio's Health page → Historian Postgres).
 
     GET /api/historian/summary/   what the historian holds: table, rows, time range, assets, machine states
-    GET /api/historian/samples/?page=&page_size=&start=&end=&state=   the rows, oldest first (start <= ts <= end)
+    GET /api/historian/samples/?page=&page_size=&start=&end=&state=&order=   the rows (start <= ts <= end),
+                                  oldest first, or newest first with order=desc
 
-Both take ?source=march|live (default: the source the Studio serves, settings.HISTORIAN_SOURCE).
+    GET /api/historian/pipeline/  the live historian's pipeline: newest row, collectors, gaps in the last 24 hours
+
+The first two take ?source=march|live (default: the source the Studio serves, settings.HISTORIAN_SOURCE).
+Rows of the live source also carry period_counter, quality and anomaly (the injected-anomaly record).
 """
 
 import logging
@@ -17,6 +21,7 @@ from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from . import pipeline as historian_pipeline
 from . import source as historian_source
 
 logger = logging.getLogger(__name__)
@@ -76,8 +81,13 @@ def summary(request):
         "last_ts": totals["last_ts"],
         "assets": assets,
         "states": [{"state": s["machine_state"], "rows": s["rows"]} for s in states],
-        "columns": _columns(model),
+        "columns": _columns(model) + (historian_pipeline.EXTRA_COLUMNS if source == "live" else []),
     })
+
+
+@api_view(["GET"])
+def pipeline(request):
+    return Response(historian_pipeline.status())
 
 
 @api_view(["GET"])
@@ -94,7 +104,10 @@ def samples(request):
     except ValueError as exc:
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     model = historian_source.samples(source)
-    rows = model.objects.order_by("ts", "extruder_id")
+    if q.get("order") not in (None, "", "asc", "desc"):
+        return Response({"error": "order must be asc or desc"}, status=status.HTTP_400_BAD_REQUEST)
+    newest_first = q.get("order") == "desc"
+    rows = model.objects.order_by("-ts" if newest_first else "ts", "extruder_id")
     try:
         if q.get("start"):
             rows = rows.filter(ts__gte=_when(q["start"], "start"))
@@ -109,10 +122,14 @@ def samples(request):
     try:
         count = rows.count()
         found = list(rows.values(*[c["key"] for c in columns])[(page - 1) * page_size:page * page_size])
+        if source == "live":
+            historian_pipeline.annotate(found)
+            columns = columns + historian_pipeline.EXTRA_COLUMNS
     except DatabaseError as exc:
         return _unavailable(exc)
     return Response({
         "source": source,
+        "order": "desc" if newest_first else "asc",
         "count": count,
         "page": page,
         "page_size": page_size,

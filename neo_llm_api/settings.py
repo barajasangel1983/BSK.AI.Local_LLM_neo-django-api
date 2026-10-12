@@ -131,6 +131,8 @@ DATABASES = {
 # Which historian the Studio serves (asset chat, Context Service, MCP): "march" is the simulated
 # month in plc_1_historian, "live" the PLC's rows. The Health page can show either.
 HISTORIAN_SOURCE = os.getenv("HISTORIAN_SOURCE", "march")
+# The live historian's ingest API (its /health needs no token); used only for the Health page.
+HIST_INGEST_URL = os.getenv("HIST_INGEST_URL", "http://100.92.170.72:8091")
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
