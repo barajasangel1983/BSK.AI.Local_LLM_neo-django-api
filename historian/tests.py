@@ -163,6 +163,9 @@ class HistorianViewTests(TestCase):
         self.assertEqual((snapshot["latest"]["machine_state"], snapshot["latest"]["die_pressure_bar"]), ("ALARMED", 90.8))
         self.assertEqual(snapshot["running"]["die_pressure_bar"], 90.5)                  # the newest RUNNING row
         self.assertEqual(snapshot["state_since"], LIVE_START + timedelta(seconds=100))   # the last row before ALARMED
+        self.assertEqual(snapshot["source"], "historian_live")
+        with patch("django.utils.timezone.now", return_value=LIVE_START + timedelta(seconds=160 + 45)):
+            self.assertEqual(asset_context.historian_snapshot("EXTR01", [])["age_seconds"], 45)
 
         rows = asset_context.historian_rows("EXTR01", ["die_pressure_bar"], LIVE_START, LIVE_START + timedelta(seconds=60), 100)
         self.assertEqual([r["die_pressure_bar"] for r in rows], [90.1, 90.2, 90.3])       # start < ts <= end
@@ -170,6 +173,7 @@ class HistorianViewTests(TestCase):
     def test_asset_chat_reads_march_by_default(self):
         snapshot = asset_context.historian_snapshot("EXTR01", ["die_pressure_bar"])
         self.assertEqual(snapshot["latest"]["ts"], START + timedelta(minutes=119))
+        self.assertEqual((snapshot["source"], snapshot["age_seconds"]), ("plc_1_historian", None))   # March has no age
 
 
     def test_live_rows_carry_counter_quality_and_anomaly(self):

@@ -11,9 +11,9 @@ from django.db import Error as DatabaseError
 from django.utils import timezone
 
 from .models import LiveCollector, LiveRow, LiveRowMeta, LiveSimEvent
+from .source import PERIOD_SECONDS as _PERIODS, STALE_SECONDS  # a row arrives up to two periods after its `ts`
 
-PERIOD_SECONDS = 20
-STALE_SECONDS = 90          # a row arrives up to two periods after its `ts`; beyond this nothing is coming
+PERIOD_SECONDS = _PERIODS["live"]
 WINDOW_HOURS = 24
 BOOT_JITTER_SECONDS = 5     # `plc_boot_utc` is derived from the PLC's uptime and moves by a second within one run
 

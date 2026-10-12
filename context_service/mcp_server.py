@@ -142,7 +142,9 @@ def build_server() -> FastMCP:
 
     @mcp.tool()
     async def get_operational_state(asset_id: str) -> dict:
-        """Current machine state and signal values against their normal range (historian data)."""
+        """Current machine state and signal values against their normal range (historian data; `source` names it).
+        current_state.stale is true when the live historian has had no row for more than 90 s: the state is then
+        the last known one, age_seconds old, not the present one."""
         return await _call("get_operational_state", service.operational_state, asset_id)
 
     @mcp.tool()
@@ -150,8 +152,10 @@ def build_server() -> FastMCP:
                                  bucket_minutes: int = 0) -> dict:
         """Recorded values of an asset's signals between two times (ISO, start < ts <= end), oldest first,
         by column: `ts` and `series[<signal key>]`, with each signal's name, unit and normal range.
-        signals: ids or keys to limit the columns (default all). bucket_minutes > 1 averages each bucket.
-        At most 1,500 points and 31 days per call. Historian data (get_operational_state gives its latest time)."""
+        signals: ids or keys to limit the columns (default all). Without bucket_minutes every stored row is a
+        point (one every 20 s from the PLC, one a minute in the March data); bucket_minutes averages each bucket.
+        `period_seconds` is the time between two points. At most 1,500 points and 31 days per call.
+        Historian data (get_operational_state gives its latest time)."""
         return await _call("get_signal_history", service.signal_history, asset_id, start, end, signals or None,
                            bucket_minutes or None)
 

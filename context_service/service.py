@@ -137,7 +137,7 @@ def entity_sources(entity_id: str) -> dict:
 
 
 def operational_state(asset_id: str) -> dict:
-    """Current machine state and signal values against their normal range (historian; OPC UA later)."""
+    """Current machine state and signal values against their normal range (the historian the Studio serves)."""
     try:
         ctx = asset_context.build(asset_id, "", MAX_BUDGET)
     except asset_context.AssetScopeError as exc:
@@ -145,7 +145,7 @@ def operational_state(asset_id: str) -> dict:
     return _operational(ctx)
 
 
-HISTORY_MAX_ROWS = 1500          # one day of minute samples, and a margin
+HISTORY_MAX_ROWS = 1500          # points per answer: a day of one-minute points, or 8 h 20 min of the PLC's 20 s rows
 HISTORY_MAX_HOURS = 31 * 24
 
 
@@ -164,18 +164,23 @@ def signal_history(asset_id: str, start: str, end: str, signals: list[str] | Non
 
     Returned by column, to stay small: `ts` and one list per signal in `series`, keyed by the signal's
     historian column (the last part of its id). `signals` limits the columns (ids or keys; default all).
-    With `bucket_minutes` > 1 each bucket holds the mean of the numbers and the last text value
-    (machine state, alarm code); `ts` is the bucket's start. Source: the historian (OPC UA later).
+    Without `bucket_minutes` every stored row is a point: one a minute in the March data, one every 20 s
+    from the PLC. With `bucket_minutes` each bucket holds the mean of the numbers and the last text value
+    (machine state, alarm code); `ts` is the bucket's start. `period_seconds` is the time between two points.
     """
     from collections import defaultdict
     from datetime import timedelta
+
+    from historian import source as historian_source
 
     begin, finish = _when(start, "start"), _when(end, "end")
     if finish <= begin:
         raise ContextError("end must be after start")
     if finish - begin > timedelta(hours=HISTORY_MAX_HOURS):
         raise ContextError(f"at most {HISTORY_MAX_HOURS // 24} days per request")
-    bucket = max(1, int(bucket_minutes or 1))
+    period = historian_source.period_seconds()                # between two stored rows
+    bucket = max(0, int(bucket_minutes or 0))
+    step = max(bucket * 60, period)                            # between two points of the answer
     try:
         known = asset_context.signal_columns(asset_id)
     except asset_context.AssetScopeError as exc:
@@ -187,20 +192,21 @@ def signal_history(asset_id: str, start: str, end: str, signals: list[str] | Non
             raise ContextError(f"unknown signal(s) for this asset: {', '.join(sorted(unknown))}")
         known = [k for k in known if k["column"] in wanted]
     columns = [k["column"] for k in known]
-    if (finish - begin).total_seconds() / 60 / bucket > HISTORY_MAX_ROWS:
-        raise ContextError(f"too many points: ask for a shorter period or a larger bucket_minutes (at most {HISTORY_MAX_ROWS} points)")
+    seconds = (finish - begin).total_seconds()
+    if seconds / step > HISTORY_MAX_ROWS:
+        raise ContextError(f"too many points: ask for a shorter period or a larger bucket_minutes (at most {HISTORY_MAX_ROWS} "
+                           f"points; the historian holds one row every {period} s)")
     try:
-        rows = asset_context.historian_rows(asset_id.split(":", 2)[2], columns, begin, finish, HISTORY_MAX_ROWS * bucket)
+        rows = asset_context.historian_rows(asset_id.split(":", 2)[2], columns, begin, finish, int(seconds // period) + 1)
     except Exception as exc:
         logger.warning("signal history failed asset=%s: %s", asset_id, exc)
         raise ContextError("the historian is not available")
 
     number = lambda v: v if isinstance(v, (str, bool)) or v is None else float(v)      # noqa: E731
-    if bucket > 1:
+    if step > period:
         groups: dict = defaultdict(list)
         for row in rows:
-            minute = int((row["ts"] - begin).total_seconds() // 60)
-            groups[begin + timedelta(minutes=(minute // bucket) * bucket)].append(row)
+            groups[begin + timedelta(seconds=(row["ts"] - begin).total_seconds() // step * step)].append(row)
         merged = []
         for ts in sorted(groups):
             out = {"ts": ts}
@@ -212,8 +218,8 @@ def signal_history(asset_id: str, start: str, end: str, signals: list[str] | Non
             merged.append(out)
         rows = merged
     return {
-        "asset_id": asset_id, "source": "plc_1_historian", "start": begin.isoformat(), "end": finish.isoformat(),
-        "bucket_minutes": bucket, "points": len(rows),
+        "asset_id": asset_id, "source": historian_source.label(), "start": begin.isoformat(), "end": finish.isoformat(),
+        "bucket_minutes": step // 60, "period_seconds": step, "points": len(rows),
         "signals": [{"key": k["column"], "signal_id": k["signal_id"], "name": k["name"], "unit": k["unit"],
                      "low": k["low"], "high": k["high"]} for k in known],
         "ts": [r["ts"].isoformat() for r in rows],
@@ -224,8 +230,11 @@ def signal_history(asset_id: str, start: str, end: str, signals: list[str] | Non
 def _operational(ctx) -> dict:
     h = ctx.historian
     return {
-        "source": "plc_1_historian" if h else None,
-        "current_state": {"ts": h["latest_ts"], "machine_state": h["state"], "running_ts": h["running_ts"]} if h else None,
+        "source": h["source"] if h else None,
+        # age_seconds and stale are for the live historian: stale = no row has arrived for more than 90 s,
+        # so `machine_state` is the last known state and not the present one. Both are null/false for March.
+        "current_state": {"ts": h["latest_ts"], "machine_state": h["state"], "running_ts": h["running_ts"],
+                          "age_seconds": h["age_seconds"], "stale": h["stale"]} if h else None,
         "values": [{**v, "out_of_range": v["status"].endswith("normal range")} for v in ctx.values],
         "recent_events": [],        # filled by monitoring (P11)
         "trends": [],

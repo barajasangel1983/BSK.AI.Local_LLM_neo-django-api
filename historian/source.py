@@ -11,6 +11,10 @@ from django.conf import settings
 from .models import ExtruderSample, LiveRow
 
 SOURCES = ("march", "live")
+# What a client is told its values come from, and how far apart the rows are.
+LABEL = {"march": "plc_1_historian", "live": "historian_live"}
+PERIOD_SECONDS = {"march": 60, "live": 20}
+STALE_SECONDS = 90          # live only: with no row for this long, the newest row is not the present state
 
 
 def current() -> str:
@@ -22,3 +26,12 @@ def current() -> str:
 def samples(source: str | None = None):
     """The model holding the historian rows of `source` (default: the one the Studio serves)."""
     return LiveRow if (source or current()) == "live" else ExtruderSample
+
+
+def label(source: str | None = None) -> str:
+    return LABEL[source or current()]
+
+
+def period_seconds(source: str | None = None) -> int:
+    """Seconds between two rows of `source`."""
+    return PERIOD_SECONDS[source or current()]
