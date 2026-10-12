@@ -88,7 +88,8 @@ def _fmt(value) -> str:
 def historian_snapshot(asset_key: str, columns: list[str]) -> dict | None:
     """Latest historian row for the asset, plus the last RUNNING row (limits apply while running)."""
     try:
-        from historian.models import ExtruderSample
+        from historian import source
+        ExtruderSample = source.samples()
     except Exception:  # historian app unavailable
         return None
     fields = {f.name for f in ExtruderSample._meta.fields}
@@ -137,7 +138,8 @@ def signal_columns(asset_id: str) -> list[dict]:
 
 def historian_rows(asset_key: str, columns: list[str], start, end, limit: int) -> list[dict]:
     """Historian samples with start < ts <= end, oldest first: [{ts, <column>: value…}]. Raises when Postgres is down."""
-    from historian.models import ExtruderSample
+    from historian import source
+    ExtruderSample = source.samples()
     fields = {f.name for f in ExtruderSample._meta.fields}
     columns = [c for c in columns if c in fields]
     rows = ExtruderSample.objects.filter(extruder_id=asset_key, ts__gt=start, ts__lte=end).order_by("ts")
