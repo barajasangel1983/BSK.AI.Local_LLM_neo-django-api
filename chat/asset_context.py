@@ -4,8 +4,9 @@ The curated Context Graph (context_graph.services.get_asset_context) is turned
 into a compact fact sheet — location, components, signals with units and
 normal ranges, alarms with components and procedures, procedures,
 connections, linked documents. Each signal line carries the historian's latest
-RUNNING value compared with its range (plc_1_historian; the machine state and
-timestamps are stated, since operating limits apply while running).
+RUNNING value compared with its range (the machine state and timestamps are
+stated, since operating limits apply while running). Which historian is read,
+the simulated month or the PLC's rows, is decided in historian/source.py.
 
 When the sheet doesn't fit its budget, lines matching the question are kept
 first (the asset header and historian status always stay). The lab layer is
@@ -27,6 +28,8 @@ from context_graph.repository import NodeNotFound
 
 logger = logging.getLogger("chat")
 
+# How a signal in the graph points at its historian column. The live table has the same column names,
+# so the pointer is kept as a name and read from whichever historian is served.
 HISTORIAN_PREFIX = "plc_1_historian.extruder_samples."
 STOPWORDS = {"the", "a", "an", "of", "on", "in", "is", "are", "what", "which", "how", "do", "does", "to", "for",
              "and", "or", "it", "its", "with", "should", "i", "my", "this", "that", "be", "can", "there", "any", "now"}
@@ -52,7 +55,8 @@ class AssetContext:
     facts: list[str] = field(default_factory=list)    # lines actually included (for the citation)
     fact_sources: list[str] = field(default_factory=list)   # where each fact comes from (seed, document page, import row)
     total_facts: int = 0
-    historian: dict | None = None                      # {"latest_ts", "state", "running_ts", "out_of_range": [...]}
+    # {"source", "latest_ts", "state", "running_ts", "age_seconds", "stale", "out_of_range": [...]}
+    historian: dict | None = None
     doc_keys: list[str] = field(default_factory=list)  # documents linked to the asset (DOCUMENTED_BY)
     # Structured forms of the above, for the Context Service (context_service/service.py):
     items: list[dict] = field(default_factory=list)    # {text, section, entity_id, source, focus} per included fact
@@ -85,11 +89,20 @@ def _fmt(value) -> str:
     return f"{value:g}" if isinstance(value, float) else str(value)
 
 
+def _age(seconds: int) -> str:
+    return f"{seconds} s" if seconds < 120 else f"{seconds // 60} min" if seconds < 7200 else f"{seconds // 3600} h"
+
+
 def historian_snapshot(asset_key: str, columns: list[str]) -> dict | None:
-    """Latest historian row for the asset, plus the last RUNNING row (limits apply while running)."""
+    """Latest historian row for the asset, plus the last RUNNING row (limits apply while running).
+
+    `source` is the historian's label. `age_seconds` is the age of the latest row, for the live historian
+    only: its rows are the present, so an old one means nothing is arriving."""
     try:
+        from django.utils import timezone
         from historian import source
         ExtruderSample = source.samples()
+        live = source.current() == "live"
     except Exception:  # historian app unavailable
         return None
     fields = {f.name for f in ExtruderSample._meta.fields}
@@ -108,7 +121,8 @@ def historian_snapshot(asset_key: str, columns: list[str]) -> dict | None:
     except Exception as exc:  # Postgres down: answer without historian values
         logger.warning("historian snapshot failed asset=%s: %s", asset_key, exc)
         return None
-    return {"latest": latest, "running": running, "state_since": since}
+    return {"latest": latest, "running": running, "state_since": since, "source": source.label(),
+            "age_seconds": round((timezone.now() - latest["ts"]).total_seconds()) if live else None}
 
 
 def signal_columns(asset_id: str) -> list[dict]:
@@ -215,14 +229,25 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
     values: list[dict] = []
     if snap:
         latest, running = snap["latest"], snap["running"]
-        state = f"Historian (plc_1_historian, simulated data): latest sample {latest['ts']:%Y-%m-%d %H:%M} UTC, machine state {latest['machine_state']}"
+        from historian import source as historian_source
+        historian_label = snap.get("source") or historian_source.label("march")
+        age = snap.get("age_seconds")
+        stale = age is not None and age > historian_source.STALE_SECONDS
+        # The live rows are 20 s apart, so their times are given to the second.
+        when = "%Y-%m-%d %H:%M:%S" if age is not None else "%Y-%m-%d %H:%M"
+        kind = "rows from the PLC, one every 20 s" if age is not None else "simulated data"
+        state = f"Historian ({historian_label}, {kind}): latest sample {latest['ts']:{when}} UTC, machine state {latest['machine_state']}"
         if snap["state_since"]:
-            state += f" since {snap['state_since']:%Y-%m-%d %H:%M}"
+            state += f" since {snap['state_since']:{when}}"
+        if stale:
+            state += (f". No row has arrived for {_age(age)}, so this is the last known state, not the present one"
+                      " (the generator is paused, the PLC or its link is down, or the collector is not delivering)")
         if running and running is not latest:
-            state += f". Signal values below are from the last RUNNING sample ({running['ts']:%Y-%m-%d %H:%M} UTC); normal ranges apply while running"
+            state += f". Signal values below are from the last RUNNING sample ({running['ts']:{when}} UTC); normal ranges apply while running"
         lines.append(Line("ASSET", state + ".", pinned=True))
-        historian = {"latest_ts": latest["ts"].isoformat(), "state": latest["machine_state"],
-                     "running_ts": running["ts"].isoformat() if running else None, "out_of_range": []}
+        historian = {"source": historian_label, "latest_ts": latest["ts"].isoformat(), "state": latest["machine_state"],
+                     "running_ts": running["ts"].isoformat() if running else None,
+                     "age_seconds": age, "stale": stale, "out_of_range": []}
 
     for c, depth in flat:
         text = f"{'  ' * depth}- {c['name']} [{c['id']}]"
@@ -303,13 +328,13 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
     return AssetContext(
         asset_id=asset_id, name=asset["name"], text=text,
         facts=[ln.text.strip() for ln in cited],
-        fact_sources=[labels.get(ln.node_id, "plc_1_historian" if ln.text.startswith("Historian") else "")
+        fact_sources=[labels.get(ln.node_id, historian["source"] if historian and ln.text.startswith("Historian") else "")
                       for ln in cited],
         total_facts=len([ln for ln in lines if not ln.pinned]),
         historian=historian,
         doc_keys=sorted({d["properties"]["doc_key"] for d in ctx["documents"] if d["properties"].get("doc_key")}),
         items=[{"text": ln.text.strip(), "section": ln.section.lower(), "entity_id": ln.node_id,
-                "source": labels.get(ln.node_id, "plc_1_historian" if ln.text.startswith("Historian") else ""),
+                "source": labels.get(ln.node_id, historian["source"] if historian and ln.text.startswith("Historian") else ""),
                 "focus": ln.node_id in focus_ids} for ln in cited],
         values=values,
     )
@@ -408,10 +433,12 @@ def citations(ctx: AssetContext) -> list[dict]:
     }]
     if ctx.historian:
         h = ctx.historian
-        snippet = f"Latest sample {h['latest_ts'][:16].replace('T', ' ')} UTC, state {h['state']}"
+        snippet = f"Latest sample {h['latest_ts'][:19 if h['age_seconds'] is not None else 16].replace('T', ' ')} UTC, state {h['state']}"
+        if h["stale"]:
+            snippet += f" (no row for {_age(h['age_seconds'])})"
         if h["out_of_range"]:
             snippet += f"; out of range: {', '.join(h['out_of_range'])}"
-        out.append({"kind": "historian", "source": "plc_1_historian", "asset_id": ctx.asset_id, "section_path": [],
+        out.append({"kind": "historian", "source": h["source"], "asset_id": ctx.asset_id, "section_path": [],
                     "page_start": None, "page_end": None, "score": None, "snippet": snippet[:400],
                     "facts": h["out_of_range"]})
     return out

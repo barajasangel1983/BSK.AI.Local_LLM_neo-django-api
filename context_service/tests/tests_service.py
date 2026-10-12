@@ -185,6 +185,7 @@ class LookupTests(ContextTestCase):
                                                   "description": "Kibble extrusion cooker"}])
         state = service.operational_state(ASSET)
         self.assertEqual(state["source"], "plc_1_historian")
+        self.assertEqual((state["current_state"]["age_seconds"], state["current_state"]["stale"]), (None, False))
         self.assertTrue(any(v["out_of_range"] for v in state["values"]))
         found = service.search_documents("die pressure", ASSET, top_k=3)
         self.assertEqual((found["scope"], len(found["results"])), ("asset", 2))
@@ -213,6 +214,50 @@ class LookupTests(ContextTestCase):
         with patch("chat.asset_context.historian_rows", side_effect=RuntimeError("postgres down")):
             with self.assertRaisesMessage(service.ContextError, "historian is not available"):
                 service.signal_history(ASSET, "2026-03-05T14:00:00Z", "2026-03-05T15:00:00Z")
+
+    @override_settings(HISTORIAN_SOURCE="live")
+    def test_signal_history_of_the_live_historian_is_every_20_s(self):
+        from datetime import datetime, timedelta, timezone
+        t0 = datetime(2026, 10, 11, 20, 0, tzinfo=timezone.utc)
+        rows = [{"ts": t0 + timedelta(seconds=20 * (i + 1)), "die_pressure_bar": 90 + i, "machine_state": "RUNNING"}
+                for i in range(6)]
+        with patch("chat.asset_context.historian_rows", return_value=rows) as read:
+            h = service.signal_history(ASSET, "2026-10-11T20:00:00Z", "2026-10-11T20:02:00Z", ["die_pressure_bar"])
+            self.assertEqual(read.call_args.args[4], 7)                      # six rows fit in two minutes, and one spare
+            self.assertEqual((h["source"], h["bucket_minutes"], h["period_seconds"], h["points"]), ("historian_live", 0, 20, 6))
+            self.assertEqual((h["ts"][0], h["series"]["die_pressure_bar"][:2]), ("2026-10-11T20:00:20+00:00", [90.0, 91.0]))
+
+            m = service.signal_history(ASSET, "2026-10-11T20:00:00Z", "2026-10-11T20:02:00Z", ["die_pressure_bar"], bucket_minutes=1)
+            self.assertEqual((m["bucket_minutes"], m["period_seconds"]), (1, 60))
+            # A minute's bucket starts at its `ts`: the rows of 20:00:20 and 20:00:40, then three, then the one of 20:02:00.
+            self.assertEqual((m["ts"], m["series"]["die_pressure_bar"]),
+                             (["2026-10-11T20:00:00+00:00", "2026-10-11T20:01:00+00:00", "2026-10-11T20:02:00+00:00"],
+                              [90.5, 93.0, 95.0]))
+
+            # Eight hours of 20 s rows are 1,440 points; nine are too many without a bucket.
+            self.assertEqual(service.signal_history(ASSET, "2026-10-11T12:00:00Z", "2026-10-11T20:00:00Z")["period_seconds"], 20)
+            with self.assertRaisesMessage(service.ContextError, "one row every 20 s"):
+                service.signal_history(ASSET, "2026-10-11T11:00:00Z", "2026-10-11T20:00:00Z")
+            self.assertEqual(service.signal_history(ASSET, "2026-10-11T11:00:00Z", "2026-10-11T20:00:00Z", bucket_minutes=1)["points"], 3)
+
+    def test_state_of_the_live_historian_says_how_old_it_is(self):
+        fresh = {**SNAPSHOT, "source": "historian_live", "age_seconds": 35}
+        with patch("chat.asset_context.historian_snapshot", return_value=fresh):
+            state = service.operational_state(ASSET)
+        self.assertEqual(state["source"], "historian_live")
+        self.assertEqual((state["current_state"]["age_seconds"], state["current_state"]["stale"]), (35, False))
+
+        with patch("chat.asset_context.historian_snapshot", return_value={**fresh, "age_seconds": 1500}):
+            state = service.operational_state(ASSET)
+            from chat import asset_context
+            ctx = asset_context.build(ASSET, "", 6000)
+        self.assertEqual((state["current_state"]["age_seconds"], state["current_state"]["stale"]), (1500, True))
+        self.assertIn("Historian (historian_live, rows from the PLC, one every 20 s): latest sample 2026-03-31 23:59:00 UTC",
+                      ctx.text)
+        self.assertIn("No row has arrived for 25 min, so this is the last known state, not the present one", ctx.text)
+        historian = asset_context.citations(ctx)[-1]
+        self.assertEqual(historian["source"], "historian_live")
+        self.assertIn("(no row for 25 min)", historian["snippet"])
 
     @patch("chat.views.requests.post")
     def test_ask_answers_from_the_packet(self, post):
