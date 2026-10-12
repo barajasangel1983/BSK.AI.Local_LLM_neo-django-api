@@ -55,7 +55,8 @@ class AssetContext:
     facts: list[str] = field(default_factory=list)    # lines actually included (for the citation)
     fact_sources: list[str] = field(default_factory=list)   # where each fact comes from (seed, document page, import row)
     total_facts: int = 0
-    # {"source", "latest_ts", "state", "running_ts", "age_seconds", "stale", "out_of_range": [...]}
+    # {"source", "latest_ts", "state", "running_ts", "age_seconds", "stale", "no_data_reason",
+    #  "collector_age_seconds", "out_of_range": [...]}
     historian: dict | None = None
     doc_keys: list[str] = field(default_factory=list)  # documents linked to the asset (DOCUMENTED_BY)
     # Structured forms of the above, for the Context Service (context_service/service.py):
@@ -97,7 +98,8 @@ def historian_snapshot(asset_key: str, columns: list[str]) -> dict | None:
     """Latest historian row for the asset, plus the last RUNNING row (limits apply while running).
 
     `source` is the historian's label. `age_seconds` is the age of the latest row, for the live historian
-    only: its rows are the present, so an old one means nothing is arriving."""
+    only: its rows are the present, so an old one means nothing is arriving. `collector_age_seconds` is how
+    long ago a collector last reported (None: never, or not known); it tells which part stopped."""
     try:
         from django.utils import timezone
         from historian import source
@@ -121,8 +123,18 @@ def historian_snapshot(asset_key: str, columns: list[str]) -> dict | None:
     except Exception as exc:  # Postgres down: answer without historian values
         logger.warning("historian snapshot failed asset=%s: %s", asset_key, exc)
         return None
+    now, collector_age = timezone.now(), None
+    if live:
+        try:
+            from django.db.models import Max
+            from historian.models import LiveCollector
+            seen = LiveCollector.objects.aggregate(seen=Max("last_seen"))["seen"]
+            collector_age = round((now - seen).total_seconds()) if seen else None
+        except Exception as exc:
+            logger.warning("collector report not read: %s", exc)
     return {"latest": latest, "running": running, "state_since": since, "source": source.label(),
-            "age_seconds": round((timezone.now() - latest["ts"]).total_seconds()) if live else None}
+            "age_seconds": round((now - latest["ts"]).total_seconds()) if live else None,
+            "collector_age_seconds": collector_age}
 
 
 def signal_columns(asset_id: str) -> list[dict]:
@@ -239,15 +251,24 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
         state = f"Historian ({historian_label}, {kind}): latest sample {latest['ts']:{when}} UTC, machine state {latest['machine_state']}"
         if snap["state_since"]:
             state += f" since {snap['state_since']:{when}}"
+        # Which part stopped: the collector reports every period, with or without rows to deliver.
+        collector_age = snap.get("collector_age_seconds")
+        reason = None
         if stale:
-            state += (f". No row has arrived for {_age(age)}, so this is the last known state, not the present one"
-                      " (the generator is paused, the PLC or its link is down, or the collector is not delivering)")
+            silent = collector_age is None or collector_age > historian_source.STALE_SECONDS
+            reason = "collector_not_reporting" if silent else "no_rows_from_plc"
+            state += f". No row has arrived for {_age(age)}, so this is the last known state, not the present one ("
+            state += ("the collector has not reported" + (f" for {_age(collector_age)}" if collector_age is not None else "")
+                      + ": it or its link to the historian is down, and it keeps the rows until it can deliver them)"
+                      if silent else
+                      "the collector reports but has no rows: the generator is paused, or the PLC or its link is down)")
         if running and running is not latest:
             state += f". Signal values below are from the last RUNNING sample ({running['ts']:{when}} UTC); normal ranges apply while running"
         lines.append(Line("ASSET", state + ".", pinned=True))
         historian = {"source": historian_label, "latest_ts": latest["ts"].isoformat(), "state": latest["machine_state"],
                      "running_ts": running["ts"].isoformat() if running else None,
-                     "age_seconds": age, "stale": stale, "out_of_range": []}
+                     "age_seconds": age, "stale": stale, "no_data_reason": reason,
+                     "collector_age_seconds": collector_age, "out_of_range": []}
 
     for c, depth in flat:
         text = f"{'  ' * depth}- {c['name']} [{c['id']}]"

@@ -144,7 +144,9 @@ def build_server() -> FastMCP:
     async def get_operational_state(asset_id: str) -> dict:
         """Current machine state and signal values against their normal range (historian data; `source` names it).
         current_state.stale is true when the live historian has had no row for more than 90 s: the state is then
-        the last known one, age_seconds old, not the present one."""
+        the last known one, age_seconds old, not the present one. no_data_reason then says which part stopped:
+        collector_not_reporting (it keeps the rows and delivers them later) or no_rows_from_plc (generator paused,
+        or the PLC or its link down)."""
         return await _call("get_operational_state", service.operational_state, asset_id)
 
     @mcp.tool()

@@ -246,6 +246,7 @@ class LookupTests(ContextTestCase):
             state = service.operational_state(ASSET)
         self.assertEqual(state["source"], "historian_live")
         self.assertEqual((state["current_state"]["age_seconds"], state["current_state"]["stale"]), (35, False))
+        self.assertIsNone(state["current_state"]["no_data_reason"])
 
         with patch("chat.asset_context.historian_snapshot", return_value={**fresh, "age_seconds": 1500}):
             state = service.operational_state(ASSET)
@@ -258,6 +259,18 @@ class LookupTests(ContextTestCase):
         historian = asset_context.citations(ctx)[-1]
         self.assertEqual(historian["source"], "historian_live")
         self.assertIn("(no row for 25 min)", historian["snippet"])
+        # No collector report is known here: the collector is the part that stopped.
+        self.assertEqual(state["current_state"]["no_data_reason"], "collector_not_reporting")
+        self.assertIn("the collector has not reported: it or its link to the historian is down", ctx.text)
+
+        # The collector reported 15 s ago and still no row came: the PLC side stopped.
+        quiet = {**fresh, "age_seconds": 1500, "collector_age_seconds": 15}
+        with patch("chat.asset_context.historian_snapshot", return_value=quiet):
+            state = service.operational_state(ASSET)
+            ctx = asset_context.build(ASSET, "", 6000)
+        self.assertEqual((state["current_state"]["no_data_reason"], state["current_state"]["collector_age_seconds"]),
+                         ("no_rows_from_plc", 15))
+        self.assertIn("the collector reports but has no rows: the generator is paused, or the PLC or its link is down", ctx.text)
 
     @patch("chat.views.requests.post")
     def test_ask_answers_from_the_packet(self, post):
