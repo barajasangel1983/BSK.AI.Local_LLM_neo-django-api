@@ -24,4 +24,5 @@ urlpatterns = [
     path("api/graph/", include("context_graph.urls")),
     path("api/context/", include("context_service.urls")),
     path("api/historian/", include("historian.urls")),
+    path("api/spc/", include("spc.urls")),
 ]

@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     "usage",
     "gpu",
     "context_service",
+    "spc",
 ]
 
 MIDDLEWARE = [
@@ -133,6 +134,13 @@ DATABASES = {
 HISTORIAN_SOURCE = os.getenv("HISTORIAN_SOURCE", "march")
 # The live historian's ingest API (its /health needs no token); used only for the Health page.
 HIST_INGEST_URL = os.getenv("HIST_INGEST_URL", "http://100.92.170.72:8091")
+
+# SPC (the Studio's SPC page): tools per asset, and how much data a figure needs before it is shown.
+SPC_MAX_TOOLS_PER_ASSET = int(os.getenv("SPC_MAX_TOOLS_PER_ASSET", "16"))
+SPC_MIN_BASELINE_SAMPLES = int(os.getenv("SPC_MIN_BASELINE_SAMPLES", "50"))      # per group, for control limits
+SPC_MIN_CAPABILITY_SAMPLES = int(os.getenv("SPC_MIN_CAPABILITY_SAMPLES", "100"))  # row values, for Cp/Cpk/Pp/Ppk
+SPC_EVENT_ACTIVE_SECONDS = int(os.getenv("SPC_EVENT_ACTIVE_SECONDS", "300"))      # an event stays active this long
+SPC_RECENT_MINUTES = int(os.getenv("SPC_RECENT_MINUTES", "30"))                   # the "recent" mean of sigma shift
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
