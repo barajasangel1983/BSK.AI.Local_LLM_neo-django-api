@@ -1,0 +1,29 @@
+# Proposed SPC values for the extruder EXTR01. They only prefill the block when a tool is added;
+# the user changes any of them in the page. Source and measurement: claude/P12_SPCimplementation.md,
+# section 11 and appendix A (Studio web repository).
+#
+# The four specifications are the observed mean ± about three standard deviations of the live
+# RUNNING rows (2026-10-13). They are NOT product standards.
+common:
+  states: [RUNNING]
+  ignore_seconds: 120
+  method: imr
+  sigma_multiplier: 3
+  baseline_days: 7
+signals:
+  throughput_actual_kg_hr: {group_by: recipe_id}
+  feeder_rate_actual_kg_hr: {group_by: recipe_id}
+  screw_speed_rpm: {group_by: recipe_id}
+  screw_torque_pct: {group_by: recipe_id}
+  motor_power_kw: {group_by: recipe_id}
+  die_pressure_bar: {group_by: recipe_id}
+  steam_flow_kg_hr: {group_by: recipe_id}
+  water_injection_l_hr: {group_by: recipe_id}
+  barrel_zone_1_temp_c: {}
+  barrel_zone_2_temp_c: {}
+  barrel_zone_3_temp_c: {}
+  head_temp_c: {}
+  product_temp_discharge_c: {lsl: 92, target: 105, usl: 118}
+  product_moisture_pct: {lsl: 8.0, target: 9.5, usl: 11.0}
+  bulk_density_g_l: {lsl: 330, target: 355, usl: 380}
+  kibble_diameter_mm: {lsl: 7.0, target: 8.5, usl: 10.0}
