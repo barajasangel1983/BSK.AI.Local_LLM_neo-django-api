@@ -86,8 +86,7 @@ class SpcApiTests(TestCase):
         self.assertEqual((tool["name"], tool["unit"], tool["column"], tool["version"], tool["limits"]),
                          ("Product moisture", "%", "product_moisture_pct", 1, []))        # name and unit from the graph
         self.assertEqual((tool["states"], tool["ignore_seconds"], tool["method"], tool["window_hours"]), (["RUNNING"], 120, "imr", 8))
-        self.assertEqual(tool["rules"], ["beyond_limits", "range_beyond_limits", "spec", "two_of_three", "four_of_five",
-                                         "eight_one_side", "six_trending"])                # "no variation" is off
+        self.assertEqual(tool["rules"], ["beyond_limits", "spec"])        # the range chart and the run rules are off
         self.assertTrue(SpcCursor.objects.filter(tool_id=tool["id"]).exists())
         self.assertTrue(self.client.get("/api/spc/signals/", {"asset_id": ASSET}).json()["signals"][1]["has_tool"])
 

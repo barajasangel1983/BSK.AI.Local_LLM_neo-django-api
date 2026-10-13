@@ -30,7 +30,9 @@ RULES = {
     "two_of_three": WARNING, "four_of_five": WARNING, "eight_one_side": WARNING, "six_trending": WARNING,
     "no_variation": WARNING,
 }
-DEFAULT_RULES = [r for r in RULES if r != "no_variation"]
+# Ticked when a new tool's block opens. The range chart and the run rules are switches the user turns on per tool:
+# on single 20 s rows they raise about 2.7 events per tool and running hour on a healthy process (P12b, live trial).
+DEFAULT_RULES = ["beyond_limits", "spec"]
 
 STATUSES = ("paused", "configuration_required", "spec_violation", "out_of_control", "trending", "warning", "stable")
 
@@ -91,7 +93,11 @@ def samples(rows: list[dict], *, column: str, states: list[str], ignore_seconds:
 
     A segment is a run of rows in the tool's states, at most two periods apart, with one state and
     one group. The first `ignore_seconds` of every segment are dropped, and nothing (a moving
-    range, a subgroup) is ever computed across two segments."""
+    range, a subgroup) is ever computed across two segments.
+
+    A subgroup is the rows of one stretch of `subgroup_size` periods on the clock (three 20 s rows:
+    each whole minute), so the same rows give the same subgroups wherever a read begins. A stretch
+    with a row missing, or cut by the start or end of a segment, gives no subgroup."""
     segments: list[list[tuple]] = []            # [(ts, value, group, state), …]
     current: list[tuple] = []
     for row in rows:
@@ -122,8 +128,13 @@ def samples(rows: list[dict], *, column: str, states: list[str], ignore_seconds:
                 out.append(Sample(ts, value, None if previous is None else abs(value - previous), group, state, number, [value]))
                 previous = value
         else:
-            for i in range(0, len(kept) - subgroup_size + 1, subgroup_size):
-                part = kept[i:i + subgroup_size]
+            width = subgroup_size * period
+            buckets: dict[int, list[tuple]] = {}
+            for r in kept:
+                buckets.setdefault(int(r[0].timestamp()) // width, []).append(r)
+            for part in buckets.values():
+                if len(part) != subgroup_size:
+                    continue
                 values = [r[1] for r in part]
                 out.append(Sample(part[-1][0], sum(values) / len(values), max(values) - min(values), part[-1][2], part[-1][3],
                                   number, values))

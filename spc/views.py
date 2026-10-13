@@ -9,6 +9,10 @@
     GET    /api/spc/screening/?asset_id=&state=&tools=&window_hours=   summary and one object per tool
     GET    /api/spc/summary/?…                    the summary alone
     GET    /api/spc/tools/<id>/detail/?window_hours=   the chart, distribution and capability of one tool
+    GET    /api/spc/events/?asset_id=&tool=&active=&limit=&before=    SPC events, newest first
+    POST   /api/spc/events/<id>/acknowledge/      mark an event as seen
+
+SPC events are written by the evaluator (manage.py spc_evaluate, once a minute), not by these views.
 
 Every figure is computed by spc/engine.py from the historian's rows. Nothing here asks a model.
 """
@@ -26,7 +30,7 @@ from chat.asset_context import AssetScopeError
 from context_graph.driver import GraphUnavailable
 
 from . import service
-from .models import SpcTool
+from .models import SpcEvent, SpcTool
 
 logger = logging.getLogger(__name__)
 
@@ -163,3 +167,28 @@ def detail(request, tool_id):
     if found is None:
         return _error("SPC tool not found", status.HTTP_404_NOT_FOUND)
     return Response(service.detail(found, _hours(request)))
+
+
+@api_view(["GET"])
+@_guard
+def events(request):
+    q = request.query_params
+    limit = q.get("limit") or str(service.EVENT_PAGE)
+    if not limit.isdigit():
+        raise service.SpcError("limit must be a whole number")
+    tool_id = q.get("tool") or None
+    if tool_id and _tool(tool_id) is None:
+        return _error("SPC tool not found", status.HTTP_404_NOT_FOUND)
+    return Response(service.events(q.get("asset_id") or None, tool_id, q.get("active") in ("1", "true", "yes"), int(limit),
+                                   _when(q["before"], "before") if q.get("before") else None))
+
+
+@api_view(["POST"])
+@_guard
+def acknowledge(request, event_id):
+    try:
+        event = SpcEvent.objects.select_related("tool").get(pk=event_id)
+    except (SpcEvent.DoesNotExist, ValidationError, ValueError):
+        return _error("SPC event not found", status.HTTP_404_NOT_FOUND)
+    by = request.data.get("by") if isinstance(request.data, dict) else ""
+    return Response(service.event_json(service.acknowledge(event, str(by or ""))))

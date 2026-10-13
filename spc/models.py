@@ -101,3 +101,34 @@ class SpcCursor(models.Model):
     tool = models.OneToOneField(SpcTool, on_delete=models.CASCADE, related_name="cursor", primary_key=True)
     judged_until = models.DateTimeField()
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class SpcEvent(models.Model):
+    """An SPC alarm: a rule that fired on a tool. A violation that continues is one event.
+
+    Not a PLC alarm: those stay in the historian's `alarm_code`."""
+
+    TYPES = [(engine.WARNING, "Statistical warning"), (engine.CONTROL, "Control limit violation"),
+             (engine.SPEC, "Specification violation")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tool = models.ForeignKey(SpcTool, on_delete=models.CASCADE, related_name="events")
+    tool_version = models.PositiveIntegerField()         # the configuration it was judged with
+    type = models.CharField(max_length=24, choices=TYPES)
+    rule = models.CharField(max_length=32)
+    group = models.CharField(max_length=128, blank=True)
+    started_at = models.DateTimeField()                  # the first point that fired the rule
+    last_at = models.DateTimeField()                     # the newest one
+    count = models.PositiveIntegerField(default=1)
+    value = models.FloatField()                          # of the first point
+    extreme = models.FloatField()                        # the value farthest from the centre line so far
+    machine_state = models.CharField(max_length=40, blank=True)
+    limits = models.JSONField(default=dict)              # cl, lcl, ucl, lsl, usl it was judged against
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledged_by = models.CharField(max_length=120, blank=True)
+    agent_status = models.CharField(max_length=24, default="none")   # for a later phase; nothing reads it yet
+
+    class Meta:
+        ordering = ["-started_at"]
+        indexes = [models.Index(fields=["tool", "started_at"], name="spc_event_tool_start"),
+                   models.Index(fields=["tool", "last_at"], name="spc_event_tool_last")]
