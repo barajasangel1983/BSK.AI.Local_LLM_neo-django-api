@@ -82,6 +82,28 @@ def opcua() -> dict:
     return answer
 
 
+_limits_cache: dict = {}
+SLOT_LIMITS_KEEP_SECONDS = 30
+
+
+def slot_limits() -> dict:
+    """The PLC's LowLimit / HighLimit of each analog slot that has a label, by the label, which is the historian
+    column (BSK machine template): {column: {"slot", "low", "high", "unit"}}. Kept 30 s. Raises opc.OpcError."""
+    if _limits_cache.get("at") and time.monotonic() - _limits_cache["at"] < SLOT_LIMITS_KEEP_SECONDS:
+        return _limits_cache["limits"]
+    fields: dict = {}
+    for v in opc.read_all()["variables"]:
+        slot, _, name = v["path"].rpartition(".")
+        if slot.startswith(("AnalogIn[", "AnalogOut[")) and name in ("Label", "LowLimit", "HighLimit", "EngineeringUnits"):
+            fields.setdefault(slot, {})[name] = v["value"]
+    limits = {f["Label"]: {"slot": slot, "low": f.get("LowLimit"), "high": f.get("HighLimit"), "unit": f.get("EngineeringUnits") or ""}
+              for slot, f in fields.items()
+              if f.get("Label") and f.get("Label") != "Unused" and isinstance(f.get("LowLimit"), (int, float))
+              and isinstance(f.get("HighLimit"), (int, float)) and f["LowLimit"] < f["HighLimit"]}
+    _limits_cache.update(at=time.monotonic(), limits=limits)
+    return limits
+
+
 def controls() -> dict:
     last = PlcCommand.objects.exclude(outcome="refused").values_list("created_at", flat=True).first()
     return {"enabled": settings.PLC_CONTROL_ENABLED, "spacing_seconds": settings.PLC_COMMAND_SPACING_SECONDS,

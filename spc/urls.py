@@ -9,6 +9,7 @@ urlpatterns = [
     path("tools/<str:tool_id>/", views.tool, name="spc-tool"),
     path("tools/<str:tool_id>/baseline/", views.baseline, name="spc-baseline"),
     path("baseline/preview/", views.baseline_preview, name="spc-baseline-preview"),
+    path("plc-limits/", views.plc_limits, name="spc-plc-limits"),
     path("tools/<str:tool_id>/limits/", views.limits, name="spc-limits"),
     path("tools/<str:tool_id>/detail/", views.detail, name="spc-detail"),
     path("tools/<str:tool_id>/llm/", views.llm_packet, name="spc-llm-packet"),

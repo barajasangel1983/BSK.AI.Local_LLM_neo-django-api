@@ -276,6 +276,60 @@ class SpcApiTests(TestCase):
         self.assertEqual(sum(s["n"] for s in tool["trend_spans"]), tool["sample_count"])
         self.assertLessEqual(last["to"], tool["window_end"])
 
+    # --- P12h: specification limits from the PLC ---
+
+    def plc(self, limits=None, error=None):
+        """The PLC's slot limits, faked: no OPC UA server is reached."""
+        from plc import opc
+        found = {"product_moisture_pct": {"slot": "AnalogIn[20]", "low": 8.15, "high": 10.85, "unit": "%"}} if limits is None else limits
+        return patch("plc.service.slot_limits", side_effect=opc.OpcError(error) if error else None, return_value=found)
+
+    def test_lsl_and_usl_are_taken_from_the_plc_when_ticked_and_copied_into_the_tool(self):
+        with self.plc():
+            made = self.add(spec_source="plc", lsl=1.0, usl=99.0, target=9.5)       # what the page sends for them is not used
+        tool = made.json()
+        self.assertEqual(made.status_code, 201)
+        self.assertEqual((tool["spec_source"], tool["spec_source_ref"], tool["lsl"], tool["target"], tool["usl"], tool["version"]),
+                         ("plc", "AnalogIn[20]", 8.15, 9.5, 10.85, 1))
+        url = f"/api/spc/tools/{tool['id']}/"
+
+        with self.plc() as read:
+            same = self.client.patch(url, {"spec_source": "plc"}, format="json").json()          # "Update from the PLC", nothing new
+        self.assertEqual((read.call_count, same["version"]), (1, 1))
+        changed = {"product_moisture_pct": {"slot": "AnalogIn[20]", "low": 8.2, "high": 10.8, "unit": "%"}}
+        with self.plc(changed):
+            moved = self.client.patch(url, {"spec_source": "plc"}, format="json").json()
+        self.assertEqual((moved["lsl"], moved["usl"], moved["version"]), (8.2, 10.8, 2))
+        with self.plc() as read:
+            self.client.patch(url, {"target": 9.6}, format="json")                              # the target alone: the PLC is not read
+        read.assert_not_called()
+
+        manual = self.client.patch(url, {"spec_source": "manual", "lsl": 7.0, "usl": 12.0}, format="json").json()
+        self.assertEqual((manual["spec_source"], manual["spec_source_ref"], manual["lsl"], manual["usl"]), ("manual", "", 7.0, 12.0))
+
+    def test_the_plc_without_limits_for_the_signal_or_not_answering_is_refused(self):
+        with self.plc(limits={}):
+            none = self.add(spec_source="plc")
+        self.assertEqual((none.status_code, none.json()["error"]), (400, "the PLC has no limits for product_moisture_pct"))
+        with self.plc(error="TimeoutError"):
+            down = self.add(spec_source="plc")
+        self.assertEqual((down.status_code, down.json()["error"]), (400, "the PLC could not be read: TimeoutError"))
+        with self.plc(limits={"product_moisture_pct": {"slot": "AnalogIn[20]", "low": 8.15, "high": 10.85, "unit": "%"}}):
+            outside = self.add(spec_source="plc", target=11.5)
+        self.assertEqual(outside.json()["error"], "the target must be between LSL and USL")
+        self.assertEqual(self.add(spec_source="plcx").status_code, 400)
+        self.assertEqual(SpcTool.objects.count(), 0)
+
+    def test_the_page_is_given_the_plcs_limits_of_its_machine(self):
+        with self.plc():
+            body = self.client.get("/api/spc/plc-limits/", {"asset_id": ASSET}).json()
+            other = self.client.get("/api/spc/plc-limits/", {"asset_id": "bsk:asset:MIXER02"}).json()
+        self.assertEqual((body["error"], body["by_column"]["product_moisture_pct"]["slot"]), (None, "AnalogIn[20]"))
+        self.assertEqual(other["by_column"], {})                                                     # no PLC connection for that machine
+        with self.plc(error="TimeoutError"):
+            down = self.client.get("/api/spc/plc-limits/", {"asset_id": ASSET})
+        self.assertEqual((down.status_code, down.json()["error"]), (200, "the PLC could not be read: TimeoutError"))
+
     def test_the_cards_are_put_in_an_order_without_changing_any_tool(self):
         ids = [self.add(signal_id).json()["id"] for signal_id in (MOISTURE, PRESSURE, TORQUE)]
         self.assertEqual([t["position"] for t in self.client.get("/api/spc/tools/", {"asset_id": ASSET}).json()["tools"]], [0, 1, 2])  # a new card goes last

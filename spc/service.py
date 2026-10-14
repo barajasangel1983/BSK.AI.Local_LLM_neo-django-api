@@ -139,7 +139,7 @@ def signals(asset_id: str) -> dict:
 # --- 6.2 tools ----------------------------------------------------------------------------------
 
 EDITABLE = ("name", "unit", "enabled", "states", "ignore_seconds", "method", "subgroup_size", "group_by", "lsl", "target",
-            "usl", "limit_strategy", "sigma_multiplier", "rules", "no_variation_count", "event_actions", "window_hours")
+            "usl", "spec_source", "limit_strategy", "sigma_multiplier", "rules", "no_variation_count", "event_actions", "window_hours")
 # A change of one of these makes the stored baseline limits wrong: they are deleted.
 CLEARS_LIMITS = ("method", "subgroup_size", "states", "ignore_seconds", "group_by", "sigma_multiplier", "limit_strategy")
 
@@ -153,7 +153,7 @@ def tool_json(tool: SpcTool) -> dict:
     out = {"id": str(tool.id), "asset_id": tool.asset_id, "signal_id": tool.signal_id, "column": tool.column,
            **{name: getattr(tool, name) for name in EDITABLE},
            "baseline_start": tool.baseline_start, "baseline_end": tool.baseline_end, "version": tool.version,
-           "position": tool.position,
+           "position": tool.position, "spec_source_ref": tool.spec_source_ref,
            "created_at": tool.created_at, "updated_at": tool.updated_at,
            "limits": [limits_json(lim) for lim in tool.limits.all()]}
     return out
@@ -165,8 +165,22 @@ def limits_json(lim: SpcLimits) -> dict:
         "r_cl", "r_lcl", "r_ucl", "window_start", "window_end", "computed_at", "tool_version")}
 
 
-def _clean(data: dict, tool: SpcTool | None, asset_id: str) -> dict:
-    """The fields of `data` that may be set, checked. Raises SpcError with a sentence for the user."""
+def plc_limits(asset_id: str) -> dict:
+    """The PLC's limits by historian column, for a machine the Studio reaches over OPC UA (PLC_ASSET); {} for another.
+    Raises SpcError when the PLC cannot be read."""
+    if asset_key(asset_id) != settings.PLC_ASSET:
+        return {}
+    from plc import opc, service as plc_service
+    try:
+        return plc_service.slot_limits()
+    except opc.OpcError as exc:
+        raise SpcError(f"the PLC could not be read: {exc}") from exc
+
+
+def _clean(data: dict, tool: SpcTool | None, asset_id: str, column: str | None = None) -> dict:
+    """The fields of `data` that may be set, checked. Raises SpcError with a sentence for the user.
+    With spec_source "plc" (asked, or kept while LSL or USL is sent), LSL and USL are read from the PLC's slot of
+    `column`; what the request sends for them is not used."""
     unknown = set(data) - set(EDITABLE) - {"asset_id", "signal_id"}
     if unknown:
         raise SpcError(f"unknown field: {', '.join(sorted(unknown))}")
@@ -219,6 +233,15 @@ def _clean(data: dict, tool: SpcTool | None, asset_id: str) -> dict:
     if "group_by" in out and out["group_by"]:
         if _field_types().get(out["group_by"]) not in TEXT_FIELDS:
             raise SpcError(f"group_by: the historian has no text column {out['group_by']!r}")
+    if "spec_source" in out and out["spec_source"] not in ("manual", "plc"):
+        raise SpcError("spec_source must be manual or plc")
+    if value("spec_source") == "plc" and column and ("spec_source" in out or "lsl" in out or "usl" in out):
+        found = plc_limits(asset_id).get(column)
+        if found is None:
+            raise SpcError(f"the PLC has no limits for {column}")
+        out.update(lsl=float(found["low"]), usl=float(found["high"]), spec_source_ref=found["slot"])
+    elif out.get("spec_source") == "manual":
+        out["spec_source_ref"] = ""
     lsl, target, usl = value("lsl"), value("target"), value("usl")
     if lsl is not None and usl is not None and not lsl < usl:
         raise SpcError("LSL must be below USL")
@@ -239,7 +262,7 @@ def create_tool(data: dict) -> SpcTool:
         raise Conflict(f"this machine already has {maximum} SPC tools, the most allowed; delete one first")
     if SpcTool.objects.filter(asset_id=asset_id, signal_id=signal_id).exists():
         raise Conflict("this signal already has an SPC tool")
-    fields = _clean(data, None, asset_id)
+    fields = _clean(data, None, asset_id, signal["column"])
     fields.setdefault("name", signal["name"])
     fields.setdefault("unit", signal["unit"])
     with transaction.atomic():
@@ -268,7 +291,7 @@ def update_tool(tool: SpcTool, data: dict) -> tuple[SpcTool, bool]:
     """(the tool, whether its baseline limits were deleted). Every saved change raises the version."""
     if "asset_id" in data or "signal_id" in data:
         raise SpcError("a tool keeps its machine and signal; make a new tool for another signal")
-    fields = _clean(data, tool, tool.asset_id)
+    fields = _clean(data, tool, tool.asset_id, tool.column)
     changed = {k: v for k, v in fields.items() if getattr(tool, k) != v}
     if not changed:
         return tool, False
