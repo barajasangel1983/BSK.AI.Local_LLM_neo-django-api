@@ -65,6 +65,7 @@ INSTALLED_APPS = [
     "gpu",
     "context_service",
     "spc",
+    "plc",
 ]
 
 MIDDLEWARE = [
@@ -143,6 +144,15 @@ SPC_EVENT_ACTIVE_SECONDS = int(os.getenv("SPC_EVENT_ACTIVE_SECONDS", "300"))    
 SPC_RECENT_MINUTES = int(os.getenv("SPC_RECENT_MINUTES", "30"))                   # the "recent" mean of sigma shift
 # The LLM analysis of an SPC tool (P12f): one call, no memory. num_ctx is sent explicitly: Ollama cuts a longer prompt
 # without an error, and this keeps the call independent of the Ollama app's context setting (16K on bsk-ai, 2026-10-14).
+# The PLC page (P13f): the PLC's status and Start / Pause over OPC UA (OPTA's server on the Mini PC; no security,
+# no login: Tailscale only). Commands are off until PLC_CONTROL_ENABLED=true is set in .env by Angel.
+PLC_OPCUA_URL = os.getenv("PLC_OPCUA_URL", "opc.tcp://100.81.186.50:4840/bsk/machine")
+PLC_ASSET = os.getenv("PLC_ASSET", "EXTR01")
+PLC_CONTROL_ENABLED = os.getenv("PLC_CONTROL_ENABLED", "false").lower() == "true"
+PLC_COMMAND_SPACING_SECONDS = int(os.getenv("PLC_COMMAND_SPACING_SECONDS", "10"))
+PLC_STATUS_CACHE_SECONDS = float(os.getenv("PLC_STATUS_CACHE_SECONDS", "2"))
+PLC_TIMEOUT = float(os.getenv("PLC_TIMEOUT", "5"))
+
 SPC_LLM_DEFAULT_MODEL = os.getenv("SPC_LLM_DEFAULT_MODEL", "ollama-qwen3-8b")
 SPC_LLM_NUM_CTX = int(os.getenv("SPC_LLM_NUM_CTX", "16384"))            # the least context sent to Ollama (= the app's setting)
 # The page's default limits; the user changes them per run. Together they equal SPC_LLM_NUM_CTX, so the default run
