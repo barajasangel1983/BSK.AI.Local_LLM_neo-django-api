@@ -72,6 +72,11 @@ class SpcApiTests(TestCase):
                                                 "states": ["RUNNING"], "ignore_seconds": 120, "sigma_multiplier": 3, "baseline_days": 7})
         pressure = next(s for s in body["signals"] if s["signal_id"] == PRESSURE)
         self.assertEqual((pressure["proposed"]["group_by"], pressure["proposed"]["lsl"]), ("recipe_id", None))
+        # what a new tool's block opens with, and the rules it can switch on, come from here and not from the page
+        self.assertEqual((body["defaults"]["rules"], body["defaults"]["states"], body["defaults"]["method"], body["defaults"]["window_hours"]),
+                         (["beyond_limits", "spec"], ["RUNNING"], "imr", 8))
+        self.assertEqual(len(body["rules"]), 8)
+        self.assertIn({"id": "range_beyond_limits", "type": "control_violation"}, body["rules"])
         self.assertEqual(self.client.get("/api/spc/signals/").status_code, 400)
 
     # --- 6.2 ---
@@ -135,6 +140,21 @@ class SpcApiTests(TestCase):
         self.assertEqual(self.client.post("/api/spc/tools/", {"asset_id": ASSET}, format="json").status_code, 400)
 
     # --- 6.3 ---
+
+    def test_a_block_previews_its_baseline_before_the_tool_is_saved(self):
+        window = {"start": (NOW - timedelta(hours=8)).isoformat(), "end": NOW.isoformat()}
+        body = {"asset_id": ASSET, "signal_id": MOISTURE, "sigma_multiplier": 2, **window}
+        preview = self.client.post("/api/spc/baseline/preview/", body, format="json")
+        self.assertEqual(preview.status_code, 200)
+        only = preview.json()["groups"][0]
+        self.assertEqual((preview.json()["saved"], only["n_samples"]), (False, 1320 - 9 * 6))
+        self.assertAlmostEqual(only["ucl"] - only["cl"], 2 * 0.8 / 1.128, places=6)       # the block's values, not the defaults
+        self.assertEqual((SpcTool.objects.count(), SpcLimits.objects.count()), (0, 0))     # nothing is stored
+        for bad, text in (({**body, "signal_id": "bsk:signal:EXTR01/none"}, "no numeric historian column"),
+                          ({**body, "method": "ewma"}, "method must be"), ({**window}, "asset_id and signal_id")):
+            answer = self.client.post("/api/spc/baseline/preview/", bad, format="json")
+            self.assertEqual(answer.status_code, 400)
+            self.assertIn(text, answer.json()["error"])
 
     def test_a_baseline_is_previewed_then_saved_and_frozen(self):
         tool = self.add(lsl=8.0, usl=11.0).json()
@@ -209,6 +229,8 @@ class SpcApiTests(TestCase):
         self.assertTrue(all("beyond_limits" in s["rules"] for s in detail["samples"]))          # 9.1 and 9.9 against 9.2 to 9.8
         self.assertEqual([len(lim["spans"]) for lim in detail["limits"]], [1])                   # one group, so one span of limits
         self.assertEqual((detail["capability"]["reason"], detail["capability"]["target"]), ("no specification limit", None))
+        self.assertLessEqual(detail["box"]["q1"], detail["box"]["median"])
+        self.assertEqual((len(detail["box"]["quantiles"]), detail["box"]["quantiles"][5]["value"]), (11, detail["box"]["median"]))
         for groups, why in (([{"cl": 9.5, "lcl": 9.8, "ucl": 9.2}], "LCL < CL < UCL"), ([{"cl": 9.5}], "cl, lcl and ucl"),
                             ([], "at least one group"), ([{"group": "RC-A", "cl": 9.5, "lcl": 9.2, "ucl": 9.8}], "needs none")):
             answer = self.client.put(url, {"groups": groups}, format="json")

@@ -130,6 +130,9 @@ def signals(asset_id: str) -> dict:
         "group_columns": sorted(s["column"] for s in found
                                 if types.get(s["column"]) in TEXT_FIELDS and s["column"] != "machine_state"),
         "states": states, "signals": sorted(out, key=lambda s: s["name"]),
+        # What the block of a new tool opens with, and every rule it can switch on: the page fixes none of them.
+        "defaults": {name: SpcTool._meta.get_field(name).get_default() for name in BLOCK_DEFAULTS},
+        "rules": [{"id": rule, "type": kind} for rule, kind in engine.RULES.items()],
     }
 
 
@@ -139,6 +142,11 @@ EDITABLE = ("name", "unit", "enabled", "states", "ignore_seconds", "method", "su
             "usl", "limit_strategy", "sigma_multiplier", "rules", "no_variation_count", "event_actions", "window_hours")
 # A change of one of these makes the stored baseline limits wrong: they are deleted.
 CLEARS_LIMITS = ("method", "subgroup_size", "states", "ignore_seconds", "group_by", "sigma_multiplier", "limit_strategy")
+
+
+# The fields whose model default the page shows when a block opens (6.1 "defaults").
+BLOCK_DEFAULTS = ("states", "ignore_seconds", "method", "subgroup_size", "group_by", "limit_strategy", "sigma_multiplier",
+                  "rules", "no_variation_count", "event_actions", "window_hours")
 
 
 def tool_json(tool: SpcTool) -> dict:
@@ -290,6 +298,19 @@ def baseline(tool: SpcTool, start, end, preview: bool) -> dict:
     return {"groups": [lim.as_dict() for lim in found.values()], "skipped": skipped, "saved": saved, "rows": len(rows)}
 
 
+def preview_baseline(data: dict, start, end) -> dict:
+    """The limits a block's values would give, before anything is stored: for a tool not saved yet, or one being changed."""
+    data = dict(data)
+    asset_id, signal_id = data.pop("asset_id", None), data.pop("signal_id", None)
+    if not asset_id or not signal_id:
+        raise SpcError("asset_id and signal_id are required")
+    signal = next((s for s in signals(asset_id)["signals"] if s["signal_id"] == signal_id), None)
+    if signal is None:
+        raise SpcError("this signal has no numeric historian column, or is not a signal of the asset")
+    draft = SpcTool(asset_id=asset_id, signal_id=signal_id, column=signal["column"], **_clean(data, None, asset_id))
+    return baseline(draft, start, end, preview=True)
+
+
 def set_fixed_limits(tool: SpcTool, groups: list[dict]) -> dict:
     if not isinstance(groups, list) or not groups:
         raise SpcError("give the limits of at least one group")
@@ -414,9 +435,9 @@ def _view(tool: SpcTool, rows: list[dict], end, hours: int, state: str | None) -
         "violation_count": violations, "last_violation_at": last,
         "lsl": tool.lsl, "target": tool.target, "usl": tool.usl,
         "cl": _round(lim.cl) if lim else None, "lcl": _round(lim.lcl) if lim else None, "ucl": _round(lim.ucl) if lim else None,
-        "trend": engine.downsample([s.value for s in found]), "distribution": engine.histogram(values, tool.lsl, tool.usl),
+        "trend": engine.downsample([s.value for s in found]), "distribution": engine.histogram(values),
     }
-    return out, found, {"limits": limits, "capability": cap}
+    return out, found, {"limits": limits, "capability": cap, "values": values}
 
 
 def _summary(tools: list[dict]) -> dict:
@@ -462,7 +483,7 @@ def detail(tool: SpcTool, window_hours: int | None = None) -> dict:
     newest = newest_row(tool.asset_id)
     hours = window_hours or tool.window_hours
     if not newest:
-        return {"tool_id": str(tool.id), "samples": [], "limits": [], "capability": None, "window_hours": hours}
+        return {"tool_id": str(tool.id), "samples": [], "limits": [], "capability": None, "box": None, "window_hours": hours}
     end = newest["ts"]
     rows = read_rows(tool.asset_id, [tool.column] + ([tool.group_by] if tool.group_by else []), end - timedelta(hours=hours), end)
     view, found, extra = _view(tool, rows, end, hours, None)
@@ -484,5 +505,6 @@ def detail(tool: SpcTool, window_hours: int | None = None) -> dict:
                    for group, lim in limits.items()],
         "groups_without_limits": sorted({s.group for s in found} - set(limits)),
         "capability": {**{k: (_round(v) if isinstance(v, float) else v) for k, v in cap.items()}, "target": tool.target},
+        "box": engine.box_plot(extra["values"]),
     })
     return view
