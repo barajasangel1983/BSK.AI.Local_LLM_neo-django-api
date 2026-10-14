@@ -58,11 +58,31 @@ def evaluate_tool(tool: SpcTool, since=None, dry_run: bool = False) -> dict:
     for event in tool.events.filter(last_at__gte=start - active).order_by("last_at"):
         open_events[(event.rule, event.group)] = event
 
-    changed: dict = {}                              # events to save, by their id
+    changed, result["judged"], result["created"], result["extended"] = group_events(tool, found, fired, limits, start, open_events)
+    if not dry_run:
+        for event in changed.values():
+            event.save()
+        if rows:
+            cursor.judged_until = max(cursor.judged_until, rows[-1]["ts"]) if since is None else rows[-1]["ts"]
+            cursor.save()
+    result["events"] = [{"rule": e.rule, "type": e.type, "group": e.group, "started_at": e.started_at, "last_at": e.last_at,
+                         "count": e.count, "value": e.value} for e in changed.values()]
+    return result
+
+
+def group_events(tool: SpcTool, found, fired, limits: dict, start, open_events: dict) -> tuple[dict, int, int, int]:
+    """Turn the rules that fired on the samples after `start` into events: a rule that fires again within
+    SPC_EVENT_ACTIVE_SECONDS of an event of the same rule and group extends it, otherwise a new event begins.
+    `open_events` ({(rule, group): event}) holds the events a new firing may extend; it is updated in place.
+    Returns (the events made or changed, by id; samples judged; events started; stored events extended).
+    Nothing is saved here."""
+    active = timedelta(seconds=settings.SPC_EVENT_ACTIVE_SECONDS)
+    changed: dict = {}
+    judged = created = extended = 0
     for sample, rules in zip(found, fired):
         if sample.ts <= start:
             continue                                # lookback: history for the run rules only
-        result["judged"] += 1
+        judged += 1
         lim = limits.get(sample.group)
         for rule in rules:
             kind = engine.RULES[rule]
@@ -73,24 +93,30 @@ def evaluate_tool(tool: SpcTool, since=None, dry_run: bool = False) -> dict:
                 event.last_at, event.count = sample.ts, event.count + 1
                 if abs(sample.value - lim.cl) > abs(event.extreme - lim.cl):
                     event.extreme = sample.value
-                result["extended"] += event.pk not in changed and not event._state.adding
+                extended += event.pk not in changed and not event._state.adding
             else:
                 event = SpcEvent(tool=tool, tool_version=tool.version, type=kind, rule=rule, group=sample.group,
                                  started_at=sample.ts, last_at=sample.ts, count=1, value=sample.value, extreme=sample.value,
                                  machine_state=sample.state,
                                  limits={"cl": lim.cl, "lcl": lim.lcl, "ucl": lim.ucl, "lsl": tool.lsl, "usl": tool.usl})
                 open_events[(rule, sample.group)] = event
-                result["created"] += 1
+                created += 1
             changed[event.pk] = event
-    if not dry_run:
-        for event in changed.values():
-            event.save()
-        if rows:
-            cursor.judged_until = max(cursor.judged_until, rows[-1]["ts"]) if since is None else rows[-1]["ts"]
-            cursor.save()
-    result["events"] = [{"rule": e.rule, "type": e.type, "group": e.group, "started_at": e.started_at, "last_at": e.last_at,
-                         "count": e.count, "value": e.value} for e in changed.values()]
-    return result
+    return changed, judged, created, extended
+
+
+def judge_window(tool: SpcTool, limits: dict, start, end) -> list[SpcEvent]:
+    """The events the tool's present configuration gives on the rows of (start, end], made in memory only.
+
+    Reads no stored event, writes nothing and leaves the cursor alone, so the tool, its events and their
+    acknowledgements are untouched. The tool and its limits need not be saved. Used by the scoring (P12d)."""
+    rows = service.read_rows(tool.asset_id, [tool.column] + ([tool.group_by] if tool.group_by else []),
+                             start - lookback(tool), end)
+    found = service._samples(tool, rows)
+    fired = engine.judge(found, limits, rules=tool.rules, method=tool.method, subgroup_size=tool.subgroup_size,
+                         lsl=tool.lsl, usl=tool.usl, no_variation_count=tool.no_variation_count)
+    changed, *_ = group_events(tool, found, fired, limits, start, {})
+    return sorted(changed.values(), key=lambda e: e.started_at)
 
 
 def evaluate(tool_id=None, since=None, dry_run: bool = False) -> list[dict]:

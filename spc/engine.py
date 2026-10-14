@@ -32,7 +32,8 @@ RULES = {
 }
 # Ticked when a new tool's block opens. The range chart and the run rules are switches the user turns on per tool:
 # on single 20 s rows they raise about 2.7 events per tool and running hour on a healthy process (P12b, live trial).
-DEFAULT_RULES = ["beyond_limits", "spec"]
+# "No variation" is on: it alone finds a stuck value, and raised no false warning in 54.9 hours (P12d, live score).
+DEFAULT_RULES = ["beyond_limits", "spec", "no_variation"]
 
 STATUSES = ("paused", "configuration_required", "spec_violation", "out_of_control", "trending", "warning", "stable")
 
