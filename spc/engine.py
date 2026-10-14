@@ -337,12 +337,42 @@ def downsample(values: list[float], points: int = 60) -> list[float]:
     return [round(float(np.mean(values[i:i + size])), 4) for i in range(0, len(values), size)]
 
 
-def histogram(values: list[float], lsl: float | None = None, usl: float | None = None, bins: int = 20) -> dict | None:
-    """Counts in `bins` equal bins between the smallest and largest of the values and the specification limits."""
+QUANTILES = (100, 99.5, 97.5, 90, 75, 50, 25, 10, 2.5, 0.5, 0)
+BOX_OUTLIERS_MAX = 200
+
+
+def box_plot(values: list[float]) -> dict | None:
+    """The outlier box plot and the quantiles of the values, as JMP's Distribution gives them.
+
+    The box is the quartiles; a whisker reaches the farthest value within 1.5 × the interquartile range of the box;
+    values beyond the whiskers are outliers (at most BOX_OUTLIERS_MAX are listed, the farthest ones; the count is exact).
+    """
     if not values:
         return None
-    edges = values + [v for v in (lsl, usl) if v is not None]
-    low, high = min(edges), max(edges)
+    x = np.sort(np.asarray(values, dtype=float))
+    q1, median, q3 = (float(v) for v in np.percentile(x, [25, 50, 75]))
+    reach = 1.5 * (q3 - q1)
+    inside = x[(x >= q1 - reach) & (x <= q3 + reach)]
+    outside = x[(x < q1 - reach) | (x > q3 + reach)]
+    listed = outside if len(outside) <= BOX_OUTLIERS_MAX else outside[np.argsort(np.abs(outside - median))[-BOX_OUTLIERS_MAX:]]
+    return {
+        "q1": round(q1, 4), "median": round(median, 4), "q3": round(q3, 4),
+        "whisker_low": round(float(inside[0]), 4), "whisker_high": round(float(inside[-1]), 4),
+        "mean": round(float(x.mean()), 4), "outlier_count": int(len(outside)),
+        "outliers": [round(float(v), 4) for v in np.sort(listed)],
+        "quantiles": [{"percent": p, "value": round(float(np.percentile(x, p)), 4)} for p in QUANTILES],
+    }
+
+
+def histogram(values: list[float], bins: int = 20) -> dict | None:
+    """Counts in `bins` equal bins between the smallest and the largest value.
+
+    The bins cover the values only, as in Minitab and JMP: specification limits far from the data must not make the
+    bars narrow. The page widens its axis to show LSL and USL.
+    """
+    if not values:
+        return None
+    low, high = min(values), max(values)
     if high <= low:
         return {"min": low, "max": high, "counts": [len(values)] + [0] * (bins - 1)}
     counts, _ = np.histogram(values, bins=bins, range=(low, high))

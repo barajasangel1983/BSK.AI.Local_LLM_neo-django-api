@@ -5,6 +5,7 @@
     POST   /api/spc/tools/                        add a tool
     GET | PATCH | DELETE /api/spc/tools/<id>/     one tool
     POST   /api/spc/tools/<id>/baseline/          control limits from a window of rows (preview or save)
+    POST   /api/spc/baseline/preview/             the same for a block's values, before the tool is saved; stores nothing
     PUT    /api/spc/tools/<id>/limits/            control limits typed by the user
     GET    /api/spc/screening/?asset_id=&state=&tools=&window_hours=   summary and one object per tool
     GET    /api/spc/summary/?…                    the summary alone
@@ -131,6 +132,16 @@ def baseline(request, tool_id):
         return _error("SPC tool not found", status.HTTP_404_NOT_FOUND)
     start, end = _when(request.data.get("start"), "start"), _when(request.data.get("end"), "end")
     return Response(service.baseline(found, start, end, preview=bool(request.data.get("preview", False))))
+
+
+@api_view(["POST"])
+@_guard
+def baseline_preview(request):
+    if not isinstance(request.data, dict):
+        raise service.SpcError("send the block's values as a JSON object")
+    data = dict(request.data)
+    start, end = _when(data.pop("start", None), "start"), _when(data.pop("end", None), "end")
+    return Response(service.preview_baseline(data, start, end))
 
 
 @api_view(["PUT"])

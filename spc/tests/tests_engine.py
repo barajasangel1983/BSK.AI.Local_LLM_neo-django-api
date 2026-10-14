@@ -225,11 +225,24 @@ class ShiftStatusAndChartTests(SimpleTestCase):
         self.assertEqual(engine.status(**ok, active_events=everything[:1]), ("warning", "two_of_three"))
         self.assertEqual(engine.status(**ok), ("stable", ""))
 
+    def test_box_plot_and_quantiles_of_the_values(self):
+        box = engine.box_plot([1, 2, 3, 4, 5, 6, 7, 8, 9, 30, -20])                   # 30 and -20 are far from the box
+        self.assertEqual((box["q1"], box["median"], box["q3"]), (2.5, 5.0, 7.5))
+        self.assertEqual((box["whisker_low"], box["whisker_high"]), (1.0, 9.0))      # the farthest values within 1.5 × IQR
+        self.assertEqual((box["outlier_count"], box["outliers"]), (2, [-20.0, 30.0]))
+        self.assertEqual([q["percent"] for q in box["quantiles"]], [100, 99.5, 97.5, 90, 75, 50, 25, 10, 2.5, 0.5, 0])
+        self.assertEqual((box["quantiles"][0]["value"], box["quantiles"][5]["value"], box["quantiles"][-1]["value"]), (30.0, 5.0, -20.0))
+        self.assertIsNone(engine.box_plot([]))
+        flat = engine.box_plot([5, 5, 5])                                             # no spread: a box of no height, no outlier
+        self.assertEqual((flat["q1"], flat["q3"], flat["whisker_low"], flat["whisker_high"], flat["outlier_count"]), (5.0, 5.0, 5.0, 5.0, 0))
+        many = engine.box_plot([0.0] * 1000 + list(range(100, 400)))                  # more outliers than are listed
+        self.assertEqual((many["outlier_count"], len(many["outliers"]), many["outliers"][-1]), (300, 200, 399.0))
+
     def test_trend_and_distribution_for_a_card(self):
         self.assertEqual(engine.downsample([1, 2, 3]), [1, 2, 3])
         self.assertEqual(engine.downsample(list(range(120)), 60)[:2], [0.5, 2.5])
         self.assertLessEqual(len(engine.downsample(list(range(1000)), 60)), 60)
-        h = engine.histogram([10, 10.5, 11, 12], lsl=8, usl=16, bins=4)              # the bins reach the specification
-        self.assertEqual((h["min"], h["max"], h["counts"]), (8, 16, [0, 3, 1, 0]))
+        h = engine.histogram([10, 10.5, 11, 12], bins=4)                             # the bins cover the values, whatever the specification
+        self.assertEqual((h["min"], h["max"], h["counts"]), (10, 12, [1, 1, 1, 1]))
         self.assertIsNone(engine.histogram([]))
         self.assertEqual(engine.histogram([5, 5, 5], bins=3)["counts"], [3, 0, 0])
