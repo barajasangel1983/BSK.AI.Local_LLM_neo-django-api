@@ -74,7 +74,7 @@ class SpcApiTests(TestCase):
         self.assertEqual((pressure["proposed"]["group_by"], pressure["proposed"]["lsl"]), ("recipe_id", None))
         # what a new tool's block opens with, and the rules it can switch on, come from here and not from the page
         self.assertEqual((body["defaults"]["rules"], body["defaults"]["states"], body["defaults"]["method"], body["defaults"]["window_hours"]),
-                         (["beyond_limits", "spec"], ["RUNNING"], "imr", 8))
+                         (["beyond_limits", "spec", "no_variation"], ["RUNNING"], "imr", 8))
         self.assertEqual(len(body["rules"]), 8)
         self.assertIn({"id": "range_beyond_limits", "type": "control_violation"}, body["rules"])
         self.assertEqual(self.client.get("/api/spc/signals/").status_code, 400)
@@ -91,7 +91,7 @@ class SpcApiTests(TestCase):
         self.assertEqual((tool["name"], tool["unit"], tool["column"], tool["version"], tool["limits"]),
                          ("Product moisture", "%", "product_moisture_pct", 1, []))        # name and unit from the graph
         self.assertEqual((tool["states"], tool["ignore_seconds"], tool["method"], tool["window_hours"]), (["RUNNING"], 120, "imr", 8))
-        self.assertEqual(tool["rules"], ["beyond_limits", "spec"])        # the range chart and the run rules are off
+        self.assertEqual(tool["rules"], ["beyond_limits", "spec", "no_variation"])   # the range chart and the run rules are off
         self.assertTrue(SpcCursor.objects.filter(tool_id=tool["id"]).exists())
         self.assertTrue(self.client.get("/api/spc/signals/", {"asset_id": ASSET}).json()["signals"][1]["has_tool"])
 
