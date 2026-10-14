@@ -265,6 +265,34 @@ class SpcApiTests(TestCase):
         self.assertEqual(self.screening(window_hours=1)["tools"][0]["sample_count"], 153)
         self.assertEqual(self.client.get("/api/spc/screening/", {"asset_id": ASSET, "window_hours": 99}).status_code, 400)
 
+    def test_each_card_has_its_window_and_the_time_of_each_trend_point(self):
+        self.baseline(self.add().json()["id"])
+        (tool,) = self.screening()["tools"]
+        self.assertEqual((tool["window_hours"], tool["window_start"], tool["window_end"]),
+                         (8, (NOW - timedelta(hours=8)).isoformat().replace("+00:00", "Z"), NOW.isoformat().replace("+00:00", "Z")))
+        self.assertEqual(len(tool["trend_spans"]), len(tool["trend"]))
+        first, last = tool["trend_spans"][0], tool["trend_spans"][-1]
+        self.assertLessEqual(first["from"], first["to"])
+        self.assertEqual(sum(s["n"] for s in tool["trend_spans"]), tool["sample_count"])
+        self.assertLessEqual(last["to"], tool["window_end"])
+
+    def test_the_cards_are_put_in_an_order_without_changing_any_tool(self):
+        ids = [self.add(signal_id).json()["id"] for signal_id in (MOISTURE, PRESSURE, TORQUE)]
+        self.assertEqual([t["position"] for t in self.client.get("/api/spc/tools/", {"asset_id": ASSET}).json()["tools"]], [0, 1, 2])  # a new card goes last
+        before = {t.id: (t.version, t.updated_at) for t in SpcTool.objects.all()}
+
+        moved = self.client.put("/api/spc/tools/order/", {"asset_id": ASSET, "ids": [ids[2], ids[0], ids[1]]}, format="json")
+        self.assertEqual((moved.status_code, moved.json()["ids"]), (200, [ids[2], ids[0], ids[1]]))
+        self.assertEqual([t["id"] for t in self.client.get("/api/spc/tools/", {"asset_id": ASSET}).json()["tools"]], [ids[2], ids[0], ids[1]])
+        self.assertEqual([t["tool_id"] for t in self.screening()["tools"]], [ids[2], ids[0], ids[1]])
+        self.assertEqual({t.id: (t.version, t.updated_at) for t in SpcTool.objects.all()}, before)       # not a change of a tool
+
+        for wrong in ([ids[0], ids[1]], [ids[0], ids[0], ids[1]], [*ids, "not-a-tool"], "abc"):
+            refused = self.client.put("/api/spc/tools/order/", {"asset_id": ASSET, "ids": wrong}, format="json")
+            self.assertEqual(refused.status_code, 400, wrong)
+        self.assertEqual(self.client.put("/api/spc/tools/order/", {"ids": ids}, format="json").status_code, 400)
+        self.assertEqual([t["id"] for t in self.client.get("/api/spc/tools/", {"asset_id": ASSET}).json()["tools"]], [ids[2], ids[0], ids[1]])
+
     def test_the_historian_or_the_graph_being_down_is_said(self):
         tool = self.add().json()
         from django.db import OperationalError

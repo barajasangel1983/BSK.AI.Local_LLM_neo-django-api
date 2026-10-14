@@ -3,6 +3,7 @@
     GET    /api/spc/signals/?asset_id=            the signals a tool can be made for, with proposed values
     GET    /api/spc/tools/?asset_id=              the tools of a machine
     POST   /api/spc/tools/                        add a tool
+    PUT    /api/spc/tools/order/              the order of a machine's cards: {"asset_id", "ids": [...]}
     GET | PATCH | DELETE /api/spc/tools/<id>/     one tool
     POST   /api/spc/tools/<id>/baseline/          control limits from a window of rows (preview or save)
     POST   /api/spc/baseline/preview/             the same for a block's values, before the tool is saved; stores nothing
@@ -104,6 +105,14 @@ def tools(request):
         return Response(service.tool_json(_tool(service.create_tool(dict(request.data)).pk)), status=status.HTTP_201_CREATED)
     found = SpcTool.objects.filter(asset_id=_asset(request)).prefetch_related("limits")
     return Response({"tools": [service.tool_json(t) for t in found]})
+
+
+@api_view(["PUT"])
+@_guard
+def order(request):
+    if not isinstance(request.data, dict) or not request.data.get("asset_id"):
+        raise service.SpcError("send {\"asset_id\", \"ids\"}")
+    return Response({"ids": service.order_tools(request.data["asset_id"], request.data.get("ids"))})
 
 
 @api_view(["GET", "PATCH", "DELETE"])

@@ -242,6 +242,11 @@ class ShiftStatusAndChartTests(SimpleTestCase):
         self.assertEqual(engine.downsample([1, 2, 3]), [1, 2, 3])
         self.assertEqual(engine.downsample(list(range(120)), 60)[:2], [0.5, 2.5])
         self.assertLessEqual(len(engine.downsample(list(range(1000)), 60)), 60)
+        # each trend point's first and last time and size, on the same blocks
+        self.assertEqual(engine.downsample_spans([1, 2, 3]), [{"from": 1, "to": 1, "n": 1}, {"from": 2, "to": 2, "n": 1}, {"from": 3, "to": 3, "n": 1}])
+        spans = engine.downsample_spans(list(range(125)), 60)                        # blocks of 3, the last one of 2
+        self.assertEqual((len(spans), spans[0], spans[-1]), (len(engine.downsample(list(range(125)), 60)), {"from": 0, "to": 2, "n": 3}, {"from": 123, "to": 124, "n": 2}))
+        self.assertEqual(engine.downsample_spans([]), [])
         h = engine.histogram([10, 10.5, 11, 12], bins=4)                             # the bins cover the values, whatever the specification
         self.assertEqual((h["min"], h["max"], h["counts"]), (10, 12, [1, 1, 1, 1]))
         self.assertIsNone(engine.histogram([]))

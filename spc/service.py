@@ -153,6 +153,7 @@ def tool_json(tool: SpcTool) -> dict:
     out = {"id": str(tool.id), "asset_id": tool.asset_id, "signal_id": tool.signal_id, "column": tool.column,
            **{name: getattr(tool, name) for name in EDITABLE},
            "baseline_start": tool.baseline_start, "baseline_end": tool.baseline_end, "version": tool.version,
+           "position": tool.position,
            "created_at": tool.created_at, "updated_at": tool.updated_at,
            "limits": [limits_json(lim) for lim in tool.limits.all()]}
     return out
@@ -242,9 +243,25 @@ def create_tool(data: dict) -> SpcTool:
     fields.setdefault("name", signal["name"])
     fields.setdefault("unit", signal["unit"])
     with transaction.atomic():
-        tool = SpcTool.objects.create(asset_id=asset_id, signal_id=signal_id, column=signal["column"], **fields)
+        last = SpcTool.objects.filter(asset_id=asset_id).order_by("-position").values_list("position", flat=True).first()
+        tool = SpcTool.objects.create(asset_id=asset_id, signal_id=signal_id, column=signal["column"],
+                                      position=0 if last is None else last + 1, **fields)    # a new card goes last
         SpcCursor.objects.create(tool=tool, judged_until=timezone.now())     # the past is judged only on request
     return tool
+
+
+def order_tools(asset_id: str, ids: list) -> list[str]:
+    """Put the machine's cards in this order. Every tool of the machine must be named once. Not a change of
+    any tool: no version is raised and no limit is touched."""
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise SpcError("ids must be a list of tool ids")
+    found = {str(i) for i in SpcTool.objects.filter(asset_id=asset_id).values_list("id", flat=True)}
+    if len(ids) != len(set(ids)) or set(ids) != found:
+        raise SpcError("ids must name every tool of the machine once")
+    with transaction.atomic():
+        for place, tool_id in enumerate(ids):
+            SpcTool.objects.filter(pk=tool_id).update(position=place)      # update(): updated_at is left alone
+    return ids
 
 
 def update_tool(tool: SpcTool, data: dict) -> tuple[SpcTool, bool]:
@@ -425,6 +442,7 @@ def _view(tool: SpcTool, rows: list[dict], end, hours: int, state: str | None) -
     out = {
         "tool_id": str(tool.id), "signal_id": tool.signal_id, "name": tool.name, "unit": tool.unit,
         "enabled": tool.enabled, "method": tool.method, "group_by": tool.group_by, "version": tool.version,
+        "position": tool.position, "window_hours": hours, "window_start": start, "window_end": end,
         "status": status, "status_reason": reason,
         "current_value": _round(current) if isinstance(current, (int, float)) else None, "current_group": group,
         "machine_state": newest.get("machine_state") if newest else None,
@@ -435,7 +453,9 @@ def _view(tool: SpcTool, rows: list[dict], end, hours: int, state: str | None) -
         "violation_count": violations, "last_violation_at": last,
         "lsl": tool.lsl, "target": tool.target, "usl": tool.usl,
         "cl": _round(lim.cl) if lim else None, "lcl": _round(lim.lcl) if lim else None, "ucl": _round(lim.ucl) if lim else None,
-        "trend": engine.downsample([s.value for s in found]), "distribution": engine.histogram(values),
+        "trend": engine.downsample([s.value for s in found]),
+        "trend_spans": engine.downsample_spans([s.ts for s in found]),       # the time and size of each trend point
+        "distribution": engine.histogram(values),
     }
     return out, found, {"limits": limits, "capability": cap, "values": values}
 
