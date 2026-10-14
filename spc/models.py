@@ -45,6 +45,11 @@ class SpcTool(models.Model):
     lsl = models.FloatField(null=True, blank=True)       # specification: what the product must meet
     target = models.FloatField(null=True, blank=True)
     usl = models.FloatField(null=True, blank=True)
+    # Where LSL and USL come from: typed ("manual"), or the PLC's LowLimit / HighLimit of the signal's slot ("plc"),
+    # copied when the tool is saved (P12h). spec_source_ref names the slot, e.g. AnalogIn[12].
+    SPEC_SOURCES = [("manual", "Typed"), ("plc", "From the PLC")]
+    spec_source = models.CharField(max_length=10, choices=SPEC_SOURCES, default="manual")
+    spec_source_ref = models.CharField(max_length=64, blank=True)
 
     limit_strategy = models.CharField(max_length=10, choices=STRATEGIES, default="baseline")
     sigma_multiplier = models.FloatField(default=3.0)

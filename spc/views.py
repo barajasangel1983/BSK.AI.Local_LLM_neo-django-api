@@ -6,6 +6,7 @@
     PUT    /api/spc/tools/order/              the order of a machine's cards: {"asset_id", "ids": [...]}
     GET | PATCH | DELETE /api/spc/tools/<id>/     one tool
     POST   /api/spc/tools/<id>/baseline/          control limits from a window of rows (preview or save)
+    GET    /api/spc/plc-limits/?asset_id=      the PLC's LowLimit / HighLimit by historian column (P12h)
     POST   /api/spc/baseline/preview/             the same for a block's values, before the tool is saved; stores nothing
     PUT    /api/spc/tools/<id>/limits/            control limits typed by the user
     GET    /api/spc/screening/?asset_id=&state=&tools=&window_hours=   summary and one object per tool
@@ -108,6 +109,17 @@ def tools(request):
         return Response(service.tool_json(_tool(service.create_tool(dict(request.data)).pk)), status=status.HTTP_201_CREATED)
     found = SpcTool.objects.filter(asset_id=_asset(request)).prefetch_related("limits")
     return Response({"tools": [service.tool_json(t) for t in found]})
+
+
+@api_view(["GET"])
+@_guard
+def plc_limits(request):
+    """What the block offers for "Take LSL / USL from the PLC". The PLC not answering is said, not an error."""
+    asset_id = _asset(request)
+    try:
+        return Response({"asset_id": asset_id, "by_column": service.plc_limits(asset_id), "error": None})
+    except service.SpcError as exc:
+        return Response({"asset_id": asset_id, "by_column": {}, "error": str(exc)})
 
 
 @api_view(["PUT"])
