@@ -11,6 +11,7 @@ tiktoken==0.14.0             # chunker / RAG Lab token counts
 pysbd==0.3.4                 # sentence chunking
 PyYAML==6.0.3                # Context Graph schema / seed files
 numpy>=2.0                   # SPC engine (spc/engine.py)
+asyncua==2.1.0               # the PLC page over OPC UA (plc/opc.py); the version OPTA's collector uses
 neo4j==5.28.6                    # Context Graph
 openpyxl==3.1.5              # GraphLab Import: Excel files
 pillow==12.3.0               # chat attachments / VLM images (JPEG, <= 1280 px)
