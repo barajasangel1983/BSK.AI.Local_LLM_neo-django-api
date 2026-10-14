@@ -338,6 +338,13 @@ def downsample(values: list[float], points: int = 60) -> list[float]:
     return [round(float(np.mean(values[i:i + size])), 4) for i in range(0, len(values), size)]
 
 
+def downsample_spans(times: list, points: int = 60) -> list[dict]:
+    """For each value of `downsample` on the same samples: the time of its first and last sample, and how many it holds."""
+    size = 1 if len(times) <= points else math.ceil(len(times) / points)
+    return [{"from": times[i], "to": times[min(i + size, len(times)) - 1], "n": min(size, len(times) - i)}
+            for i in range(0, len(times), size)]
+
+
 QUANTILES = (100, 99.5, 97.5, 90, 75, 50, 25, 10, 2.5, 0.5, 0)
 BOX_OUTLIERS_MAX = 200
 

@@ -55,13 +55,14 @@ class SpcTool(models.Model):
     no_variation_count = models.PositiveSmallIntegerField(default=9)
     event_actions = models.JSONField(default=default_event_actions)
     window_hours = models.PositiveSmallIntegerField(default=8)
+    position = models.PositiveSmallIntegerField(default=0)        # the place of its card on the page, set by dragging
 
     version = models.PositiveIntegerField(default=1)     # raised by every saved change
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["created_at"]
+        ordering = ["position", "created_at"]
         constraints = [models.UniqueConstraint(fields=["asset_id", "signal_id"], name="spc_one_tool_per_signal")]
 
     def __str__(self) -> str:

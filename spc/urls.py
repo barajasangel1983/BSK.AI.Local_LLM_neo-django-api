@@ -5,6 +5,7 @@ from . import views
 urlpatterns = [
     path("signals/", views.signals, name="spc-signals"),
     path("tools/", views.tools, name="spc-tools"),
+    path("tools/order/", views.order, name="spc-order"),            # before tools/<id>/
     path("tools/<str:tool_id>/", views.tool, name="spc-tool"),
     path("tools/<str:tool_id>/baseline/", views.baseline, name="spc-baseline"),
     path("baseline/preview/", views.baseline_preview, name="spc-baseline-preview"),
