@@ -1,0 +1,20 @@
+# SPC evaluator of the Context Studio: runs neo-spc.service once a minute.
+#
+# `manage.py spc_evaluate` judges the rows that arrived since its last pass with every enabled SPC tool
+# and writes SPC events. It is a one-shot started by a timer, so no process stays in memory.
+#
+# Install (both files):
+#   cp deploy/systemd/neo-spc.service deploy/systemd/neo-spc.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now neo-spc.timer
+# Status:  systemctl --user list-timers neo-spc.timer
+# Logs:    journalctl --user -u neo-spc -n 20
+# Stop:    systemctl --user disable --now neo-spc.timer
+[Unit]
+Description=Context Studio SPC evaluator, once a minute
+
+[Timer]
+OnCalendar=*:*:30
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

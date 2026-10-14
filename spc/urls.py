@@ -11,4 +11,6 @@ urlpatterns = [
     path("tools/<str:tool_id>/detail/", views.detail, name="spc-detail"),
     path("screening/", views.screening, name="spc-screening"),
     path("summary/", views.summary, name="spc-summary"),
+    path("events/", views.events, name="spc-events"),
+    path("events/<str:event_id>/acknowledge/", views.acknowledge, name="spc-acknowledge"),
 ]

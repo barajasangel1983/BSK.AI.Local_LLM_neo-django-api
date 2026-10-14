@@ -22,7 +22,7 @@ from chat import asset_context
 from historian import source as historian_source
 
 from . import engine
-from .models import SpcCursor, SpcLimits, SpcTool
+from .models import SpcCursor, SpcEvent, SpcLimits, SpcTool
 
 logger = logging.getLogger(__name__)
 
@@ -314,14 +314,68 @@ def set_fixed_limits(tool: SpcTool, groups: list[dict]) -> dict:
 
 # --- 6.4 and 6.5 screening and detail -----------------------------------------------------------
 
+def _judged_until(tool: SpcTool):
+    cursor = SpcCursor.objects.filter(tool=tool).first()
+    return cursor.judged_until if cursor else tool.created_at
+
+
 def active_events(tool: SpcTool) -> list[dict]:
-    """The tool's active SPC events as {type, rule}. Events are written by the evaluator (P12b)."""
-    return []
+    """The tool's active SPC events as {type, rule}: those whose newest point is at most
+    SPC_EVENT_ACTIVE_SECONDS older than the newest row the evaluator has judged."""
+    since = _judged_until(tool) - timedelta(seconds=settings.SPC_EVENT_ACTIVE_SECONDS)
+    return list(tool.events.filter(last_at__gte=since).values("type", "rule"))
 
 
 def event_counts(tool: SpcTool, start, end) -> tuple[int, object]:
-    """(events that started in the window, start of the newest). Events are written by the evaluator (P12b)."""
-    return 0, None
+    """(events that started in the window, start of the newest of them)."""
+    found = tool.events.filter(started_at__gt=start, started_at__lte=end)
+    newest = found.order_by("-started_at").values_list("started_at", flat=True).first()
+    return found.count(), newest
+
+
+EVENT_PAGE = 50
+
+
+def event_json(event: SpcEvent, active_since=None) -> dict:
+    return {"id": str(event.id), "tool_id": str(event.tool_id), "tool_name": event.tool.name, "unit": event.tool.unit,
+            "tool_version": event.tool_version, "type": event.type, "rule": event.rule, "group": event.group,
+            "started_at": event.started_at, "last_at": event.last_at, "count": event.count, "value": event.value,
+            "extreme": event.extreme, "machine_state": event.machine_state, "limits": event.limits,
+            "active": active_since is not None and event.last_at >= active_since,
+            "acknowledged_at": event.acknowledged_at, "acknowledged_by": event.acknowledged_by,
+            "agent_status": event.agent_status}
+
+
+def events(asset_id: str | None = None, tool_id: str | None = None, active: bool = False, limit: int = EVENT_PAGE,
+           before=None) -> dict:
+    """SPC events, newest first. `before` (a started_at) continues an earlier page."""
+    found = SpcEvent.objects.select_related("tool")
+    if tool_id:
+        found = found.filter(tool_id=tool_id)
+    if asset_id:
+        found = found.filter(tool__asset_id=asset_id)
+    if before is not None:
+        found = found.filter(started_at__lt=before)
+    window = timedelta(seconds=settings.SPC_EVENT_ACTIVE_SECONDS)
+    since = {c.tool_id: c.judged_until - window for c in SpcCursor.objects.all()}
+    limit = max(1, min(int(limit), 200))
+    out = []
+    for event in found.order_by("-started_at").iterator():
+        item = event_json(event, since.get(event.tool_id))
+        if active and not item["active"]:
+            continue
+        out.append(item)
+        if len(out) > limit:
+            break
+    return {"events": out[:limit], "more": len(out) > limit}
+
+
+def acknowledge(event: SpcEvent, by: str) -> SpcEvent:
+    """Mark an event as seen. A second call changes nothing; the tool's status is not affected."""
+    if event.acknowledged_at is None:
+        event.acknowledged_at, event.acknowledged_by = timezone.now(), (by or "").strip()[:120]
+        event.save(update_fields=["acknowledged_at", "acknowledged_by"])
+    return event
 
 
 def _round(value, digits=4):
