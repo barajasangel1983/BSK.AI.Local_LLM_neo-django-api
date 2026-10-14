@@ -498,13 +498,14 @@ def screening(asset_id: str, tool_ids: list[str] | None = None, state: str | Non
     return out
 
 
-def detail(tool: SpcTool, window_hours: int | None = None) -> dict:
-    """The screening object of one tool with its chart, limits per group, distribution and capability."""
+def detail(tool: SpcTool, window_hours: int | None = None, end=None) -> dict:
+    """The screening object of one tool with its chart, limits per group, distribution and capability.
+    The window ends at the newest row, or at `end` when given (a past window, for the LLM's test set)."""
     newest = newest_row(tool.asset_id)
     hours = window_hours or tool.window_hours
     if not newest:
         return {"tool_id": str(tool.id), "samples": [], "limits": [], "capability": None, "box": None, "window_hours": hours}
-    end = newest["ts"]
+    end = min(end, newest["ts"]) if end is not None else newest["ts"]
     rows = read_rows(tool.asset_id, [tool.column] + ([tool.group_by] if tool.group_by else []), end - timedelta(hours=hours), end)
     view, found, extra = _view(tool, rows, end, hours, None)
     limits = extra["limits"]
