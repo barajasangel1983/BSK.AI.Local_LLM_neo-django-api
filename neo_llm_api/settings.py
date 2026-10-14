@@ -141,6 +141,19 @@ SPC_MIN_BASELINE_SAMPLES = int(os.getenv("SPC_MIN_BASELINE_SAMPLES", "50"))     
 SPC_MIN_CAPABILITY_SAMPLES = int(os.getenv("SPC_MIN_CAPABILITY_SAMPLES", "100"))  # row values, for Cp/Cpk/Pp/Ppk
 SPC_EVENT_ACTIVE_SECONDS = int(os.getenv("SPC_EVENT_ACTIVE_SECONDS", "300"))      # an event stays active this long
 SPC_RECENT_MINUTES = int(os.getenv("SPC_RECENT_MINUTES", "30"))                   # the "recent" mean of sigma shift
+# The LLM analysis of an SPC tool (P12f): one call, no memory. num_ctx is sent explicitly: Ollama cuts a longer prompt
+# without an error, and this keeps the call independent of the Ollama app's context setting (16K on bsk-ai, 2026-10-14).
+SPC_LLM_DEFAULT_MODEL = os.getenv("SPC_LLM_DEFAULT_MODEL", "ollama-qwen3-8b")
+SPC_LLM_NUM_CTX = int(os.getenv("SPC_LLM_NUM_CTX", "16384"))            # the least context sent to Ollama (= the app's setting)
+# The page's default limits; the user changes them per run. Together they equal SPC_LLM_NUM_CTX, so the default run
+# needs no reload of the model in Ollama (a run asking for more context makes Ollama load it again, about 6 s).
+SPC_LLM_INPUT_LIMIT = int(os.getenv("SPC_LLM_INPUT_LIMIT", "12288"))
+SPC_LLM_OUTPUT_LIMIT = int(os.getenv("SPC_LLM_OUTPUT_LIMIT", "4096"))
+# Each model's context (input and output together), used when the model cannot be asked. Ollama and vLLM are asked.
+SPC_LLM_CONTEXT = {"ollama-qwen3-8b": 40960, "dgx-qwen38-27b-fp8": 262144, "external-gpt": 131072}
+SPC_LLM_TEMPERATURE = float(os.getenv("SPC_LLM_TEMPERATURE", "0.2"))
+SPC_LLM_TIMEOUT = float(os.getenv("SPC_LLM_TIMEOUT", "240"))
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://100.76.107.3:11434")
 
 # Password validation
 # https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators

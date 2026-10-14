@@ -903,6 +903,12 @@ def list_models(request):
     Returns a static list of available model/backend options.
     """
 
+    return Response(model_options())
+
+
+def model_options() -> list[dict]:
+    """The models the chat offers (also offered by the SPC page's LLM analysis)."""
+
     data = [
         {
             "id": "local-small",
@@ -932,7 +938,7 @@ def list_models(request):
             "vision": True,
         },
     ]
-    return Response(data)
+    return data
 
 
 # ---------------------------------------------------------------------

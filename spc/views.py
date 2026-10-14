@@ -12,6 +12,8 @@
     GET    /api/spc/summary/?…                    the summary alone
     GET    /api/spc/tools/<id>/detail/?window_hours=   the chart, distribution and capability of one tool
     GET    /api/spc/events/?asset_id=&tool=&active=&limit=&before=    SPC events, newest first
+    GET    /api/spc/tools/<id>/llm/               the LLM packet of the tool's window, the default prompt, the models
+    POST   /api/spc/tools/<id>/llm/analysis/      {model, prompt, packet}: one call to the model, with the checks; nothing stored
     POST   /api/spc/events/<id>/acknowledge/      mark an event as seen
 
 SPC events are written by the evaluator (manage.py spc_evaluate, once a minute), not by these views.
@@ -22,6 +24,7 @@ Every figure is computed by spc/engine.py from the historian's rows. Nothing her
 import logging
 from datetime import datetime, timezone
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import Error as DatabaseError
 from rest_framework import status
@@ -31,7 +34,7 @@ from rest_framework.response import Response
 from chat.asset_context import AssetScopeError
 from context_graph.driver import GraphUnavailable
 
-from . import service
+from . import llm, service
 from .models import SpcEvent, SpcTool
 
 logger = logging.getLogger(__name__)
@@ -212,3 +215,47 @@ def acknowledge(request, event_id):
         return _error("SPC event not found", status.HTTP_404_NOT_FOUND)
     by = request.data.get("by") if isinstance(request.data, dict) else ""
     return Response(service.event_json(service.acknowledge(event, str(by or ""))))
+
+
+PACKET_MAX_CHARS = 300_000
+
+
+@api_view(["GET"])
+@_guard
+def llm_packet(request, tool_id):
+    found = _tool(tool_id)
+    if found is None:
+        return _error("SPC tool not found", status.HTTP_404_NOT_FOUND)
+    data = llm.packet(found)
+    text = llm.packet_text(data)
+    return Response({"prompt": llm.DEFAULT_PROMPT, "packet": data, "characters": len(text),
+                     # the estimate of the input: (characters of the prompt + input_extra_characters) / characters_per_token
+                     "approx_tokens": llm.estimate_tokens(llm.messages_for(llm.DEFAULT_PROMPT, data)),
+                     "input_extra_characters": len(llm.USER_HEAD) + len(text), "characters_per_token": llm.CHARS_PER_TOKEN,
+                     "models": llm.models(), "default_model": settings.SPC_LLM_DEFAULT_MODEL,
+                     "limits": {"input": settings.SPC_LLM_INPUT_LIMIT, "output": settings.SPC_LLM_OUTPUT_LIMIT}})
+
+
+@api_view(["POST"])
+@_guard
+def llm_analysis(request, tool_id):
+    """The prompt and packet the page shows, to one model, once. The answer is not stored (the usage record is)."""
+    if _tool(tool_id) is None:
+        return _error("SPC tool not found", status.HTTP_404_NOT_FOUND)
+    body = request.data if isinstance(request.data, dict) else {}
+    data, prompt, model = body.get("packet"), body.get("prompt"), body.get("model") or settings.SPC_LLM_DEFAULT_MODEL
+    if not isinstance(data, dict) or not isinstance(data.get("window"), dict):
+        raise service.SpcError("packet must be the JSON object of GET llm/")
+    if not isinstance(prompt, str):
+        raise service.SpcError("prompt must be text")
+    if len(llm.packet_text(data)) > PACKET_MAX_CHARS:
+        raise service.SpcError(f"the packet is longer than {PACKET_MAX_CHARS:,} characters")
+    try:
+        result = llm.analyze(data, prompt, model, body.get("input_limit"), body.get("output_limit"))
+    except llm.ModelError as exc:
+        code = status.HTTP_504_GATEWAY_TIMEOUT if "did not answer" in str(exc) else status.HTTP_502_BAD_GATEWAY
+        return _error(str(exc), code)
+    result["checks"] = {"numbers": llm.check_numbers(result["answer"], data), "verdict": llm.check_verdict(result["answer"], data)}
+    result["prompt_changed"] = prompt.strip() != llm.DEFAULT_PROMPT.strip()
+    return Response(result)
+
