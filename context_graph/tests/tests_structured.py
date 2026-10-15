@@ -194,6 +194,50 @@ class StructuredImportTests(ImportTestCase):
         self.assertEqual(body["row_errors"], [{"row": 4, "message": "no relationship built (missing: component, parent)"},
                                               {"row": 5, "message": "HAS_COMPONENT: 'Loop' would point to itself"}])
 
+    def test_bom_template_reads_devices_and_their_signals(self):
+        """P14c: model, part number, manual on the component; the device MONITORED_BY its signals (only existing ones)."""
+        from context_graph.identity import EntityIndex
+        file_id = self.upload("extr01_bom_devices.csv")["data_file"]["id"]
+        best = self.detail(file_id)["suggestions"][0]
+        self.assertEqual((best["key"], best["complete"]), ("bom", True))
+        component = next(e for e in best["mapping"]["entities"] if e["key"] == "component")
+        self.assertEqual(component["properties"], {
+            "component_type": "Type", "manufacturer": "Manufacturer", "model": "Model", "part_number": "Part Number",
+            "part_number_check": "PN Check", "quantity": "Qty", "description": "Description",
+            "manual_url": "Manual URL", "manual_title": "Manual Title", "notes": "Notes"})
+        signal = next(e for e in best["mapping"]["entities"] if e["key"] == "signal")
+        self.assertEqual((signal["id_column"], signal["existing_only"], signal["split"]), ("Signal", True, ";"))
+        self.assertIn({"from": "component", "type": "MONITORED_BY", "to": "signal"}, best["mapping"]["relationships"])
+        self.assertFalse(component["fuzzy"])
+
+        index = EntityIndex()
+        for tag in ("motor_power_kw", "screw_torque_pct", "screw_speed_rpm"):   # die_pressure_bar is not in this graph
+            index.add(f"bsk:signal:EXTR01/{tag}", "Signal", tag)
+        index.add("bsk:component:EXTR01/main-drive", "Component", "Main Drive")
+        df = DataFile.objects.get(pk=file_id)
+        result = structured.build(df, best["mapping"], ASSET, index=index)
+        # "Main drive frequency converter" is a new part with its own key, not a possible "Main Drive".
+        self.assertEqual(result.possible_matches, 0)
+        self.assertEqual({t.object_match for t in result.triples if t.object_id.endswith("/main-drive-vfd")}, {"new"})
+        monitored = sorted((t.subject_id.rsplit("/", 1)[1], t.object_id.rsplit("/", 1)[1])
+                           for t in result.triples if t.predicate == "MONITORED_BY")
+        self.assertEqual(monitored, [("main-drive-vfd", "screw_speed_rpm"), ("main-drive-vfd", "screw_torque_pct"),
+                                     ("main-motor", "motor_power_kw")])
+        self.assertEqual(sum(t.predicate == "HAS_COMPONENT" for t in result.triples), 6)   # every row still nested
+        self.assertEqual(result.row_errors, [{"row": 7, "message": "signal: 'die_pressure_bar' is not in the graph "
+                                                                   "(this template does not add a Signal)"}])
+        vfd = next(t for t in result.triples if t.subject_id.endswith("/main-drive-vfd"))
+        self.assertEqual((vfd.subject_props["part_number"], vfd.subject_props["manufacturer"], vfd.subject_props["model"]),
+                         ("ACS880-07-0880A-3", "ABB", "ACS880-07, 400 V, heavy duty 400 kW"))
+        self.assertEqual(vfd.subject_props["manual_url"].count(" | "), 1)   # two manuals, kept as written
+
+    def test_split_must_be_a_short_separator(self):
+        file_id = self.upload("extr01_bom_devices.csv")["data_file"]["id"]
+        mapping = self.suggested(file_id, "bom")
+        next(e for e in mapping["entities"] if e["key"] == "signal")["split"] = ""
+        self.assertIn("signal: split must be a separator of 1 to 3 characters, e.g. ';'",
+                      self.post(file_id, "preview", mapping).json()["errors"])
+
     def test_excel_sheet_and_header_row(self):
         wb = Workbook()
         wb.active.title = "Cover"
@@ -314,6 +358,32 @@ class StructuredImportIntegrationTests(ImportTestCase):
         self.client.post("/api/graph/triples/delete/", {"ids": ids}, format="json")
         self.assertEqual(self.nodes(), base)
         self.assertIsNone(self.q("MATCH (n {id: 'bsk:component:EXTR01/die-head'}) RETURN n.quantity AS qty")[0]["qty"])
+
+    def test_bom_devices_are_linked_to_their_signals(self):
+        base = self.nodes()
+        file_id = self.upload("extr01_bom_devices.csv")["data_file"]["id"]
+        body = self.post(file_id, "preview", self.suggested(file_id, "bom")).json()
+        self.assertEqual((body["stats"]["triples"], body["stats"]["new_entities"], body["row_errors"]), (10, 4, []))
+        self.post(file_id, "stage", self.suggested(file_id, "bom"))
+        ids = self.client.get(f"/api/graph/triples/?data_file={file_id}&fields=ids").json()["ids"]
+        result = self.client.post("/api/graph/triples/approve/", {"ids": ids}, format="json").json()
+        self.assertEqual((len(result["approved"]), result["errors"]), (10, {}))
+        self.assertEqual(self.nodes(), base + 4)   # motor, frequency converter, gearbox, pressure transmitter
+
+        vfd = self.q("MATCH (p)-[:HAS_COMPONENT]->(c {id: 'bsk:component:EXTR01/main-drive-vfd'})-[:MONITORED_BY]->(s) "
+                     "RETURN p.id AS parent, c.part_number AS pn, c.manufacturer AS m, collect(s.id) AS signals")[0]
+        self.assertEqual((vfd["parent"], vfd["pn"], vfd["m"]), ("bsk:component:EXTR01/main-drive", "ACS880-07-0880A-3", "ABB"))
+        self.assertEqual(sorted(vfd["signals"]), ["bsk:signal:EXTR01/screw_speed_rpm", "bsk:signal:EXTR01/screw_torque_pct"])
+        # The system keeps its own link to the signal and its name; the device's link is added beside it.
+        system = self.q("MATCH (c {id: 'bsk:component:EXTR01/main-drive'}) "
+                        "OPTIONAL MATCH (c)-[:MONITORED_BY]->(s) RETURN c.name AS name, count(s) AS n")[0]
+        self.assertEqual(system["name"], "Main Drive Motor")
+        self.assertGreater(system["n"], 0)
+
+        self.client.post("/api/graph/triples/delete/", {"ids": ids}, format="json")
+        self.assertEqual(self.nodes(), base)
+        self.assertEqual(self.q("MATCH (c {id: 'bsk:component:EXTR01/main-drive'})-[:MONITORED_BY]->(s) "
+                                "RETURN count(s) AS n")[0]["n"], system["n"])
 
     def test_limits_change_a_value_on_approval_and_restore_it_on_delete(self):
         base = self.nodes()

@@ -219,7 +219,10 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
             yield from walk(c["children"], depth + 1)
 
     flat = list(walk(ctx["components"]))
-    signals = [(s, asset["name"]) for s in ctx["signals"]] + [(s, c["name"]) for c, _ in flat for s in c["signals"]]
+    owners: dict[str, tuple[dict, list[str]]] = {}   # a signal monitored by a system and its device is listed once
+    for s, owner in [(s, asset["name"]) for s in ctx["signals"]] + [(s, c["name"]) for c, _ in flat for s in c["signals"]]:
+        owners.setdefault(s["id"], (s, []))[1].append(owner)
+    signals = [(s, ", ".join(names)) for s, names in owners.values()]
     alarm_names = {a["id"]: a["properties"].get("code") or a["name"] for a in ctx["alarms"]}
 
     columns = [s["properties"].get("historian_ref", "")[len(HISTORIAN_PREFIX):] for s, _ in signals
@@ -272,10 +275,13 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
 
     for c, depth in flat:
         text = f"{'  ' * depth}- {c['name']} [{c['id']}]"
-        if c["properties"].get("component_type"):
-            text += f" ({c['properties']['component_type']})"
-        if c["properties"].get("description"):
-            text += f": {c['properties']['description']}"
+        p = c["properties"]
+        kind = ", ".join(str(v) for v in (p.get("component_type"), p.get("manufacturer"), p.get("model"),
+                                          p.get("part_number") and f"part {p['part_number']}") if v)
+        if kind:
+            text += f" ({kind})"
+        if p.get("description") and str(p["description"]) != c["name"]:
+            text += f": {p['description']}"
         if c["alarms"]:
             text += f"; alarms: {', '.join(alarm_names.get(a, a) for a in c['alarms'])}"
         lines.append(Line("COMPONENTS", text, node_id=c["id"]))

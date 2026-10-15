@@ -97,6 +97,22 @@ class FactSheetTests(SimpleTestCase):
         self.assertEqual((graph["kind"], graph["source"], historian["kind"]), ("graph", "Context Graph", "historian"))
         self.assertIn("out of range: Die pressure", historian["snippet"])
 
+    def test_a_signal_on_a_system_and_its_device_is_listed_once(self):
+        """P14c: the BOM links the measuring device to a signal its system already monitors."""
+        die = CONTEXT["components"][0]
+        device = {**node("bsk:component:EXTR01/die-pressure-transmitter", "Component", "Die pressure transmitter",
+                         component_type="Instrument", manufacturer="Gefran", model="WE0", part_number="WE0-6-M-B20D-1-4-D",
+                         description="Die pressure transmitter"),
+                  "parent": die["id"], "alarms": [], "children": [], "signals": [die["signals"][0]]}
+        context = {**CONTEXT, "components": [{**die, "children": [device]}]}
+        with patch("context_graph.services.get_asset_context", return_value=context):
+            ctx = asset_context.build(ASSET, "die pressure", 10000)
+        self.assertEqual(ctx.text.count("[bsk:signal:EXTR01/die_pressure_bar]"), 1)
+        self.assertIn("[bsk:signal:EXTR01/die_pressure_bar] on Die Head, Die pressure transmitter:", ctx.text)
+        self.assertIn("- Die pressure transmitter [bsk:component:EXTR01/die-pressure-transmitter] "
+                      "(Instrument, Gefran, WE0, part WE0-6-M-B20D-1-4-D)\n", ctx.text + "\n")
+        self.assertEqual(ctx.historian["out_of_range"], ["Die pressure: 104 bar (ABOVE normal range)"])
+
     def test_small_budget_keeps_header_and_what_matches_the_question(self):
         ctx = asset_context.build(ASSET, "die head temperature", 700)
         self.assertLessEqual(len(ctx.text), 700)

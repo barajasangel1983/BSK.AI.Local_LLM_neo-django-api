@@ -20,6 +20,11 @@ entity is not in the graph is refused, nothing new is made) and `replace` (on ap
 that differs from the graph's replaces it; the old value is kept and restored when the triple
 is deleted). An OperatingLimit's `kind` is one of LIMIT_KINDS, and its unit must be its signal's.
 
+`split` (used by the BOM template, P14c): the key cell may name several entities separated by
+that text (e.g. "screw_torque_pct; screw_speed_rpm"); each one gets the row's relationships.
+`fuzzy: false` (BOM items): only an exact id, key or name matches; no similar-name suggestions,
+since the Item column is the part's own key ("Barrel zone 1 heater bands" is not "Barrel Zone 1").
+
 Every row yields one triple per relationship whose two ends are present. Ids
 are canonical (`bsk:<type>:<scope>/<key>[/<suffix>]`), matched to existing
 entities only on exact id / key / name (never fuzzily). Triples are staged as
@@ -291,18 +296,29 @@ def _bom(columns: list[str]) -> dict:
     parent = _find(columns, "parent", "parent item", "parent id", "parent component", "assembly", "belongs to")
     item = _find(columns, "item", "component", "part", "id", "item id", "part number", "name", exclude=(parent,))
     name = _find(columns, "description", "desc", "name", "item name", exclude=(parent, item))
-    component = {"key": "component", "type": "Component", "id_column": item, "name_column": name or item,
+    signal = _find(columns, "signal", "signals", "measures", "historian column", exclude=(parent, item, name))
+    slot = _find(columns, "opc slot", "slot")   # the signal's place in the PLC: already on its OPC node
+    component = {"key": "component", "type": "Component", "id_column": item, "name_column": name or item, "fuzzy": False,
                  "properties": _props(columns, {"component_type": ("type", "category", "class", "component type"),
-                                                "part_number": ("part number", "part no", "pn", "partnumber"),
                                                 "manufacturer": ("manufacturer", "vendor", "make", "supplier"),
+                                                "model": ("model", "model number", "series"),
+                                                "part_number": ("part number", "part no", "pn", "partnumber",
+                                                                "order code", "article number"),
+                                                "part_number_check": ("pn check", "part number check"),
                                                 "quantity": ("qty", "quantity"),
-                                                "description": ("description", "desc")},
-                                      exclude=(parent, item))}
+                                                "description": ("description", "desc"),
+                                                "manual_url": ("manual url", "manual link", "document url"),
+                                                "manual_title": ("manual title", "document title"),
+                                                "notes": ("notes", "note", "remarks", "comment")},
+                                      exclude=(parent, item, signal, slot))}
     entities, relationships = [dict(ASSET), component], []
     if parent:
-        entities.append({"key": "parent", "type": "Component", "id_column": parent})
+        entities.append({"key": "parent", "type": "Component", "id_column": parent, "fuzzy": False})
         relationships.append({"from": "parent", "type": "HAS_COMPONENT", "to": "component"})
     relationships.append({"from": "asset", "type": "HAS_COMPONENT", "to": "component", **({"unless": "parent"} if parent else {})})
+    if signal:   # the device that measures a signal (P14c); the BOM never adds a signal
+        entities.append({"key": "signal", "type": "Signal", "id_column": signal, "existing_only": True, "split": ";"})
+        relationships.append({"from": "component", "type": "MONITORED_BY", "to": "signal"})
     return {"entities": entities, "relationships": relationships}
 
 
@@ -332,7 +348,7 @@ TEMPLATES = (
     ("tag_list", "Tag list", "Signals monitored by the asset or its components, with optional operating limits.", _tag_list),
     ("limits", "Limits", "Limits of existing signals by kind (normal, specification, alarm, trip); a differing value is changed on approval.", _limits),
     ("alarm_list", "Alarm list", "Alarms of the asset, optionally associated with a component.", _alarm_list),
-    ("bom", "Bill of materials", "Components of the asset, nested by a parent column.", _bom),
+    ("bom", "Bill of materials", "Components of the asset, nested by a parent column, with model, part number, manual and the signals each device measures.", _bom),
 )
 
 
@@ -397,6 +413,10 @@ def validate_mapping(mapping, schema: Schema, columns: list[str], asset_id: str)
             column(key, "skip-if-empty", c)
         for c in e.get("id_suffix_columns") or []:
             column(key, "id suffix", c)
+        if "fuzzy" in e and not isinstance(e["fuzzy"], bool):
+            errors.append(f"{key}: fuzzy must be true or false")
+        if "split" in e and not (isinstance(e["split"], str) and 0 < len(e["split"]) <= 3 and e["split"].strip()):
+            errors.append(f"{key}: split must be a separator of 1 to 3 characters, e.g. ';'")
         props = e.get("properties") or {}
         if not isinstance(props, dict):
             errors.append(f"{key}: properties must map property names to columns")
@@ -513,7 +533,8 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         if spec.get("id_suffix") or suffix_columns:   # derived entities (e.g. a signal's limit): exact id only
             match = Match(proposed, "id" if index.has(proposed) else "new")
         else:                       # the key column is an explicit tag; names / aliases, then possible matches
-            match = index.resolve(label, name or key, scope_key, proposed=proposed, tag=key)
+            match = index.resolve(label, name or key, scope_key, proposed=proposed, tag=key,
+                                  fuzzy=spec.get("fuzzy", True) is not False)
         if spec.get("existing_only") and not match.existing:
             refuse(number, f"{spec['key']}: {key!r} is not in the graph (this template does not add a {label})")
             return None
@@ -533,26 +554,35 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         return End(match.id, label, (name or key)[:255], match.existing, props, named, match.kind, match.candidates,
                    replace=bool(spec.get("replace")))
 
+    def cells(spec: dict, values: dict) -> list[dict]:
+        """The row once, or once per part of a split key cell."""
+        column, sep = spec.get("id_column"), spec.get("split")
+        if not (column and sep and sep in values.get(column, "")):
+            return [values]
+        return [{**values, column: part.strip()} for part in values[column].split(sep) if part.strip()]
+
     for number, values in rows:
-        present: dict[str, End] = {}
+        present: dict[str, list[End]] = {}
         for spec in mapping["entities"]:
-            end = entity(spec, values, number)
-            if end is None:
-                continue
-            known = ends.get(end.id)
-            if known is None:
-                ends[end.id] = known = end
-            else:  # same entity on another row: keep the first explicit name, add new properties
-                if end.named and not known.named:
-                    known.name, known.named = end.name, True
-                for k, v in end.props.items():
-                    known.props.setdefault(k, v)
-            present[spec["key"]] = known
+            for cell in cells(spec, values):
+                end = entity(spec, cell, number)
+                if end is None:
+                    continue
+                known = ends.get(end.id)
+                if known is None:
+                    ends[end.id] = known = end
+                else:  # same entity on another row: keep the first explicit name, add new properties
+                    if end.named and not known.named:
+                        known.name, known.named = end.name, True
+                    for k, v in end.props.items():
+                        known.props.setdefault(k, v)
+                if not any(e is known for e in present.setdefault(spec["key"], [])):
+                    present[spec["key"]].append(known)
         emitted = 0
-        for rel in mapping["relationships"]:
-            a, b = present.get(rel["from"]), present.get(rel["to"])
-            if a is None or b is None or (rel.get("unless") and rel["unless"] in present):
-                continue
+        pairs = [(rel, a, b) for rel in mapping["relationships"]
+                 if not (rel.get("unless") and rel["unless"] in present)
+                 for a in present.get(rel["from"], []) for b in present.get(rel["to"], [])]
+        for rel, a, b in pairs:
             if a.id == b.id:
                 result.row_errors.append({"row": number, "message": f"{rel['type']}: {a.name!r} would point to itself"})
                 continue
