@@ -197,6 +197,8 @@ class CandidateTriple(models.Model):
     object_props = models.JSONField(default=dict, blank=True)
     applied_props = models.JSONField(default=dict, blank=True)   # {node id: [property names added to an existing node]}
     applied_aliases = models.JSONField(default=dict, blank=True)  # {node id: [names added as aliases]}
+    replaces = models.JSONField(default=dict, blank=True)         # {node id: {property: [graph value, new value]}}, staged (P14b)
+    replaced_props = models.JSONField(default=dict, blank=True)   # {node id: {property: value before approval}}
     # Every place this triple was found (all windows / rows); the evidence_* fields below keep the first one.
     evidence = models.ManyToManyField(Evidence, related_name="triples", blank=True)
     confidence = models.FloatField(null=True, blank=True)

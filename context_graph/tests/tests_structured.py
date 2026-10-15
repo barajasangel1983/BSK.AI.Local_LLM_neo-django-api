@@ -85,6 +85,48 @@ class StructuredImportTests(ImportTestCase):
         self.assertEqual((signal["id_column"], signal["name_column"], signal["properties"]),
                          ("Tag", "Description", {"unit": "Unit", "data_type": "Data Type", "description": "Description"}))
 
+    def test_limits_template(self):
+        file_id = self.upload("extr01_limits.csv")["data_file"]["id"]
+        best = self.detail(file_id)["suggestions"][0]
+        self.assertEqual((best["key"], best["complete"]), ("limits", True))
+        signal, limit = best["mapping"]["entities"]
+        self.assertEqual((signal["id_column"], signal["existing_only"]), ("Tag", True))
+        self.assertEqual((limit["id_column"], limit["id_suffix_columns"], limit["name_column"], limit["replace"]),
+                         ("Tag", ["Kind", "Group"], "Name", True))
+        self.assertEqual(limit["properties"], {"kind": "Kind", "low": "Low", "target": "Target", "high": "High",
+                                               "group": "Group", "unit": "Unit", "basis": "Source"})
+        # A tag list (no kind column) is not taken for limits.
+        tags = self.detail(self.upload("extr01_tag_list.csv")["data_file"]["id"])["suggestions"]
+        self.assertEqual(tags[0]["key"], "tag_list")
+        self.assertFalse(next(s for s in tags if s["key"] == "limits")["complete"])
+
+    def test_limits_rows_without_the_graph(self):
+        """Signals come from the index; what is refused is said row by row."""
+        from context_graph.identity import EntityIndex
+        file_id = self.upload("extr01_limits.csv")["data_file"]["id"]
+        index = EntityIndex()
+        for tag in ("barrel_zone_1_temp_c", "barrel_zone_3_temp_c", "screw_torque_pct", "screw_speed_rpm",
+                    "die_pressure_bar", "head_temp_c", "kibble_diameter_mm"):
+            index.add(f"bsk:signal:EXTR01/{tag}", "Signal", tag.replace("_", " ").capitalize())
+        df = DataFile.objects.get(pk=file_id)
+        result = structured.build(df, self.suggested(file_id, "limits"), ASSET, index=index)
+        ids = sorted(t.object_id for t in result.triples)
+        self.assertEqual(ids, ["bsk:operating-limit:EXTR01/barrel_zone_1_temp_c/normal",
+                               "bsk:operating-limit:EXTR01/barrel_zone_3_temp_c/specification",
+                               "bsk:operating-limit:EXTR01/die_pressure_bar/alarm",
+                               "bsk:operating-limit:EXTR01/head_temp_c/trip",
+                               "bsk:operating-limit:EXTR01/screw_speed_rpm/specification/rc-a",
+                               "bsk:operating-limit:EXTR01/screw_torque_pct/specification"])
+        speed = next(t for t in result.triples if "screw_speed" in t.object_id)
+        self.assertEqual(speed.object_props, {"kind": "specification", "low": 400, "target": 425, "high": 450,
+                                              "group": "RC-A", "unit": "rpm", "basis": "product spec 2026-10"})
+        self.assertEqual(speed.subject_name, "Screw speed rpm")      # the graph's name, not the tag
+        self.assertEqual({e["row"]: e["message"] for e in result.row_errors}, {
+            8: "limit: kind 'setpoint' is not one of normal, specification, alarm, trip",
+            9: "signal: 'melt_temp_c' is not in the graph (this template does not add a Signal)",
+        })
+        self.assertEqual(result.skipped_rows, 2)
+
     def test_mapping_validation(self):
         file_id = self.upload("extr01_tag_list.csv")["data_file"]["id"]
         mapping = self.suggested(file_id, "tag_list")
@@ -272,6 +314,38 @@ class StructuredImportIntegrationTests(ImportTestCase):
         self.client.post("/api/graph/triples/delete/", {"ids": ids}, format="json")
         self.assertEqual(self.nodes(), base)
         self.assertIsNone(self.q("MATCH (n {id: 'bsk:component:EXTR01/die-head'}) RETURN n.quantity AS qty")[0]["qty"])
+
+    def test_limits_change_a_value_on_approval_and_restore_it_on_delete(self):
+        base = self.nodes()
+        file_id = self.upload("extr01_limits.csv")["data_file"]["id"]
+        body = self.post(file_id, "preview", self.suggested(file_id, "limits")).json()
+        self.assertEqual(body["stats"]["triples"], 5)
+        self.assertEqual({e["row"] for e in body["row_errors"]}, {7, 8, 9})   # unit K, kind setpoint, no such signal
+        self.assertIn("unit 'K' is not the signal's ('°C')", " ".join(e["message"] for e in body["row_errors"]))
+        zone1 = next(t for t in body["triples"] if t["object"]["id"].endswith("barrel_zone_1_temp_c/normal"))
+        self.assertTrue(zone1["object"]["existing"])
+        self.assertEqual(zone1["object"]["changes"], {"low": [81.0, 82], "basis": [
+            "historian-derived: P5-P95 while RUNNING, Mar 2026", "PLC AnalogIn[12] LowLimit / HighLimit"]})
+
+        self.post(file_id, "stage", self.suggested(file_id, "limits"))
+        ids = self.client.get(f"/api/graph/triples/?data_file={file_id}&fields=ids").json()["ids"]
+        listed = self.client.get(f"/api/graph/triples/?data_file={file_id}").json()["triples"]
+        self.assertEqual(next(t for t in listed if t["object"]["existing"])["object"]["changes"]["low"], [81.0, 82])
+        result = self.client.post("/api/graph/triples/approve/", {"ids": ids}, format="json").json()
+        self.assertEqual((len(result["approved"]), result["errors"]), (5, {}))
+        self.assertEqual(self.nodes(), base + 4)
+        limit = "MATCH (s:Signal)-[:HAS_LIMIT]->(l {id: $id}) RETURN l.low AS low, l.high AS high, l.basis AS basis, s.aliases AS aliases"
+        self.assertEqual(self.q(limit, id="bsk:operating-limit:EXTR01/barrel_zone_1_temp_c/normal")[0],
+                         {"low": 82, "high": 99.0, "basis": "PLC AnalogIn[12] LowLimit / HighLimit", "aliases": None})
+        spec = self.q("MATCH (l {id: 'bsk:operating-limit:EXTR01/screw_speed_rpm/specification/rc-a'}) "
+                      "RETURN l.kind AS kind, l.group AS g, l.target AS target, l.source AS source")[0]
+        self.assertEqual(spec, {"kind": "specification", "g": "RC-A", "target": 425, "source": "structured"})
+
+        self.assertEqual(self.client.delete(f"/api/graph/datafiles/{file_id}/").status_code, 200)
+        self.assertEqual(self.nodes(), base)
+        self.assertEqual(self.q(limit, id="bsk:operating-limit:EXTR01/barrel_zone_1_temp_c/normal")[0],
+                         {"low": 81.0, "high": 99.0, "basis": "historian-derived: P5-P95 while RUNNING, Mar 2026",
+                          "aliases": None})
 
     def test_alarm_list(self):
         base = self.nodes()
