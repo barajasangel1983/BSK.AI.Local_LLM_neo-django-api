@@ -160,11 +160,11 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
         raise TripleError(issue)
     doc = t.document
     origin = {"doc_key": doc.doc_key} if doc else {"data_file": t.data_file.filename}
-    applied, aliased = {}, {}
+    applied, aliased, replaced = {}, {}, {}
     ev = _evidence_ids(t)
     for node_id, label, name, props in ((t.subject_id, t.subject_type, t.subject_name, t.subject_props),
                                         (t.object_id, t.object_type, t.object_name, t.object_props)):
-        existing = tx.run("MATCH (n:Entity {id: $id}) RETURN keys(n) AS keys, n.name AS name, "
+        existing = tx.run("MATCH (n:Entity {id: $id}) RETURN keys(n) AS keys, properties(n) AS props, n.name AS name, "
                           "coalesce(n.aliases, []) AS aliases", id=node_id).single()
         if not existing:
             repository.upsert_node(tx, schema, label, node_id, {**(props or {}), "name": name, "source": t.source,
@@ -176,12 +176,18 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
             if missing:
                 tx.run("MATCH (n:Entity {id: $id}) SET n += $props", id=node_id, props=missing)
                 applied[node_id] = sorted(missing)
+            # Staged with a value change (Limits template): a value still different is replaced; the old one is kept.
+            change = {k: v for k, v in (props or {}).items()
+                      if k in ((t.replaces or {}).get(node_id) or {}) and k in existing["keys"] and existing["props"][k] != v}
+            if change:
+                tx.run("MATCH (n:Entity {id: $id}) SET n += $props", id=node_id, props=change)
+                replaced[node_id] = {k: existing["props"][k] for k in change}
             claimed = apply_alias(tx, node_id, name, existing["name"], existing["aliases"])
             if claimed:
                 aliased.setdefault(node_id, []).append(claimed)
         tx.run("MATCH (n:Entity {id: $id}) "
                "SET n.evidence_ids = [x IN coalesce(n.evidence_ids, []) WHERE NOT x IN $ev] + $ev", id=node_id, ev=ev)
-    t.applied_props, t.applied_aliases = applied, aliased
+    t.applied_props, t.applied_aliases, t.replaced_props = applied, aliased, replaced
     _supports(tx, schema, t, t.subject_id, t.predicate, t.object_id, _provenance(t))
     if doc is None:
         return   # structured import: no document evidence nodes
@@ -294,7 +300,8 @@ def approve(triples: list[CandidateTriple]) -> dict:
                 errors[t.pk] = str(exc)[:255]
                 continue
             t.status, t.committed_at = CandidateTriple.Status.APPROVED, timezone.now()
-            t.save(update_fields=["status", "layer", "committed_at", "applied_props", "applied_aliases", "updated_at"])
+            t.save(update_fields=["status", "layer", "committed_at", "applied_props", "applied_aliases", "replaced_props",
+                                  "updated_at"])
             approved.append(t.pk)
             layers[t.layer] += 1
     return {"approved": approved, "errors": errors, "layers": layers}
@@ -330,7 +337,9 @@ def _uncommit(tx, t: CandidateTriple) -> None:
         "WITH r WHERE size(r.triple_ids) = 0 AND r.source IN $sources DELETE r",
         tid=t.pk, sources=STAGED_SOURCES, ev=ev,
     )
-    # Properties this triple added to entities that already existed.
+    # Values this triple replaced go back; properties it added to entities that already existed go.
+    for node_id, old in (t.replaced_props or {}).items():
+        tx.run("MATCH (n:Entity {id: $id}) SET n += $old", id=node_id, old=old)
     for node_id, names in (t.applied_props or {}).items():
         tx.run("MATCH (n:Entity {id: $id}) SET n += $unset", id=node_id, unset={name: None for name in names})
     # Text-created entities with no remaining (non-evidence) relationships.

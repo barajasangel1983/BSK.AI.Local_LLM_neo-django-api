@@ -1,0 +1,9 @@
+Tag,Name,Kind,Low,Target,High,Unit,Group,Source
+barrel_zone_1_temp_c,Barrel zone 1 temperature normal range,normal,82,,99,°C,,PLC AnalogIn[12] LowLimit / HighLimit
+barrel_zone_3_temp_c,Barrel zone 3 temperature specification,specification,70,90,120,°C,,product spec 2026-10
+screw_torque_pct,Screw torque specification,specification,80,95,110,%,,product spec 2026-10
+screw_speed_rpm,Screw speed specification (RC-A),Specification,400,425,450,rpm,RC-A,product spec 2026-10
+die_pressure_bar,Die pressure alarm,alarm,,,105,bar,,OEM
+head_temp_c,Die head temperature trip,trip,,,400,K,,OEM
+kibble_diameter_mm,Kibble diameter setpoint,setpoint,7,8.5,10,mm,,product spec 2026-10
+melt_temp_c,Melt temperature specification,specification,120,135,150,°C,,product spec 2026-10

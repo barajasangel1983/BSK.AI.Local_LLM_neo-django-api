@@ -172,11 +172,11 @@ def triple_json(t: CandidateTriple) -> dict:
         "mode": t.mode, "status": t.status, "layer": t.layer or None,
         "subject": {"name": t.subject_name, "type": t.subject_type, "id": t.subject_id or None, "existing": t.subject_existing,
                     "match": t.subject_match or None, "candidates": t.subject_candidates or [],
-                    "properties": t.subject_props or {}},
+                    "properties": t.subject_props or {}, "changes": (t.replaces or {}).get(t.subject_id) or {}},
         "predicate": t.predicate,
         "object": {"name": t.object_name, "type": t.object_type, "id": t.object_id or None, "existing": t.object_existing,
                    "match": t.object_match or None, "candidates": t.object_candidates or [],
-                   "properties": t.object_props or {}},
+                   "properties": t.object_props or {}, "changes": (t.replaces or {}).get(t.object_id) or {}},
         "confidence": t.confidence, "issue": t.issue, "occurrences": t.occurrences, "edited": t.edited,
         # Every place the triple was found (P8a); `evidence` below is the first one (kept for older clients).
         "sources": [evidence_json(e) for e in t.evidence.all()],

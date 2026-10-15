@@ -14,6 +14,12 @@ A *mapping* says which columns make which entities and how they relate:
         {"from": "asset", "type": "MONITORED_BY", "to": "signal", "unless": "component"},
         {"from": "signal", "type": "HAS_LIMIT", "to": "limit"}]}
 
+Entity options used by the Limits template (P14b): `id_suffix_columns` (the id ends with
+those columns' values, lower case; the first must not be empty), `existing_only` (a row whose
+entity is not in the graph is refused, nothing new is made) and `replace` (on approval, a value
+that differs from the graph's replaces it; the old value is kept and restored when the triple
+is deleted). An OperatingLimit's `kind` is one of LIMIT_KINDS, and its unit must be its signal's.
+
 Every row yields one triple per relationship whose two ends are present. Ids
 are canonical (`bsk:<type>:<scope>/<key>[/<suffix>]`), matched to existing
 entities only on exact id / key / name (never fuzzily). Triples are staged as
@@ -41,6 +47,7 @@ from .identity import EntityIndex, Match
 from .units import normalize_unit
 from .ids import clean_part, is_valid_id, make_id
 from . import evidence
+from .driver import GraphUnavailable, session
 from .models import CandidateTriple, DataFile, Evidence
 from .schema import Schema, SchemaError
 
@@ -48,6 +55,7 @@ KINDS = {".csv": "csv", ".tsv": "csv", ".txt": "csv", ".xlsx": "xlsx", ".xlsm": 
 PROPERTY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 RESERVED_PROPERTIES = {"id", "name", "source", "created_by_triple", "created_at", "updated_at", "data_file"}
 SAMPLE_ROWS = 10
+LIMIT_KINDS = ("normal", "specification", "alarm", "trip")
 EVIDENCE_CHARS = 1000
 
 
@@ -298,8 +306,31 @@ def _bom(columns: list[str]) -> dict:
     return {"entities": entities, "relationships": relationships}
 
 
+def _limits(columns: list[str]) -> dict:
+    """One row per signal and kind of limit (P14b). Only existing signals; a differing value is changed on approval."""
+    tag = _find(columns, "tag", "tag name", "tagname", "signal", "historian column", "point", "variable")
+    kind = _find(columns, "kind", "limit kind", "limit type", exclude=(tag,))
+    name = _find(columns, "name", "limit name", exclude=(tag, kind))
+    group = _find(columns, "group", "recipe", "product", exclude=(tag, kind, name))
+    values = _props(columns, {"low": ("low", "lsl", "lower", "min"), "target": ("target", "nominal", "setpoint"),
+                              "high": ("high", "usl", "upper", "max")}, exclude=(tag, kind, name, group))
+    props = {**({"kind": kind} if kind else {}), **values, **({"group": group} if group else {}),
+             **_props(columns, {"unit": ("unit", "units", "uom"), "basis": ("source", "basis", "origin")},
+                      exclude=(tag, kind, name, group, *values.values()))}
+    limit = {"key": "limit", "type": "OperatingLimit", "id_column": tag if kind else "",
+             "id_suffix_columns": [c for c in (kind, group) if c], "replace": True,
+             "properties": props, "skip_if_empty": list(values.values())}
+    if name:
+        limit["name_column"] = name
+    elif tag and kind:
+        limit["name_template"] = f"{{{tag}}} {{{kind}}} limits"
+    return {"entities": [{"key": "signal", "type": "Signal", "id_column": tag, "existing_only": True}, limit],
+            "relationships": [{"from": "signal", "type": "HAS_LIMIT", "to": "limit"}]}
+
+
 TEMPLATES = (
     ("tag_list", "Tag list", "Signals monitored by the asset or its components, with optional operating limits.", _tag_list),
+    ("limits", "Limits", "Limits of existing signals by kind (normal, specification, alarm, trip); a differing value is changed on approval.", _limits),
     ("alarm_list", "Alarm list", "Alarms of the asset, optionally associated with a component.", _alarm_list),
     ("bom", "Bill of materials", "Components of the asset, nested by a parent column.", _bom),
 )
@@ -310,6 +341,7 @@ def _mapped_columns(mapping: dict) -> set[str]:
     for e in mapping["entities"]:
         used.update(c for c in (e.get("id_column"), e.get("name_column")) if c)
         used.update(c for c in (e.get("properties") or {}).values() if c)
+        used.update(c for c in e.get("id_suffix_columns") or [] if c)
     return used
 
 
@@ -363,6 +395,8 @@ def validate_mapping(mapping, schema: Schema, columns: list[str], asset_id: str)
             column(key, "name template", placeholder)
         for c in e.get("skip_if_empty") or []:
             column(key, "skip-if-empty", c)
+        for c in e.get("id_suffix_columns") or []:
+            column(key, "id suffix", c)
         props = e.get("properties") or {}
         if not isinstance(props, dict):
             errors.append(f"{key}: properties must map property names to columns")
@@ -414,6 +448,7 @@ class End:
     named: bool   # the name came from a name column/template (not just the key)
     match: str = ""
     candidates: list = field(default_factory=list)
+    replace: bool = False   # a differing value is changed on approval (Limits template)
 
 
 @dataclass
@@ -446,6 +481,10 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
     result = BuildResult(rows=len(rows))
     staged: dict[tuple, CandidateTriple] = {}
     ends: dict[str, End] = {}   # one End per id across the file (names/properties are merged)
+    current = _GraphProps()
+
+    def refuse(number: int, message: str) -> None:
+        result.row_errors.append({"row": number, "message": message})
 
     def entity(spec: dict, values: dict, number: int) -> End | None:
         if spec.get("scope"):
@@ -454,8 +493,13 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         if not key or (spec.get("skip_if_empty") and not any(values.get(c) for c in spec["skip_if_empty"])):
             return None
         label = spec["type"]
+        suffix_columns = spec.get("id_suffix_columns") or []
+        if suffix_columns and not values.get(suffix_columns[0]):
+            refuse(number, f"{spec['key']}: {suffix_columns[0]} is empty")
+            return None
         try:
             parts = [clean_part(key)] + ([clean_part(spec["id_suffix"])] if spec.get("id_suffix") else [])
+            parts += [clean_part(values[c].lower()) for c in suffix_columns if values.get(c)]
             proposed = make_id(label, *parts) if label == "Asset" else make_id(label, scope_key, *parts)
         except ValueError:
             result.row_errors.append({"row": number, "message": f"{spec['key']}: {key!r} can't be used as an id"})
@@ -466,16 +510,28 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         elif spec.get("name_column"):
             name = values.get(spec["name_column"], "")
         named = bool(name) and name != key
-        if spec.get("id_suffix"):   # derived entities (e.g. a signal's limit): exact id only
+        if spec.get("id_suffix") or suffix_columns:   # derived entities (e.g. a signal's limit): exact id only
             match = Match(proposed, "id" if index.has(proposed) else "new")
         else:                       # the key column is an explicit tag; names / aliases, then possible matches
             match = index.resolve(label, name or key, scope_key, proposed=proposed, tag=key)
+        if spec.get("existing_only") and not match.existing:
+            refuse(number, f"{spec['key']}: {key!r} is not in the graph (this template does not add a {label})")
+            return None
+        node = index.get(match.id) if spec.get("existing_only") and not named else None
+        if node:   # a key alone keeps the graph's name (no alias)
+            name, named = node.name, True
         props = {p: _coerce(values[c]) for p, c in (spec.get("properties") or {}).items() if values.get(c)}
         if "unit" in props:
             props["unit"] = normalize_unit(props["unit"])
         if "subtype" in props and isinstance(props["subtype"], str):   # schema spelling when it is a known subtype
             props["subtype"] = schema.subtype_for(label, props["subtype"]) or props["subtype"]
-        return End(match.id, label, (name or key)[:255], match.existing, props, named, match.kind, match.candidates)
+        if label == "OperatingLimit" and "kind" in props:
+            props["kind"] = str(props["kind"]).strip().lower()
+            if props["kind"] not in LIMIT_KINDS:
+                refuse(number, f"{spec['key']}: kind {props['kind']!r} is not one of {', '.join(LIMIT_KINDS)}")
+                return None
+        return End(match.id, label, (name or key)[:255], match.existing, props, named, match.kind, match.candidates,
+                   replace=bool(spec.get("replace")))
 
     for number, values in rows:
         present: dict[str, End] = {}
@@ -500,6 +556,11 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
             if a.id == b.id:
                 result.row_errors.append({"row": number, "message": f"{rel['type']}: {a.name!r} would point to itself"})
                 continue
+            if rel["type"] == "HAS_LIMIT" and b.props.get("unit") and a.existing:
+                unit = current.get(a.id).get("unit")
+                if unit and normalize_unit(str(unit)) != b.props["unit"]:
+                    refuse(number, f"{b.name!r}: unit {b.props['unit']!r} is not the signal's ({unit!r})")
+                    continue
             emitted += 1
             key = (a.id, rel["type"], b.id)
             excerpt = "; ".join(f"{c}: {v}" for c, v in values.items() if v)[:EVIDENCE_CHARS]
@@ -527,12 +588,41 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         t.object_name, t.object_existing, t.object_props = b.name, b.existing, b.props
         t.subject_match, t.subject_candidates = a.match, a.candidates
         t.object_match, t.object_candidates = b.match, b.candidates
+        t.replaces = {e.id: c for e in (a, b) if (c := _changes(e, current))}
         used.update((a.id, b.id))
     result.triples = list(staged.values())
     result.existing_entities = sum(1 for i in used if ends[i].existing)
     result.possible_matches = sum(1 for i in used if ends[i].match == "possible")
     result.new_entities = len(used) - result.existing_entities - result.possible_matches
     return result
+
+
+class _GraphProps(dict):
+    """An existing entity's properties in the graph, read once per build (empty when the graph is off)."""
+
+    def get(self, node_id: str) -> dict:
+        if node_id not in self:
+            try:
+                with session() as s:
+                    row = s.run("MATCH (n:Entity {id: $id}) RETURN properties(n) AS p", id=node_id).single()
+            except GraphUnavailable:
+                row = None
+            self[node_id] = dict(row["p"]) if row else {}
+        return self[node_id]
+
+
+def _same(a, b) -> bool:
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool):
+        return math.isclose(a, b, rel_tol=0, abs_tol=1e-9)
+    return str(a) == str(b)
+
+
+def _changes(end: End, current: _GraphProps) -> dict:
+    """{property: [graph value, file value]} for an existing entity whose values the file changes on approval."""
+    if not (end.replace and end.existing):
+        return {}
+    graph = current.get(end.id)
+    return {k: [graph[k], v] for k, v in end.props.items() if k in graph and not _same(graph[k], v)}
 
 
 def check(df: DataFile, mapping, asset_id: str) -> list[str]:
