@@ -229,12 +229,18 @@ def _tag_list(columns: list[str]) -> dict:
     low = _find(columns, "low", "min", "lo", "lower", "low limit", "minimum")
     high = _find(columns, "high", "max", "hi", "upper", "high limit", "maximum")
     unit = _find(columns, "unit", "units", "uom", "eng unit", "engineering unit")
+    # The PLC as a source (P14a) adds the OPC node of each signal and what a limit is based on.
+    opc_node = _find(columns, "opc node", "node id", "nodeid", "opc node id")
+    opc_slot = _find(columns, "opc slot", "slot")
+    opc_type = _find(columns, "opc type")
+    limit_kind = _find(columns, "limit kind")
+    limit_basis = _find(columns, "limit basis", "basis")
     signal = {"key": "signal", "type": "Signal", "id_column": tag, "name_column": name,
               "properties": _props(columns, {"unit": ("unit", "units", "uom", "eng unit", "engineering unit"),
                                              "data_type": ("data type", "datatype", "type"),
                                              "description": ("description", "desc"),
                                              "historian_ref": ("historian", "historian ref", "source", "address")},
-                                   exclude=(tag, component))}
+                                   exclude=(tag, component, opc_node, opc_slot, opc_type, limit_kind, limit_basis))}
     entities, relationships = [dict(ASSET)], []
     if component:
         entities.append({"key": "component", "type": "Component", "id_column": component, "name_column": component})
@@ -242,11 +248,16 @@ def _tag_list(columns: list[str]) -> dict:
     entities.append(signal)
     relationships.append({"from": "asset", "type": "MONITORED_BY", "to": "signal", **({"unless": "component"} if component else {})})
     if low or high:
-        limit_props = {k: v for k, v in (("low", low), ("high", high), ("unit", unit)) if v}
+        limit_props = {k: v for k, v in (("low", low), ("high", high), ("unit", unit), ("kind", limit_kind), ("basis", limit_basis)) if v}
         entities.append({"key": "limit", "type": "OperatingLimit", "id_column": tag, "id_suffix": "normal",
                          "name_template": f"{{{name or tag}}} normal range", "properties": limit_props,
                          "skip_if_empty": [c for c in (low, high) if c]})
         relationships.append({"from": "signal", "type": "HAS_LIMIT", "to": "limit"})
+    if opc_node:
+        entities.append({"key": "opc", "type": "OPCNode", "id_column": tag, "id_suffix": "opc", "name_column": opc_node,
+                         "properties": {k: v for k, v in (("node_id", opc_node), ("slot", opc_slot), ("data_type", opc_type)) if v},
+                         "skip_if_empty": [opc_node]})
+        relationships.append({"from": "signal", "type": "IMPLEMENTED_AS", "to": "opc"})
     return {"entities": entities, "relationships": relationships}
 
 
@@ -257,7 +268,8 @@ def _alarm_list(columns: list[str]) -> dict:
     alarm = {"key": "alarm", "type": "Alarm", "id_column": code, "name_column": name or code,
              "properties": {**({"code": code} if code else {}),
                             **_props(columns, {"severity": ("severity", "priority", "level", "class"),
-                                               "description": ("description", "message", "text", "desc")},
+                                               "description": ("description", "message", "text", "desc"),
+                                               "plc_index": ("plc index", "fault index")},
                                      exclude=(code, component))}}
     entities = [dict(ASSET), alarm]
     relationships = [{"from": "asset", "type": "HAS_ALARM", "to": "alarm"}]
