@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "context_service",
     "spc",
     "plc",
+    "monitor",
 ]
 
 MIDDLEWARE = [

@@ -1,0 +1,19 @@
+# Monitoring agent of the Context Studio (Home, P15a): one pass.
+#
+# `manage.py monitor_tick` reads the rows that arrived since its last pass for every asset
+# and writes the posts on Home. It is a one-shot started by a timer, so no process stays in memory.
+#
+# Install (both files):
+#   cp deploy/systemd/neo-monitor.service deploy/systemd/neo-monitor.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now neo-monitor.timer
+# Status:  systemctl --user list-timers neo-monitor.timer
+# Logs:    journalctl --user -u neo-monitor -n 20
+# Stop:    systemctl --user disable --now neo-monitor.timer
+[Unit]
+Description=Context Studio monitoring agent (one pass)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/repos/BSK.AI.Local_LLM_neo-django-api
+ExecStart=%h/repos/BSK.AI.Local_LLM_neo-django-api/.venv/bin/python manage.py monitor_tick
+Environment=PYTHONUNBUFFERED=1
