@@ -1,7 +1,13 @@
 """Document library API (shared by RAG Lab and GraphLab).
 
     GET    /api/documents/                      list (with parse / RAG status and active jobs)
-    POST   /api/documents/                      upload one or more files (multipart "files")
+    POST   /api/documents/                      upload one or more files (multipart "files"; optional
+                                                "folder" id, "processing": parse | embed | full)
+    POST   /api/documents/move/                 {ids: [...], folder: <id> | "unfiled"}
+    GET    /api/folders/                        the folder tree (flat, with counts) and the Unfiled count
+    POST   /api/folders/                        {name, parent?}
+    PATCH  /api/folders/<id>/                   {name?, parent?: <id> | null}
+    DELETE /api/folders/<id>/?move_to=<id>|unfiled   documents go there (required when not empty)
     GET    /api/documents/<id>/                 detail
     DELETE /api/documents/<id>/                 delete everywhere (chunks, files, jobs)
     POST   /api/documents/<id>/embed/           Generate embeddings {strategy, params}
@@ -27,9 +33,9 @@ from django.http import FileResponse
 
 from gpu import images
 
-from . import figures, library
+from . import figures, folders, library
 from .chunking import ChunkingError
-from .models import Document, Job
+from .models import Document, Folder, Job
 
 
 def job_json(job: Job) -> dict:
@@ -61,6 +67,12 @@ def document_json(doc: Document, active_jobs=None) -> dict:
         "sha256": doc.sha256,
         "document_revision": doc.document_revision,
         "uploaded_at": doc.uploaded_at.isoformat(),
+        "folder": str(doc.folder_id) if doc.folder_id else None,
+        "title": doc.title,
+        "source_url": doc.source_url,
+        "fetched_at": doc.fetched_at.isoformat() if doc.fetched_at else None,
+        "plant_asset": doc.plant_asset,
+        "languages": doc.languages,
         "parse": {
             "status": doc.parse_status,
             "error": doc.parse_error,
@@ -128,10 +140,20 @@ def documents(request):
     files = request.FILES.getlist("files")
     if not files:
         return Response({"error": "no files uploaded (multipart field 'files')"}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        folder = folders.get(request.data.get("folder"))
+    except folders.FolderError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    # parse: parse only; embed: then the embeddings; full: then the figures (PDFs, images) and embeddings again
+    processing = str(request.data.get("processing") or "").lower()
+    if processing not in ("", "parse", "embed", "full"):
+        return Response({"error": "processing must be parse, embed or full"}, status=status.HTTP_400_BAD_REQUEST)
+    then_embed = processing in ("embed", "full") or str(request.data.get("then_embed", "")).lower() in ("1", "true", "yes")
+    then_figures = processing == "full"
     results = []
     for f in files:
         try:
-            doc, created = library.add_document(f)
+            doc, created = library.add_document(f, folder=folder, then_embed=then_embed, then_figures=then_figures)
             results.append({"filename": f.name, "created": created, "document": document_json(doc)})
         except library.LibraryError as exc:
             results.append({"filename": f.name, "created": False, "error": str(exc)})
@@ -228,8 +250,11 @@ def document_figures_describe(request, doc_id):
     if doc is None:
         return Response({"error": "document not found"}, status=status.HTTP_404_NOT_FOUND)
     try:
+        # An embedded document is embedded again when its figures are done (the descriptions become searchable).
+        reembed = doc.rag_status in (Document.PipelineStatus.DONE, Document.PipelineStatus.QUEUED,
+                                     Document.PipelineStatus.RUNNING)
         job = library.enqueue(doc, Job.Kind.FIGURES, {"figures": request.data.get("figures"),
-                                                     "force": request.data.get("force")})
+                                                     "force": request.data.get("force"), "then_embed": reembed})
     except library.LibraryError as exc:
         return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
     return Response(job_json(job), status=status.HTTP_202_ACCEPTED)
@@ -262,3 +287,50 @@ def job_cancel(request, job_id):
         return Response({"error": f"job is already {job.status}"}, status=status.HTTP_409_CONFLICT)
     job.refresh_from_db()
     return Response(job_json(job))
+
+
+# --- folders ---------------------------------------------------------------------
+
+def _folder_error(exc) -> Response:
+    return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["GET", "POST"])
+def folder_list(request):
+    if request.method == "POST":
+        try:
+            folder = folders.create_folder(request.data.get("name"), folders.get(request.data.get("parent")))
+        except folders.FolderError as exc:
+            return _folder_error(exc)
+        return Response({"id": str(folder.id), **folders.tree()}, status=status.HTTP_201_CREATED)
+    return Response(folders.tree())
+
+
+@api_view(["PATCH", "DELETE"])
+def folder_detail(request, folder_id):
+    folder = Folder.objects.filter(pk=folder_id).first()
+    if folder is None:
+        return Response({"error": "folder not found"}, status=status.HTTP_404_NOT_FOUND)
+    try:
+        if request.method == "DELETE":
+            move_to = request.query_params.get("move_to")
+            result = folders.delete_folder(folder, ... if move_to is None else folders.get(move_to))
+            return Response({**result, **folders.tree()})
+        parent = ... if "parent" not in request.data else folders.get(request.data.get("parent"))
+        folders.update_folder(folder, name=request.data.get("name"), parent=parent)
+    except folders.FolderError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT if request.method == "DELETE"
+                        else status.HTTP_400_BAD_REQUEST)
+    return Response(folders.tree())
+
+
+@api_view(["POST"])
+def documents_move(request):
+    ids = request.data.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        return Response({"error": "ids must be a non-empty list"}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        moved = folders.move_documents(ids, folders.get(request.data.get("folder")))
+    except folders.FolderError as exc:
+        return _folder_error(exc)
+    return Response({"moved": moved, **folders.tree()})

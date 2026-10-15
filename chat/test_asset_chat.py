@@ -113,6 +113,24 @@ class FactSheetTests(SimpleTestCase):
                       "(Instrument, Gefran, WE0, part WE0-6-M-B20D-1-4-D)\n", ctx.text + "\n")
         self.assertEqual(ctx.historian["out_of_range"], ["Die pressure: 104 bar (ABOVE normal range)"])
 
+    def test_the_normal_range_is_the_normal_limit_not_the_specification(self):
+        """P14b: a signal can also have a specification limit; the fact sheet and the history use the normal one."""
+        die = CONTEXT["components"][0]
+        pressure = {**die["signals"][0], "limits": [
+            node("bsk:operating-limit:EXTR01/die_pressure_bar/specification", "OperatingLimit", "Die pressure specification",
+                 kind="specification", low=70, high=120),
+            *die["signals"][0]["limits"]]}
+        scrap = {**signal("scrap_output_kg", "Scrap output", "kg"), "limits": [
+            node("bsk:operating-limit:EXTR01/scrap_output_kg/specification", "OperatingLimit", "Scrap specification",
+                 kind="specification", low=0.5, high=4)]}
+        context = {**CONTEXT, "components": [{**die, "signals": [pressure, scrap]}]}
+        with patch("context_graph.services.get_asset_context", return_value=context):
+            ctx = asset_context.build(ASSET, "die pressure", 10000)
+            columns = {c["column"]: (c["low"], c["high"]) for c in asset_context.signal_columns(ASSET)}
+        self.assertIn("normal 84.3–99.2 bar", ctx.text)
+        self.assertEqual(ctx.historian["out_of_range"], ["Die pressure: 104 bar (ABOVE normal range)"])
+        self.assertEqual((columns["die_pressure_bar"], columns["scrap_output_kg"]), ((84.3, 99.2), (None, None)))
+
     def test_small_budget_keeps_header_and_what_matches_the_question(self):
         ctx = asset_context.build(ASSET, "die head temperature", 700)
         self.assertLessEqual(len(ctx.text), 700)

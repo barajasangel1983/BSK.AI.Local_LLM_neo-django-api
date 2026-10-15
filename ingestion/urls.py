@@ -15,6 +15,9 @@ urlpatterns = [
     # Document library (shared by RAG Lab and GraphLab)
     path("documents/", library_views.documents, name="library-documents"),
     path("documents/embed/", library_views.documents_embed, name="library-documents-embed"),
+    path("documents/move/", library_views.documents_move, name="library-documents-move"),
+    path("folders/", library_views.folder_list, name="library-folders"),
+    path("folders/<uuid:folder_id>/", library_views.folder_detail, name="library-folder"),
     path("documents/<uuid:doc_id>/", library_views.document_detail, name="library-document"),
     path("documents/<uuid:doc_id>/embed/", library_views.document_embed, name="library-document-embed"),
     path("documents/<uuid:doc_id>/embeddings/", library_views.document_embeddings, name="library-document-embeddings"),

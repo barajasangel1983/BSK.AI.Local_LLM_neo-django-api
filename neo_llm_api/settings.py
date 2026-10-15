@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     "context_service",
     "spc",
     "plc",
+    "monitor",
 ]
 
 MIDDLEWARE = [
@@ -337,6 +338,12 @@ NEO4J_CONNECTION_TIMEOUT = float(os.getenv("NEO4J_CONNECTION_TIMEOUT", "5"))
 LIBRARY_BASE = os.getenv("LIBRARY_BASE", str(BASE_DIR / "data" / "library"))
 # Running jobs whose heartbeat is older than this are re-queued by the worker.
 LIBRARY_JOB_STALE_SECONDS = int(os.getenv("LIBRARY_JOB_STALE_SECONDS", "300"))
+# Unattended ingest (P14d-2): long PDFs are parsed in parts of this many pages (one Docling
+# request and one GPU lock each); a job whose service (BSK / DGX) can't be reached waits and
+# tries again after these minutes (the last one repeats), for up to LIBRARY_RETRY_DAYS.
+LIBRARY_PARSE_PART_PAGES = int(os.getenv("LIBRARY_PARSE_PART_PAGES", "25"))
+LIBRARY_RETRY_MINUTES = [int(m) for m in os.getenv("LIBRARY_RETRY_MINUTES", "5,15,30,60").split(",") if m.strip()]
+LIBRARY_RETRY_DAYS = int(os.getenv("LIBRARY_RETRY_DAYS", "7"))
 # Max upload size per file (bytes).
 LIBRARY_MAX_UPLOAD_BYTES = int(os.getenv("LIBRARY_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 

@@ -137,6 +137,12 @@ def historian_snapshot(asset_key: str, columns: list[str]) -> dict | None:
             "collector_age_seconds": collector_age}
 
 
+def normal_limit(limits: list[dict]) -> dict | None:
+    """The normal range among a signal's limits. Since the Limits import (P14b) a signal can also have a
+    specification, an alarm or a trip limit; a limit without a kind is a normal range (the seed's)."""
+    return next((lim["properties"] for lim in limits if (lim["properties"].get("kind") or "normal") == "normal"), None)
+
+
 def signal_columns(asset_id: str) -> list[dict]:
     """The asset's signals that have a historian column: [{column, signal_id, name, unit, low, high}].
 
@@ -156,7 +162,7 @@ def signal_columns(asset_id: str) -> list[dict]:
         ref = str(s["properties"].get("historian_ref", ""))
         if not ref.startswith(HISTORIAN_PREFIX):
             continue
-        limit = s["limits"][0]["properties"] if s["limits"] else {}
+        limit = normal_limit(s["limits"]) or {}
         out.append({"column": ref[len(HISTORIAN_PREFIX):], "signal_id": s["id"], "name": s["name"],
                     "unit": s["properties"].get("unit", ""), "low": limit.get("low"), "high": limit.get("high")})
     return out
@@ -289,7 +295,7 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
     for s, owner in signals:
         p = s["properties"]
         unit = p.get("unit", "")
-        limit = s["limits"][0]["properties"] if s["limits"] else None
+        limit = normal_limit(s["limits"])
         column = str(p.get("historian_ref", ""))[len(HISTORIAN_PREFIX):]
         text = f"- {s['name']} [{s['id']}] on {owner}"
         detail = [d for d in (unit and f"unit {unit}", _limit_text(limit, unit)) if d]

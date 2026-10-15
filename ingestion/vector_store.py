@@ -96,20 +96,40 @@ class VectorStore:
             m["config_version"] = config_version
             enriched.append(m)
 
-        coll.add(
-            ids=ids,
-            documents=chunks,
-            embeddings=embeddings,
-            metadatas=enriched,
-        )
+        # In batches: one Chroma call takes a limited number of records (5,461 in 1.5).
+        step = self.max_batch()
+        for start in range(0, len(ids), step):
+            end = start + step
+            coll.add(ids=ids[start:end], documents=chunks[start:end],
+                     embeddings=embeddings[start:end], metadatas=enriched[start:end])
         return len(chunks)
+
+    def update_document_metadata(self, asset_id: str, fields: Dict[str, Any]) -> int:
+        """Set metadata fields on every chunk of one document (no new embeddings)."""
+        coll = self._get_collection()
+        found = coll.get(where={"asset_id": asset_id}, include=["metadatas"])
+        ids = found.get("ids") or []
+        step = self.max_batch()
+        for start in range(0, len(ids), step):
+            metas = [{**(m or {}), **fields} for m in found["metadatas"][start:start + step]]
+            coll.update(ids=ids[start:start + step], metadatas=metas)
+        return len(ids)
+
+    def max_batch(self) -> int:
+        """Records per Chroma call: the client's limit, capped at 2000 (1000 if it can't say)."""
+        self._get_collection()
+        try:
+            return max(1, min(int(self._client.get_max_batch_size()), 2000))
+        except Exception:
+            return 1000
 
     def delete_document(self, asset_id: str) -> int:
         """Remove every chunk of one document (by its `asset_id` / doc key)."""
         coll = self._get_collection()
         ids = coll.get(where={"asset_id": asset_id}, include=[]).get("ids") or []
-        if ids:
-            coll.delete(ids=ids)
+        step = self.max_batch()
+        for start in range(0, len(ids), step):
+            coll.delete(ids=ids[start:start + step])
         return len(ids)
 
 

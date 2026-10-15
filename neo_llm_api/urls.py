@@ -26,4 +26,5 @@ urlpatterns = [
     path("api/historian/", include("historian.urls")),
     path("api/spc/", include("spc.urls")),
     path("api/plc/", include("plc.urls")),
+    path("api/monitor/", include("monitor.urls")),
 ]
