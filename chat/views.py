@@ -1195,6 +1195,10 @@ def _bsk_status(ep_id: str) -> tuple[str, int]:
             return ("online" if ok else "offline"), round((time.time() - start) * 1000) if ok else 0
         return "idle", 0     # orchestrator / VLM not in use yet
     if not summary["reachable"]:
+        if ep_id == "docling-bsk":  # the pipeline calls Docling directly when it answers (gpu.use)
+            start = time.time()
+            if gpu._docling_answers():
+                return "degraded", round((time.time() - start) * 1000)
         return "offline", 0
     if ep_id == "gpu-orchestrator":
         return ("degraded" if summary.get("health") == "error" else "online"), summary.get("latency_ms", 0)

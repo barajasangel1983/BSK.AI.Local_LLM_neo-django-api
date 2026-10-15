@@ -204,3 +204,20 @@ class HealthTests(TestCase):
         self.assertEqual(_bsk_status("docling-bsk")[0], "online")
         self.assertEqual(_bsk_status("gpu-orchestrator")[0], "idle")
         self.assertEqual(_bsk_status("vlm-bsk")[0], "idle")
+
+    @override_settings(GPU_ORCHESTRATOR_ENABLED=True)
+    @patch("gpu.orchestrator.requests.get")
+    def test_orchestrator_away_but_docling_answering_is_degraded_not_offline(self, get):
+        """Parsing calls Docling directly in this case (gpu.use), so the page says so."""
+        from chat.views import _bsk_status
+
+        def answer(url, **kw):
+            if ":5003" in url:
+                raise requests.ConnectTimeout("orchestrator not reachable")
+            return resp(200)
+        get.side_effect = answer
+        self.assertEqual(_bsk_status("docling-bsk")[0], "degraded")
+        self.assertEqual(_bsk_status("gpu-orchestrator")[0], "offline")
+        self.assertEqual(_bsk_status("vlm-bsk")[0], "offline")      # the VLM needs the orchestrator
+        get.side_effect = requests.ConnectionError("BSK off")
+        self.assertEqual(_bsk_status("docling-bsk")[0], "offline")

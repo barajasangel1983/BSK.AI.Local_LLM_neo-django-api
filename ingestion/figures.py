@@ -91,34 +91,47 @@ def save(doc: Document, data: dict) -> None:
 
 # --- from the Docling result -------------------------------------------------------
 
-def from_docling(doc: Document, layout: dict | None) -> dict:
-    """Build the figure list from Docling's JSON, keeping descriptions of unchanged figures."""
+def _pictures(layout: dict | None, offset: int = 0) -> list[dict]:
+    """The figures of one Docling result (PDF), pages shifted by `offset` (a part of a long PDF)."""
+    if not layout:
+        return []
+    pages = layout.get("pages") or {}
+    texts = layout.get("texts") or []
+    out = []
+    for picture in layout.get("pictures") or []:
+        prov = (picture.get("prov") or [{}])[0]
+        page = int(prov.get("page_no") or 0)
+        size = (pages.get(str(page)) or {}).get("size") or {}
+        bbox = prov.get("bbox")
+        figure = {"index": len(out), "page": page + offset if page else 0, "bbox": bbox, "page_size": size or None,
+                  "caption": _caption(picture, texts), "area": None, "status": "pending", "skip_reason": ""}
+        if not bbox or not size.get("width") or not size.get("height"):
+            figure.update(status="skipped", skip_reason="no position in the parsed document")
+        else:
+            area = abs((bbox["r"] - bbox["l"]) * (bbox["t"] - bbox["b"])) / (size["width"] * size["height"])
+            figure["area"] = round(area, 4)
+            if area < settings.FIGURE_MIN_AREA:
+                figure.update(status="skipped", skip_reason="too small (under 2 % of the page)")
+            elif area > settings.FIGURE_MAX_AREA:
+                figure.update(status="skipped", skip_reason="covers the whole page")
+        out.append(figure)
+    return out
+
+
+pictures = _pictures   # used by the library for the parts of a long PDF (the name is shadowed in from_docling)
+
+
+def from_docling(doc: Document, layout: dict | None, pictures: list[dict] | None = None) -> dict:
+    """Build the figure list from Docling's JSON (or from `pictures` already read from the parts
+    of a long PDF), keeping descriptions of unchanged figures."""
     source = "image" if is_image(doc) else "pdf" if is_pdf(doc) else "other"
     figures: list[dict] = []
     if source == "image":
         # The whole picture is the figure (Docling's boxes inside it are parts of it).
         figures.append({"index": 0, "page": 1, "bbox": None, "page_size": None, "caption": "", "area": 1.0,
                         "status": "pending", "skip_reason": ""})
-    elif source == "pdf" and layout:
-        pages = layout.get("pages") or {}
-        texts = layout.get("texts") or []
-        for index, picture in enumerate(layout.get("pictures") or []):
-            prov = (picture.get("prov") or [{}])[0]
-            page = int(prov.get("page_no") or 0)
-            size = (pages.get(str(page)) or {}).get("size") or {}
-            bbox = prov.get("bbox")
-            figure = {"index": index, "page": page, "bbox": bbox, "page_size": size or None,
-                      "caption": _caption(picture, texts), "area": None, "status": "pending", "skip_reason": ""}
-            if not bbox or not size.get("width") or not size.get("height"):
-                figure.update(status="skipped", skip_reason="no position in the parsed document")
-            else:
-                area = abs((bbox["r"] - bbox["l"]) * (bbox["t"] - bbox["b"])) / (size["width"] * size["height"])
-                figure["area"] = round(area, 4)
-                if area < settings.FIGURE_MIN_AREA:
-                    figure.update(status="skipped", skip_reason="too small (under 2 % of the page)")
-                elif area > settings.FIGURE_MAX_AREA:
-                    figure.update(status="skipped", skip_reason="covers the whole page")
-            figures.append(figure)
+    elif source == "pdf":
+        figures = [{**f, "index": i} for i, f in enumerate(pictures if pictures is not None else _pictures(layout))]
 
     previous = {f["index"]: f for f in (load(doc) or {}).get("figures", [])}
     for figure in figures:

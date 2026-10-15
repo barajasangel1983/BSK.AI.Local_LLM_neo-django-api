@@ -59,6 +59,29 @@ class IngestionJob(models.Model):
         return f"{self.id} {self.source_filename} [{self.status}]"
 
 
+class Folder(models.Model):
+    """A library folder (a kind of document: Manuals, SOPs, Quality Alerts…), nested by `parent`.
+
+    `kind` is the root folder's key (e.g. "manual" for Manuals / ABB) and goes into each
+    chunk's metadata as `doc_type`. A document without a folder is "Unfiled".
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    parent = models.ForeignKey("self", null=True, blank=True, on_delete=models.PROTECT, related_name="children")
+    kind = models.CharField(max_length=64)
+    position = models.PositiveIntegerField(default=0)
+    standard = models.BooleanField(default=False)   # created by the standard scaffold (still editable)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "library_folder"
+        ordering = ["position", "name"]
+
+    def __str__(self):
+        return self.name
+
+
 class Document(models.Model):
     """A file in the shared document library (used by RAG Lab and GraphLab).
 
@@ -97,6 +120,13 @@ class Document(models.Model):
     size = models.PositiveBigIntegerField(default=0)
     document_revision = models.CharField(max_length=64, default="1")
     uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    folder = models.ForeignKey(Folder, null=True, blank=True, on_delete=models.SET_NULL, related_name="documents")
+    title = models.CharField(max_length=512, blank=True, default="")
+    source_url = models.URLField(max_length=2000, blank=True, default="")
+    fetched_at = models.DateTimeField(null=True, blank=True)
+    plant_asset = models.CharField(max_length=255, blank=True, default="")   # e.g. bsk:asset:EXTR01 (not the chunk's asset_id)
+    languages = models.JSONField(default=list, blank=True)   # pages kept for RAG, e.g. ["en", "es"]; [] = all
 
     parse_status = models.CharField(max_length=16, choices=ParseStatus.choices, default=ParseStatus.PENDING)
     parse_error = models.TextField(blank=True, default="")
