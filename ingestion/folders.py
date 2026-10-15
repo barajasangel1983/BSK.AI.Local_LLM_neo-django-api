@@ -175,6 +175,27 @@ def move_documents(ids: list, folder: Folder | None) -> int:
     return len(ids)
 
 
+def doc_keys_in(selection: list) -> set[str]:
+    """The document keys in the selected folders and their subfolders (`unfiled`: documents without a folder).
+    Used by the chat's "Search in" (P15b). Unknown folder ids are ignored."""
+    ids, unfiled = set(), False
+    for item in selection:
+        if str(item) == UNFILED:
+            unfiled = True
+            continue
+        try:
+            folder = Folder.objects.filter(pk=item).first()
+        except Exception:      # not a UUID
+            folder = None
+        if folder:
+            ids.update(f.pk for f in subtree(folder))
+    found = Document.objects.filter(folder__in=ids)
+    keys = set(found.values_list("doc_key", flat=True))
+    if unfiled:
+        keys |= set(Document.objects.filter(folder__isnull=True).values_list("doc_key", flat=True))
+    return keys
+
+
 def chunk_metadata(doc: Document) -> dict:
     """What a chunk carries about its document's place (written on embed, updated on a move)."""
     folder = doc.folder

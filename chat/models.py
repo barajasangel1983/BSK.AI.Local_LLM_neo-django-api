@@ -93,3 +93,20 @@ class ChatAttachment(models.Model):
 
     def __str__(self) -> str:
         return f"{self.kind} {self.filename}"
+
+
+class PromptTemplate(models.Model):
+    """A prompt template of the chat's book menu, shared by everyone (P15b). They used to live in each browser."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    content = models.TextField()
+    category = models.CharField(max_length=60, default="General")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "chat_prompt_template"
+        ordering = ["category", "name"]
+
+    def __str__(self):
+        return self.name
