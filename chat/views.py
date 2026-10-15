@@ -37,6 +37,7 @@ from os import getenv
 from usage import recorder as usage
 
 from .models import Conversation, Message
+from ingestion import folders
 from .retrieval import search_v2
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
 from .titles import DEFAULT_TITLE, RENAME_MAX_CHARS, generate_title, normalize_title
@@ -544,6 +545,8 @@ def _chat(request):
       "asset_id": "bsk:asset:EXTR01" | "" | absent   (scope; absent = keep the conversation's)
       "attachment_id": "uuid"   (optional; an image or PDF uploaded to /api/chat/attachments/)
       "page": 3                 (optional; show this page of the PDF to the vision model)
+      "search_folders": [<folder id> | "unfiled", ...]   (optional; "Search in": only the documents in these
+                                library folders and their subfolders; absent or empty = the whole library)
     }
 
     Attachments stay with the conversation (never added to the library / RAG):
@@ -567,6 +570,9 @@ def _chat(request):
     model_id = request.data.get("model", "local-small")
     use_rag = bool(request.data.get("use_rag", True))
     requested_asset = request.data.get("asset_id")
+    search_folders = request.data.get("search_folders") or []
+    if not isinstance(search_folders, list):
+        return Response({"error": "search_folders must be a list of folder ids"}, status=status.HTTP_400_BAD_REQUEST)
 
     if not user_message:
         return Response(
@@ -730,14 +736,20 @@ def _chat(request):
                 if c.rerank_score is None or c.rerank_score >= settings.RAG_MIN_RERANK_SCORE
             ]
             found: list[dict] = []
-            if asset_ctx and asset_ctx.doc_keys:
-                # The asset's own documents first; the whole library when none of them match.
-                result = search_v2(user_message, top_n=v2_top_n, doc_keys=asset_ctx.doc_keys)
+            # "Search in" (P15b): only the documents of the chosen folders, in both passes.
+            in_folders = folders.doc_keys_in(search_folders) if search_folders else None
+            asset_keys = asset_ctx.doc_keys if asset_ctx else []
+            if in_folders is not None:
+                asset_keys = [k for k in asset_keys if k in in_folders]
+            if asset_keys:
+                # The asset's own documents first; the (chosen part of the) library when none of them match.
+                result = search_v2(user_message, top_n=v2_top_n, doc_keys=asset_keys)
                 found, reranker, doc_scope = relevant(result), result.reranker, "asset"
-            if not found:
-                result = search_v2(user_message, top_n=v2_top_n)
+            if not found and in_folders != set():          # folders with no document: nothing to search
+                result = (search_v2(user_message, top_n=v2_top_n, doc_keys=sorted(in_folders)) if in_folders
+                          else search_v2(user_message, top_n=v2_top_n))
                 found, reranker = relevant(result), result.reranker
-                doc_scope = "library"
+                doc_scope = "folders" if in_folders else "library"
             entries.extend(found)
         except Exception:
             logger.exception("v2 retrieval failed conversation=%s", conversation.id)

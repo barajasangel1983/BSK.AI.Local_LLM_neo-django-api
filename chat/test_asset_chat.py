@@ -201,6 +201,31 @@ class AssetChatViewTests(TestCase):
         self.chat("Something else", use_rag=True, asset_id=ASSET)
         self.assertEqual([c.kwargs.get("doc_keys") for c in search.call_args_list[-2:]], [["MANUAL"], None])
 
+    def test_search_in_folders(self, post, search, title):
+        """P15b: "Search in" limits both passes to the documents of the chosen folders and their subfolders."""
+        from ingestion import folders
+        from ingestion.models import Document, Folder
+        manuals = Folder.objects.get(name="Manuals", parent=None)
+        abb = folders.create_folder("ABB", manuals)
+        sops = Folder.objects.get(name="SOPs", parent=None)
+        Document.objects.create(filename="fw.pdf", doc_key="ACS880-FW", sha256="a" * 64, folder=abb)
+        Document.objects.create(filename="Manual.pdf", doc_key="MANUAL", sha256="b" * 64, folder=sops)
+        Document.objects.create(filename="loose.pdf", doc_key="LOOSE", sha256="c" * 64)
+
+        self.chat("Drive fault F7?", use_rag=True, asset_id=ASSET, search_folders=[str(manuals.id)])
+        # The asset's document (MANUAL) is an SOP, not a manual: only the library pass, on the manuals.
+        self.assertEqual([c.kwargs.get("doc_keys") for c in search.call_args_list], [["ACS880-FW"]])
+        search.reset_mock()
+        self.chat("Die plug?", use_rag=True, asset_id=ASSET, search_folders=[str(sops.id), "unfiled"])
+        self.assertEqual(search.call_args_list[0].kwargs["doc_keys"], ["MANUAL"])
+        self.assertEqual(sorted(search.call_args_list[1].kwargs["doc_keys"]), ["LOOSE", "MANUAL"])
+        search.reset_mock()
+        empty = Folder.objects.get(name="Quality Alerts", parent=None)
+        r = self.chat("Anything?", use_rag=True, search_folders=[str(empty.id)])
+        self.assertEqual(r.status_code, 200)
+        search.assert_not_called()                                   # an empty folder: nothing searched
+        self.assertEqual(self.chat("x", use_rag=True, search_folders="Manuals").status_code, 400)
+
     def test_no_shift_summaries_in_asset_chats(self, post, search, title):
         with patch("chat.views.query_chunks") as shifts:
             shifts.return_value = []
