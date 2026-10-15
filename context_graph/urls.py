@@ -16,6 +16,7 @@ urlpatterns = [
     path("schema/export/", views.schema_export, name="graph-schema-export"),
     path("assets/", views.asset_list, name="graph-assets"),
     path("assets/<path:asset_id>/context/", views.asset_context, name="graph-asset-context"),
+    path("assets/<path:asset_id>/plc-compare/", import_views.plc_compare, name="graph-plc-compare"),
     path("nodes/", views.node_list, name="graph-nodes"),
     path("nodes/<path:node_id>/sources/", views.node_sources, name="graph-node-sources"),
     path("nodes/<path:node_id>/", views.node_detail, name="graph-node"),
@@ -37,6 +38,7 @@ urlpatterns = [
     path("triples/<int:triple_id>/promote/", extraction_views.triple_promote, name="graph-triple-promote"),
     # Structured data import (GraphLab Import): CSV / Excel -> column mapping -> staged triples
     path("datafiles/", import_views.datafiles, name="graph-datafiles"),
+    path("plc-source/", import_views.plc_import, name="graph-plc-source"),
     path("datafiles/<uuid:file_id>/", import_views.datafile_detail, name="graph-datafile"),
     path("datafiles/<uuid:file_id>/preview/", import_views.datafile_preview, name="graph-datafile-preview"),
     path("datafiles/<uuid:file_id>/stage/", import_views.datafile_stage, name="graph-datafile-stage"),

@@ -7,6 +7,8 @@
     DELETE datafiles/<id>/                delete (approved triples leave the graph)
     POST   datafiles/<id>/preview/        {mapping, asset_id} -> errors, stats, first triples (nothing is saved)
     POST   datafiles/<id>/stage/          {mapping, asset_id} -> staged triples for review
+    POST   plc-source/                    {asset_id} -> the PLC's tag list and alarm list as two data files (P14a)
+    GET    assets/<id>/plc-compare/       the graph against the PLC, signal by signal and alarm by alarm (P14a)
     GET    mappings/                      saved column mappings
     POST   mappings/                      {name, mapping} (same name: replaced)
     DELETE mappings/<id>/
@@ -20,7 +22,7 @@ from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
-from . import structured
+from . import plc_source, structured
 from .models import CandidateTriple, DataFile, ImportMapping
 from .views import graph_errors
 
@@ -168,3 +170,31 @@ def mapping_detail(request, mapping_id):
     if not deleted:
         return _error("mapping not found", status.HTTP_404_NOT_FOUND)
     return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+@api_view(["POST"])
+@graph_errors
+def plc_import(request):
+    """The PLC (OPC UA) as an import source: two data files, staged and reviewed like uploaded ones."""
+    asset_id = (request.data or {}).get("asset_id") if isinstance(request.data, dict) else None
+    if not asset_id:
+        return _error("asset_id is required")
+    try:
+        made = plc_source.create_data_files(asset_id)
+    except plc_source.PlcSourceError as exc:
+        return _error(str(exc))
+    except structured.ImportError_ as exc:
+        return _error(str(exc))
+    return Response({"spare_slots": made["spare_slots"],
+                     "files": [{"template": f["template"], "created": f["created"], "data_file": datafile_json(f["data_file"])}
+                               for f in made["files"]]})
+
+
+@api_view(["GET"])
+@graph_errors
+def plc_compare(request, asset_id):
+    try:
+        return Response(plc_source.compare(asset_id))
+    except plc_source.PlcSourceError as exc:
+        return _error(str(exc))
+
