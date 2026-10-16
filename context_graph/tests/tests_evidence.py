@@ -44,7 +44,7 @@ class StagingEvidenceTests(LibraryTestCase):
         self.drain()
 
     def test_every_window_is_kept_as_evidence(self):
-        self.extract()
+        self.extract(tables_by_row=False)       # the text windows only (tables row by row: tests_extraction_tables)
         windows = self.llm.call_count
         self.assertGreater(windows, 1)
         t = self.doc.triples.get(predicate="MONITORED_BY")

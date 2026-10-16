@@ -191,7 +191,7 @@ class ExtractionApiTests(LibraryTestCase):
     def test_presets_crud_and_versioning(self):
         listed = self.client.get("/api/graph/presets/").json()["presets"]
         self.assertEqual({(p["mode"], p["is_default"], p["builtin"]) for p in listed},
-                         {("schema", True, True), ("freeform", True, True)})
+                         {("schema", True, True), ("freeform", True, True), ("schema", False, True)})   # + Maintenance (v3)
         r = self.client.post("/api/graph/presets/", {"name": "Alarms only", "mode": "schema", "template": "T {text}"},
                              format="json")
         self.assertEqual(r.status_code, 201)

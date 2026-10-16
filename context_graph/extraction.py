@@ -21,6 +21,16 @@ Scope (step 2 of the schema review, 2026-10-15):
   their exact names, so exact-name matching links to them; the product's own designations (model,
   part number) are mapped to that part instead of making a new "Motor".
 
+Step 3 (2026-10-16):
+- `tables_by_row` (default on): the document's tables are read on their own, a few rows at a time with
+  their header (context_graph/tables.py), and the text windows without them.
+- Properties: the model may give an entity's documented properties (schema v3 `properties`, e.g. a
+  Procedure's interval and amount, a FailureMode's causes); they are staged with the triple.
+- A window whose answer is invalid twice (often cut off at the output limit) is read again in two halves.
+- The "Maintenance (v3)" preset: troubles as FailureModes with their causes, what to do as a Procedure.
+  It asks for a short "note" before the triples (thinking is off on the DGX): without it the model skipped
+  untitled lists of steps and read the wrong column of Table 7.2 (2026-10-16, ABB motors manual).
+
 The DGX's constrained decoding (guided_json / json_schema) was too slow to use
 (80+ s and invalid output per window), so JSON is requested in the prompt with
 `response_format: json_object` and validated here.
@@ -31,7 +41,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 
 import requests
@@ -99,6 +109,65 @@ Section: {section}""",
 }
 
 
+# Offered beside the defaults, never the default itself (step 3, 2026-10-16).
+EXTRA_PRESETS = {
+    "Maintenance (v3)": (
+        "schema",
+        """You extract a maintenance knowledge graph about an industrial part from its manual.
+
+Entity types (use exactly these names):
+{entity_types}
+
+Relationships (predicate: allowed subject type -> object type):
+{relationships}
+
+Properties an entity may have (only these names):
+{properties}
+
+Rules:
+- Only facts stated in the text; never guess a value.
+- Troubleshooting (a trouble or symptom, its causes, what to do):
+  - Each trouble or symptom is ONE FailureMode named as written (e.g. "Motor overheats while running"):
+    <part> HAS_FAILURE_MODE <trouble>. Its causes go in the FailureMode's "causes" property, a list of the
+    causes as written. A cause is never an entity of its own.
+  - What to do is ONE Procedure per trouble, named "<trouble>: what to do", subtype Corrective, with "summary"
+    giving each cause and its action ("Blown fuses: replace fuses with proper type and rating; Overload trips: ...").
+    <trouble> MITIGATED_BY <procedure>.
+- Maintenance, inspection, lubrication: a Procedure named as the text names it, with a subtype and its
+  "interval", "amount" and "summary" when the text gives them: <part> HAS_PROCEDURE <procedure>.
+  Steps or instructions without a title of their own (a list under a heading) are the procedure named by the
+  Section below, e.g. Section "Regreasing while the motor is running": <part> HAS_PROCEDURE
+  "Regreasing while the motor is running", with the steps, short, in "summary".
+- A table of values for many sizes or variants (e.g. lubrication intervals and grease amounts by frame size
+  and speed): find the row of the part this document describes. Its frame size is usually the number in its
+  model designation (e.g. 355 in "M3BP 355MLA 4"). Its speed column follows from its poles and supply frequency:
+    at 50 Hz: 2-pole = 3000 r/min, 4-pole = 1500 r/min, 6-pole = 1000 r/min, 8-pole = 750 r/min;
+    at 60 Hz: 2-pole = 3600 r/min, 4-pole = 1800 r/min, 6-pole = 1200 r/min, 8-pole = 900 r/min.
+  From that row make <part> HAS_PROCEDURE <a Procedure named after the table and the "Rows under" heading,
+  e.g. "Regreasing (roller bearings)">, with "interval" and "amount" from that row and that speed column,
+  with units, and say in "summary" the table, the row and the column they come from.
+  If no row applies to the part, return nothing for the table.
+- INDICATED_BY only to an alarm or a signal listed as existing below, by its exact name, and only when the
+  text clearly means it. Never create a new Signal or Alarm.
+- A sub-part (bearing, fan, shaft seal) only when the text names it as a part of this product.
+- First a key "note": one or two sentences on which procedures (with any interval or amount) and which troubles
+  this text gives about the part, or that it gives none. Then the triples.
+- Return ONLY compact JSON:
+  {"note": str, "triples": [{"subject": str, "subject_type": str, "subject_subtype": str, "subject_properties": {},
+                "predicate": str, "object": str, "object_type": str, "object_subtype": str, "object_properties": {},
+                "confidence": number 0-1}]}
+  Subtypes and properties are optional. Return {"triples": []} if the text has nothing of this kind.
+
+Document: {document}
+Section: {section}""",
+    ),
+}
+# Never from the model: identity, provenance, and `status` (draft / approved is a person's decision).
+PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "created_by_triple", "status"}
+MAX_PROPERTY = 1000
+MAX_LIST = 40
+
+
 class ExtractionError(ValueError):
     pass
 
@@ -106,6 +175,14 @@ class ExtractionError(ValueError):
 def ensure_default_presets() -> None:
     for mode, (name, template) in DEFAULT_PRESETS.items():
         PromptPreset.objects.get_or_create(name=name, defaults={"mode": mode, "template": template, "is_default": True})
+    for name, (mode, template) in EXTRA_PRESETS.items():
+        PromptPreset.objects.get_or_create(name=name, defaults={"mode": mode, "template": template, "is_default": False})
+
+
+def builtin_templates() -> dict[str, str]:
+    """Name -> template of the presets the Studio ships (they can be edited and restored, not deleted)."""
+    return {**{name: template for name, template in DEFAULT_PRESETS.values()},
+            **{name: template for name, (_, template) in EXTRA_PRESETS.items()}}
 
 
 def default_preset(mode: str) -> PromptPreset:
@@ -157,6 +234,7 @@ def validate_params(params: dict | None) -> dict:
         "pages": parse_pages(params.get("pages")),
         "follow_languages": params.get("follow_languages", True) is not False,
         "anchor_id": anchor_id,
+        "tables_by_row": params.get("tables_by_row", True) is not False,
     }
 
 
@@ -273,7 +351,18 @@ def render_schema(schema: Schema) -> tuple[str, str]:
     return entity_types, relationships
 
 
-PLACEHOLDERS = ("entity_types", "relationships", "document", "section", "text")
+def render_properties(schema: Schema) -> str:
+    """The documented properties of the types the model may produce (schema v3), for {properties}."""
+    types, _ = extractable(schema)
+    lines = []
+    for label in types:
+        props = {k: v for k, v in (schema.properties.get(label) or {}).items() if k not in PROPERTY_SKIP}
+        if props:
+            lines.append(f"- {label}: " + "; ".join(f"{k} ({v})" if v else k for k, v in props.items()))
+    return "\n".join(lines) or "- none"
+
+
+PLACEHOLDERS = ("entity_types", "relationships", "properties", "document", "section", "text")
 
 
 def render_template(template: str, **values: str) -> str:
@@ -287,7 +376,8 @@ def build_messages(preset: PromptPreset, schema: Schema, text: str, document: st
                    context: str = "") -> list[dict]:
     """`context`: the anchor block (the part the document describes), added after the preset's text."""
     entity_types, relationships = render_schema(schema)
-    values = {"entity_types": entity_types, "relationships": relationships, "document": document, "section": section or "-"}
+    values = {"entity_types": entity_types, "relationships": relationships, "properties": render_properties(schema),
+              "document": document, "section": section or "-"}
     extra = f"\n\n{context}" if context else ""
     if "{text}" in preset.template:  # the template places the text itself
         return [{"role": "system", "content": render_template(preset.template, **values, text=text) + extra}]
@@ -345,8 +435,59 @@ def parse_triples(content: str) -> list[dict]:
         except (TypeError, ValueError):
             confidence = None
         subtypes = {k: str(t.get(k) or "").strip()[:MAX_NAME] for k in ("subject_subtype", "object_subtype") if t.get(k)}
-        out.append({**{k: v[:MAX_NAME] for k, v in fields.items()}, **subtypes, "confidence": confidence})
+        props = {k: clean_properties(t.get(k)) for k in ("subject_properties", "object_properties")}
+        out.append({**{k: v[:MAX_NAME] for k, v in fields.items()}, **subtypes, **{k: v for k, v in props.items() if v},
+                    "confidence": confidence})
     return out
+
+
+def clean_properties(value) -> dict:
+    """The model's properties of one entity: snake_case names; text, numbers or lists of text."""
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key, v in value.items():
+        key = str(key).strip()
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", key) or key in PROPERTY_SKIP:
+            continue
+        if isinstance(v, bool):
+            v = str(v).lower()
+        if isinstance(v, (int, float)):
+            out[key] = v
+        elif isinstance(v, list):
+            items = [str(x).strip()[:300] for x in v if isinstance(x, (str, int, float)) and str(x).strip()][:MAX_LIST]
+            if items:
+                out[key] = items
+        elif isinstance(v, str) and v.strip():
+            out[key] = v.strip()[:MAX_PROPERTY]
+    return out
+
+
+def merge_properties(old: dict, new: dict) -> dict:
+    """Two finds of the same triple: lists are joined, a text found again is added once; nothing is dropped."""
+    out = dict(old or {})
+    for key, v in (new or {}).items():
+        if key not in out:
+            out[key] = v
+        elif isinstance(out[key], list):
+            out[key] = list(dict.fromkeys(out[key] + (v if isinstance(v, list) else [str(v)])))[:MAX_LIST]
+        elif isinstance(out[key], str) and isinstance(v, str) and v not in out[key]:
+            out[key] = f"{out[key]}; {v}"[:MAX_PROPERTY]
+    return out
+
+
+def split_text(text: str) -> list[str]:
+    """Two halves at a line (or sentence) boundary near the middle; [] when too short to split."""
+    if len(text) < 400:
+        return []
+    middle = len(text) // 2
+    cut = text.rfind("\n", 0, middle)
+    if cut < len(text) // 4:
+        cut = text.rfind(". ", 0, middle) + 1
+    if cut < len(text) // 4:
+        cut = middle
+    halves = [text[:cut].strip(), text[cut:].strip()]
+    return halves if all(halves) else []
 
 
 def extract_window(messages: list[dict]) -> list[dict]:
@@ -401,7 +542,20 @@ def run_extract(job) -> None:
         kept = languages.kept_pages((parsed.get("document") or {}).get("md_content") or "", doc.languages)
     all_windows = len(windows)
     selected = select_windows(windows, params, kept)
-    if all_windows and not selected:
+    table_parts: list[tuple[int, object]] = []
+    if params.get("tables_by_row", True):
+        from . import tables
+        md = (parsed.get("document") or {}).get("md_content") or ""
+        wanted = {p for a, b in params.get("pages") or [] for p in range(a, b + 1)}
+        for n, table in enumerate(tables.find_tables(md)):
+            if (wanted and table.page not in wanted) or (kept is not None and table.page not in kept):
+                continue
+            table_parts += tables.windows(table, n)
+        if table_parts:     # the text windows without their table lines; a window left empty is not read
+            stripped = [(i, w, tables.strip_tables(w.text)) for i, w in selected]
+            selected = [(i, w if text == w.text else replace(w, text=text)) for i, w, text in stripped
+                        if text == w.text or len(text.split()) >= 8]
+    if all_windows and not selected and not table_parts:
         raise ExtractionError("no text on the chosen pages" + (" in the kept languages" if kept is not None else ""))
     anchor = anchor_context(params["asset_id"], params["anchor_id"]) if params.get("anchor_id") else None
     drawing_figures: list[dict] = []
@@ -409,18 +563,19 @@ def run_extract(job) -> None:
         from ingestion import figures as figure_store
         from . import drawings
         drawing_figures = drawings.eligible(figure_store.load(doc))
-    if not selected and not drawing_figures:
+    if not selected and not table_parts and not drawing_figures:
         raise ExtractionError("the document produced no text windows")
 
     schema = registry.active_schema()
     presets = {m: PromptPreset.objects.get(pk=pk) for m, pk in params["presets"].items()}
     index = EntityIndex.load()
     scope_key = scope_key_for(params, doc)
-    total = (len(selected) + len(drawing_figures)) * len(presets)
+    total = (len(selected) + len(table_parts) + len(drawing_figures)) * len(presets)
     scope_note = "" if len(selected) == all_windows else f" of {all_windows}" + (
         f" (pages {pages_text(params['pages'])})" if params.get("pages") else "") + (
         f" ({', '.join(doc.languages)})" if kept is not None else "")
     library.heartbeat(job, 0, total, f"extracting from {len(selected)}{scope_note} windows"
+                      + (f", {len(table_parts)} table part(s)" if table_parts else "")
                       + (f" and {len(drawing_figures)} drawing(s)" if drawing_figures else "") + f" ({', '.join(presets)})")
 
     staged: dict[tuple, CandidateTriple] = {}
@@ -450,6 +605,8 @@ def run_extract(job) -> None:
             if key in staged:
                 if (t["confidence"] or 0) > (staged[key].confidence or 0):
                     staged[key].confidence = t["confidence"]
+                staged[key].subject_props = merge_properties(staged[key].subject_props, candidate.subject_props)
+                staged[key].object_props = merge_properties(staged[key].object_props, candidate.object_props)
             else:
                 staged[key] = candidate
             places = found.setdefault(id(staged[key]), [])
@@ -457,27 +614,37 @@ def run_extract(job) -> None:
                 places.append(make_evidence(t))
                 staged[key].occurrences = len(places)
 
-    for i, window in selected:
+    def read(i, text, section, mode, preset, halves_left=1) -> list[dict] | None:
+        """The triples of one text; None when it failed. An invalid answer (often cut off at the output limit)
+        is read again as two halves, once."""
+        messages = build_messages(preset, schema, text, doc.filename, section,
+                                  context=anchor["text"] if anchor and mode == "schema" else "")
+        for attempt in (1, 2):
+            # Heartbeat before every attempt: one attempt is at most two LLM calls
+            # (malformed-output retry), which stays under the stale-job threshold.
+            library.heartbeat(job, done, total, None if attempt == 1 else f"window {i + 1}: DGX slow, retrying")
+            try:
+                return extract_window(messages)
+            except requests.RequestException as exc:  # timeout / connection: the shared DGX is busy
+                if attempt == 2:
+                    logger.warning("extraction window failed doc=%s window=%d mode=%s: %s", doc.doc_key, i, mode, exc)
+            except Exception as exc:  # malformed output after the retry etc.: one bad window doesn't fail the run
+                halves = split_text(text) if halves_left and isinstance(exc, ExtractionError) else []
+                logger.warning("extraction window failed doc=%s window=%d mode=%s: %s%s", doc.doc_key, i, mode, exc,
+                               "; reading it in two halves" if halves else "")
+                if not halves:
+                    return None
+                parts = [read(i, half, section, mode, preset, halves_left - 1) for half in halves]
+                return None if all(p is None for p in parts) else [t for p in parts if p for t in p]
+        return None
+
+    for i, window in selected + table_parts:
         section = " > ".join(window.section_path)
         for mode, preset in presets.items():
-            raw = []
-            messages = build_messages(preset, schema, window.text, doc.filename, section,
-                                      context=anchor["text"] if anchor and mode == "schema" else "")
-            for attempt in (1, 2):
-                # Heartbeat before every attempt: one attempt is at most two LLM calls
-                # (malformed-output retry), which stays under the stale-job threshold.
-                library.heartbeat(job, done, total, None if attempt == 1 else f"window {i + 1}: DGX slow, retrying")
-                try:
-                    raw = extract_window(messages)
-                    break
-                except requests.RequestException as exc:  # timeout / connection: the shared DGX is busy
-                    if attempt == 2:
-                        failed += 1
-                        logger.warning("extraction window failed doc=%s window=%d mode=%s: %s", doc.doc_key, i, mode, exc)
-                except Exception as exc:  # malformed output after the retry etc.: one bad window doesn't fail the run
-                    failed += 1
-                    logger.warning("extraction window failed doc=%s window=%d mode=%s: %s", doc.doc_key, i, mode, exc)
-                    break
+            raw = read(i, window.text, section, mode, preset)
+            if raw is None:
+                failed += 1
+                raw = []
             stage(raw, mode, window, i, preset,
                   lambda t, window=window, i=i, preset=preset: _evidence(doc, window, i, preset, schema, t, params))
             done += 1
@@ -519,8 +686,8 @@ def run_extract(job) -> None:
     )
     note = f", {skipped} already reviewed" if skipped else ""
     library.heartbeat(job, total, total, f"{len(staged)} triples staged for review{note}")
-    logger.info("extraction done doc=%s windows=%d/%d triples=%d failed_calls=%d anchor=%s", doc.doc_key,
-                len(selected), all_windows, len(staged), failed, params.get("anchor_id") or "-")
+    logger.info("extraction done doc=%s windows=%d/%d table_parts=%d triples=%d failed_calls=%d anchor=%s", doc.doc_key,
+                len(selected), all_windows, len(table_parts), len(staged), failed, params.get("anchor_id") or "-")
 
 
 def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:
@@ -548,6 +715,11 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
             subtype = schema.subtype_for(t[f"{end}_type"], t.get(f"{end}_subtype", ""))
             if subtype:
                 props.setdefault(end, {})["subtype"] = subtype
+            # Documented properties only (schema v3); a schema without them takes none.
+            known = schema.properties.get(t[f"{end}_type"]) or {}
+            given = {k: v for k, v in (t.get(f"{end}_properties") or {}).items() if k in known}
+            if given:
+                props.setdefault(end, {}).update(given)
         if t["subject_type"] not in schema.entity_types or t["object_type"] not in schema.entity_types:
             issue = f"type not in schema ({t['subject_type']} / {t['object_type']})"
         else:
