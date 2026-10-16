@@ -79,6 +79,12 @@ class DrawingTriplesTests(LibraryTestCase):
         shared = CandidateTriple.objects.get(predicate="MONITORED_BY")
         self.assertIn("vision", shared.evidence.values_list("source_kind", flat=True))
 
+    def test_only_the_drawings_on_the_chosen_pages(self):
+        self.extract(include_drawings=True, pages=[[1, 1]])
+        self.vlm.assert_not_called()                                # the schematic is on page 2
+        self.extract(include_drawings=True, pages=[[2, 3]])
+        self.assertEqual(self.vlm.call_count, 1)
+
     def test_invalid_json_is_retried_once_then_the_figure_is_skipped(self):
         self.vlm.side_effect = ['{"triples":[{"subject":"VFD1', json.dumps(DRAWING_REPLY)]
         self.extract(include_drawings=True)

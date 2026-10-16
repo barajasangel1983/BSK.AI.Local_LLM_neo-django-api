@@ -562,7 +562,11 @@ def run_extract(job) -> None:
     if params.get("include_drawings"):
         from ingestion import figures as figure_store
         from . import drawings
-        drawing_figures = drawings.eligible(figure_store.load(doc))
+        # Only the drawings on the chosen pages and in the kept languages: all 15 of the EL5000 manual's drawings
+        # were sent for pages 13-16, and a wiring drawing on page 12 gave 4 wrong triples (2026-10-16).
+        wanted_pages = {p for a, b in params.get("pages") or [] for p in range(a, b + 1)}
+        drawing_figures = [f for f in drawings.eligible(figure_store.load(doc))
+                           if (not wanted_pages or f.get("page") in wanted_pages) and (kept is None or f.get("page") in kept)]
     if not selected and not table_parts and not drawing_figures:
         raise ExtractionError("the document produced no text windows")
 
