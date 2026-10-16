@@ -11,7 +11,7 @@
 
 
 from django.urls import path
-from . import attachments, rag_lab_views, templates_views, views
+from . import attachments, rag_lab_views, settings_views, templates_views, views
 
 urlpatterns = [
     # Simple health check
@@ -21,6 +21,9 @@ urlpatterns = [
     path("chat/", views.chat_view, name="chat"),
 
     # Chat attachments (images, PDFs): kept with the conversation, never added to the library
+    path("chat/settings/", settings_views.chat_settings, name="chat-settings"),
+    path("chat/speech/", settings_views.transcribe, name="chat-speech"),
+    path("chat/speech/test/", settings_views.speech_test, name="chat-speech-test"),
     path("chat/templates/", templates_views.templates, name="chat-templates"),
     path("chat/templates/import/", templates_views.templates_import, name="chat-templates-import"),
     path("chat/templates/<uuid:pk>/", templates_views.template_detail, name="chat-template"),

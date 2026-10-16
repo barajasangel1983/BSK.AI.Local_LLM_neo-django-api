@@ -110,3 +110,20 @@ class PromptTemplate(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class ChatSettings(models.Model):
+    """One row: the chat's settings (Settings → Chat). The speech key is never returned by the API."""
+
+    LANGUAGES = ("auto", "en", "es")
+
+    speech_enabled = models.BooleanField(default=False)
+    speech_language = models.CharField(max_length=8, default="auto")      # auto | en | es
+    speech_api_key = models.CharField(max_length=300, blank=True, default="")
+
+    class Meta:
+        db_table = "chat_settings"
+
+    @classmethod
+    def get(cls) -> "ChatSettings":
+        return cls.objects.get_or_create(pk=1)[0]
