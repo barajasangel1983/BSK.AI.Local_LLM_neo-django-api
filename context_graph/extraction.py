@@ -12,6 +12,15 @@ Runs as a library-worker job (kind "extract"):
 With `include_drawings`, the figures that Describe figures classified as drawings are also
 sent to the VLM on BSK (context_graph/drawings.py) and staged the same way, with vision evidence.
 
+Scope (step 2 of the schema review, 2026-10-15):
+- `pages` ("14, 18-26"): only the windows on those pages are read.
+- `follow_languages` (default on): a document that keeps some languages (Document.languages) is read on
+  those pages only, as for RAG.
+- `anchor_id`: the part the document describes (a generic manual, e.g. ABB's motors manual for
+  `main-motor`). The prompt names it and lists the asset's existing alarms, signals and procedures by
+  their exact names, so exact-name matching links to them; the product's own designations (model,
+  part number) are mapped to that part instead of making a new "Motor".
+
 The DGX's constrained decoding (guided_json / json_schema) was too slow to use
 (80+ s and invalid output per window), so JSON is requested in the prompt with
 `response_format: json_object` and validated here.
@@ -132,6 +141,12 @@ def validate_params(params: dict | None) -> dict:
     asset_id = params.get("asset_id") or ""
     if asset_id and not is_valid_id(asset_id):
         raise ExtractionError(f"asset_id must be a canonical id (bsk:asset:...), got {asset_id!r}")
+    anchor_id = params.get("anchor_id") or ""
+    if anchor_id:
+        if not (is_valid_id(anchor_id) and anchor_id.startswith("bsk:component:")):
+            raise ExtractionError(f"anchor_id must be a component id (bsk:component:...), got {anchor_id!r}")
+        if not asset_id:
+            raise ExtractionError("choose the asset of the part the document describes")
     return {
         "mode": mode,
         "chunking": {"strategy": chunking.get("strategy", "fixed"), "params": resolved},
@@ -139,7 +154,96 @@ def validate_params(params: dict | None) -> dict:
         "asset_id": asset_id,
         # Also read the document's described drawings with the VLM on BSK.
         "include_drawings": bool(params.get("include_drawings")),
+        "pages": parse_pages(params.get("pages")),
+        "follow_languages": params.get("follow_languages", True) is not False,
+        "anchor_id": anchor_id,
     }
+
+
+MAX_PAGE = 100_000
+
+
+def parse_pages(value) -> list[list[int]]:
+    """"14, 18-26" (or [[14, 14], [18, 26]]) -> [[14, 14], [18, 26]]; empty = every page."""
+    if not value:
+        return []
+    if isinstance(value, list):
+        ranges = value
+    else:
+        ranges = []
+        for part in str(value).replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            bounds = [b.strip() for b in part.replace("–", "-").split("-")]
+            if len(bounds) not in (1, 2) or not all(b.isdigit() for b in bounds):
+                raise ExtractionError(f"pages: {part!r} is not a page or a range like 18-26")
+            ranges.append([int(bounds[0]), int(bounds[-1])])
+    out = []
+    for r in ranges:
+        if not (isinstance(r, (list, tuple)) and len(r) == 2 and all(isinstance(n, int) for n in r)) \
+                or not 1 <= r[0] <= r[1] <= MAX_PAGE:
+            raise ExtractionError(f"pages: {r!r} is not a valid range")
+        out.append([r[0], r[1]])
+    return sorted(out)
+
+
+def pages_text(ranges: list[list[int]]) -> str:
+    return ", ".join(str(a) if a == b else f"{a}-{b}" for a, b in ranges)
+
+
+def select_windows(windows: list, params: dict, kept_pages: set[int] | None) -> list[tuple[int, object]]:
+    """(index in the whole document, window) for the windows the run reads: on the chosen pages, and on
+    pages in the kept languages. A window without page numbers is read only when no page is chosen."""
+    wanted = {p for a, b in params.get("pages") or [] for p in range(a, b + 1)}
+    out = []
+    for i, w in enumerate(windows):
+        span = set(range(w.page_start, (w.page_end or w.page_start) + 1)) if w.page_start else set()
+        if wanted and not span & wanted:
+            continue
+        if kept_pages is not None and span and not span & kept_pages:
+            continue
+        out.append((i, w))
+    return out
+
+
+ANCHOR_TEMPLATE = """Context for this document:
+- It describes the part "{name}" of the asset "{asset}"{details}. When the text refers to this product in general (its product name or model, "the motor", "the drive", "the unit", "the device"), use exactly the entity name "{name}" with type Component.
+- The text may also cover other models, sizes or variants: extract only what applies to this part.
+- Existing entities of this asset. When the text clearly means one of them, use its exact name; otherwise name the entity as written in the text:
+{existing}"""
+
+
+def anchor_context(asset_id: str, anchor_id: str) -> dict | None:
+    """The prompt's context block for the part a document describes, and the names that mean that part."""
+    from . import services
+    ctx = services.get_asset_context(asset_id)
+    components, signals = [], []
+
+    def walk(items):
+        for c in items:
+            components.append(c)
+            signals.extend(c["signals"])
+            walk(c["children"])
+    walk(ctx["components"])
+    signals += ctx["signals"]
+    part = next((c for c in components if c["id"] == anchor_id), None)
+    if part is None:
+        raise ExtractionError(f"{anchor_id!r} is not a part of {asset_id!r}")
+    p = part["properties"]
+    details = ", ".join(str(v) for v in (p.get("subtype") or p.get("component_type"), p.get("manufacturer"), p.get("model"),
+                                         p.get("part_number") and f"part number {p['part_number']}") if v)
+    listed = lambda items, n=60: "; ".join(dict.fromkeys(items))[:3000] if items else "none"   # noqa: E731
+    alarms = [f"{a['properties'].get('code') or a['name']} ({a['name']})" if a['properties'].get('code') else a["name"]
+              for a in ctx["alarms"]]
+    procedures = [pr["name"] for pr in ctx["procedures"]]
+    existing = "\n".join([f"  Alarms: {listed(alarms)}", f"  Signals: {listed([s['name'] for s in signals])}",
+                          f"  Procedures: {listed(procedures)}"])
+    text = ANCHOR_TEMPLATE.format(name=part["name"], asset=ctx["asset"]["name"], details=f" ({details})" if details else "",
+                                  existing=existing)
+    generic = {normalize(v) for v in (p.get("model"), p.get("part_number"),
+                                      f"{p.get('manufacturer', '')} {p.get('model', '')}".strip()) if v}
+    return {"id": anchor_id, "name": part["name"], "text": text, "generic": generic - {""}}
 
 
 # --- prompt + LLM ------------------------------------------------------------
@@ -179,12 +283,15 @@ def render_template(template: str, **values: str) -> str:
     return template
 
 
-def build_messages(preset: PromptPreset, schema: Schema, text: str, document: str, section: str) -> list[dict]:
+def build_messages(preset: PromptPreset, schema: Schema, text: str, document: str, section: str,
+                   context: str = "") -> list[dict]:
+    """`context`: the anchor block (the part the document describes), added after the preset's text."""
     entity_types, relationships = render_schema(schema)
     values = {"entity_types": entity_types, "relationships": relationships, "document": document, "section": section or "-"}
+    extra = f"\n\n{context}" if context else ""
     if "{text}" in preset.template:  # the template places the text itself
-        return [{"role": "system", "content": render_template(preset.template, **values, text=text)}]
-    return [{"role": "system", "content": render_template(preset.template, **values)}, {"role": "user", "content": text}]
+        return [{"role": "system", "content": render_template(preset.template, **values, text=text) + extra}]
+    return [{"role": "system", "content": render_template(preset.template, **values) + extra}, {"role": "user", "content": text}]
 
 
 def call_llm(messages: list[dict]) -> str:
@@ -286,21 +393,34 @@ def run_extract(job) -> None:
         library.run_parse(job)
         doc.refresh_from_db()
 
-    windows = chunk_parsed(library.load_parsed(doc), params["chunking"]["strategy"], params["chunking"]["params"])
+    parsed = library.load_parsed(doc)
+    windows = chunk_parsed(parsed, params["chunking"]["strategy"], params["chunking"]["params"])
+    kept = None
+    if params.get("follow_languages", True) and doc.languages:
+        from ingestion import languages
+        kept = languages.kept_pages((parsed.get("document") or {}).get("md_content") or "", doc.languages)
+    all_windows = len(windows)
+    selected = select_windows(windows, params, kept)
+    if all_windows and not selected:
+        raise ExtractionError("no text on the chosen pages" + (" in the kept languages" if kept is not None else ""))
+    anchor = anchor_context(params["asset_id"], params["anchor_id"]) if params.get("anchor_id") else None
     drawing_figures: list[dict] = []
     if params.get("include_drawings"):
         from ingestion import figures as figure_store
         from . import drawings
         drawing_figures = drawings.eligible(figure_store.load(doc))
-    if not windows and not drawing_figures:
+    if not selected and not drawing_figures:
         raise ExtractionError("the document produced no text windows")
 
     schema = registry.active_schema()
     presets = {m: PromptPreset.objects.get(pk=pk) for m, pk in params["presets"].items()}
     index = EntityIndex.load()
     scope_key = scope_key_for(params, doc)
-    total = (len(windows) + len(drawing_figures)) * len(presets)
-    library.heartbeat(job, 0, total, f"extracting from {len(windows)} windows"
+    total = (len(selected) + len(drawing_figures)) * len(presets)
+    scope_note = "" if len(selected) == all_windows else f" of {all_windows}" + (
+        f" (pages {pages_text(params['pages'])})" if params.get("pages") else "") + (
+        f" ({', '.join(doc.languages)})" if kept is not None else "")
+    library.heartbeat(job, 0, total, f"extracting from {len(selected)}{scope_note} windows"
                       + (f" and {len(drawing_figures)} drawing(s)" if drawing_figures else "") + f" ({', '.join(presets)})")
 
     staged: dict[tuple, CandidateTriple] = {}
@@ -317,6 +437,10 @@ def run_extract(job) -> None:
         for t in raw:
             if mode == "schema" and (t["subject_type"] in EVIDENCE_TYPES or t["object_type"] in EVIDENCE_TYPES):
                 continue  # evidence structure is written on approval, not extracted
+            if anchor:   # the product's own designations mean the anchor part
+                for end in ("subject", "object"):
+                    if t[f"{end}_type"] == "Component" and normalize(t[end]) in anchor["generic"]:
+                        t = {**t, end: anchor["name"]}
             candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model)
             key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
                              candidate.object_name, candidate.object_type)
@@ -333,11 +457,12 @@ def run_extract(job) -> None:
                 places.append(make_evidence(t))
                 staged[key].occurrences = len(places)
 
-    for i, window in enumerate(windows):
+    for i, window in selected:
         section = " > ".join(window.section_path)
         for mode, preset in presets.items():
             raw = []
-            messages = build_messages(preset, schema, window.text, doc.filename, section)
+            messages = build_messages(preset, schema, window.text, doc.filename, section,
+                                      context=anchor["text"] if anchor and mode == "schema" else "")
             for attempt in (1, 2):
                 # Heartbeat before every attempt: one attempt is at most two LLM calls
                 # (malformed-output retry), which stays under the stale-job threshold.
@@ -394,7 +519,8 @@ def run_extract(job) -> None:
     )
     note = f", {skipped} already reviewed" if skipped else ""
     library.heartbeat(job, total, total, f"{len(staged)} triples staged for review{note}")
-    logger.info("extraction done doc=%s windows=%d triples=%d failed_calls=%d", doc.doc_key, len(windows), len(staged), failed)
+    logger.info("extraction done doc=%s windows=%d/%d triples=%d failed_calls=%d anchor=%s", doc.doc_key,
+                len(selected), all_windows, len(staged), failed, params.get("anchor_id") or "-")
 
 
 def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:

@@ -19,6 +19,7 @@ from .ids import type_slug
 
 LABEL_RE = re.compile(r"^[A-Z][A-Za-z0-9]*$")      # PascalCase node labels
 REL_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")          # UPPER_SNAKE relationship types
+PROPERTY_RE = re.compile(r"^[a-z][a-z0-9_]*$")      # snake_case property names (documented per type, v3)
 RESERVED_LABELS = {"Entity", "Lab"}                 # base label / free-form lab layer
 DEFAULT_SCHEMA_PATH = Path(__file__).parent / "schemas" / "industrial_v1.yaml"
 
@@ -42,6 +43,9 @@ class Schema:
     entity_types: dict[str, str]                       # label -> description
     relationship_types: dict[str, RelationshipType]
     subtypes: dict[str, tuple[str, ...]] = field(default_factory=dict)   # label -> allowed subtypes (P8b)
+    # label -> {property: meaning}: the documented properties of each type (v3). Documentation for people and
+    # extraction prompts; writes are not refused for an undocumented property.
+    properties: dict[str, dict[str, str]] = field(default_factory=dict)
     version: int | None = None
     definition: dict = field(default_factory=dict, repr=False)
 
@@ -69,12 +73,17 @@ class Schema:
             label: tuple(str(t) for t in (spec or {}).get("subtypes") or ())
             for label, spec in definition["entity_types"].items() if (spec or {}).get("subtypes")
         }
+        properties = {
+            label: {str(k): str(v or "") for k, v in (spec or {}).get("properties").items()}
+            for label, spec in definition["entity_types"].items() if isinstance((spec or {}).get("properties"), dict)
+        }
         return cls(
             name=definition.get("name", "Schema"),
             description=definition.get("description", ""),
             entity_types=entity_types,
             relationship_types=relationship_types,
             subtypes=subtypes,
+            properties=properties,
             version=version,
             definition=definition,
         )
@@ -162,6 +171,16 @@ def validate_definition(definition: dict) -> list[str]:
         sub = (entity_types[label] or {}).get("subtypes") if isinstance(entity_types[label], dict) else None
         if sub is not None and not (isinstance(sub, list) and all(isinstance(t, str) and t.strip() for t in sub)):
             errors.append(f"entity type {label!r}: subtypes must be a list of names")
+        props = (entity_types[label] or {}).get("properties") if isinstance(entity_types[label], dict) else None
+        if props is not None:
+            if not isinstance(props, dict):
+                errors.append(f"entity type {label!r}: properties must map a property name to its meaning")
+            else:
+                for name, meaning in props.items():
+                    if not PROPERTY_RE.match(str(name)):
+                        errors.append(f"entity type {label!r}: property {name!r} must be snake_case")
+                    elif meaning is not None and not isinstance(meaning, str):
+                        errors.append(f"entity type {label!r}: the meaning of property {name!r} must be text")
 
     seen_aliases: dict[str, str] = {}
     for name, spec in rel_types.items():
