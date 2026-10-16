@@ -1,0 +1,185 @@
+# "Industrial" Context Graph schema — version 3 (2026-10-15), for Angel's review.
+# Rationale: claude/Schema_review_2026-10-15.md (Studio web repository), sections 6 to 9.
+#
+# Additive only: every type, pair, subtype and alias of v2 is kept; nothing in the graph changes when
+# this version is activated. What is added:
+#   - FailureMode (ISO 14224: failures kept apart from equipment and maintenance) with
+#     HAS_FAILURE_MODE, INDICATED_BY (the symptom: an alarm or a signal) and MITIGATED_BY (the procedure)
+#   - HAS_ALARM also from a Component (a device's own fault and warning codes) and from a Signal
+#     (ISA-18.2: an alarm belongs to its tag)
+#   - HAS_PROCEDURE also from a Component; DOCUMENTED_BY also from a Procedure;
+#     DESCRIBES also to Procedure, FailureMode and OperatingLimit
+#   - subtypes for Alarm, Procedure, Document (VDI 2770 classes) and FailureMode; more Component subtypes
+#   - `properties`: the documented property names of each type (what imports and extraction write)
+name: Industrial
+description: Assets, components, signals, alarms, failure modes, procedures and documents of a manufacturing asset.
+
+entity_types:
+  Plant:           {description: "Manufacturing site."}
+  Area:            {description: "Area / department within a plant."}
+  Line:            {description: "Production line (work center)."}
+  Asset:
+    description: "Machine or equipment unit (One Asset = One Context)."
+    properties:
+      asset_type: "kind of machine, e.g. Extruder"
+      description: "what the asset is"
+  Component:
+    description: "Part or subsystem of an asset; can nest."
+    subtypes: [Motor, Drive, Gearbox, Screw, Barrel, Heater, Die, Feeder, Pump, Valve, Conveyor, Cutter,
+               Overload relay, Breaker, Contactor, Controller, Sensor, Instrument,
+               Heating zone, Conditioner, Measurement point, PLC, Computer, Power supply, Load cell, Bearing]
+    properties:
+      subtype: "the schema's subtype (v3); imports before v3 wrote `component_type`, which is kept"
+      component_type: "the type as the source wrote it (BOM Type column)"
+      manufacturer: "Digital Nameplate: manufacturer name"
+      model: "Digital Nameplate: product designation"
+      part_number: "order code / article number"
+      part_number_check: "how far the part number was verified"
+      serial_number: "Digital Nameplate: serial number, when known"
+      quantity: "how many in the asset"
+      manual_url: "where the manufacturer's manual is (one or several, ' | ')"
+      manual_title: "the manual's title"
+      notes: "free remarks from the source"
+  Signal:
+    description: "Measured or computed variable (tag)."
+    subtypes: [Temperature, Pressure, Flow, Speed, Torque, Power, Current, Voltage, Level, Moisture,
+               Density, Dimension, Rate, State, Counter, KPI]
+    properties:
+      unit: "engineering unit, normalized (°C, bar, kg/h …)"
+      data_type: "float, int, bool, text"
+      historian_ref: "the historian column (plc_1_historian.extruder_samples.<column>)"
+      subtype: "the schema's subtype"
+  OPCNode:
+    description: "OPC UA node implementing a signal."
+    properties:
+      node_id: "ns=…;s=…"
+      slot: "the PLC slot, e.g. AnalogIn[12]"
+      data_type: "the OPC UA data type"
+  Alarm:
+    description: "Alarm or event condition: a PLC alarm, or a device's own fault or warning code."
+    subtypes: [PLC alarm, Device fault, Device warning]
+    properties:
+      code: "the alarm or fault code as shown, e.g. DIE_PLUG, F7801"
+      severity: "priority (ISA-18.2)"
+      description: "the alarm text"
+      plc_index: "its place in the PLC's fault list"
+      setpoint: "the value at which it is raised, with its unit, when stated"
+      cause: "the documented cause(s), as written"
+      consequence: "what happens if nothing is done"
+      corrective_action: "what to do, as written"
+  OperatingLimit:
+    description: "Range or setpoint that applies to a signal."
+    properties:
+      kind: "normal | specification | alarm | trip"
+      low: "lower limit"
+      target: "target or setpoint"
+      high: "upper limit"
+      unit: "the signal's unit"
+      group: "a recipe or product the limit applies to"
+      basis: "where the values come from"
+  FailureMode:
+    description: "A way a component fails, as a maintenance or troubleshooting text describes it (ISO 14224), e.g. bearing overheating, screen pack blinding."
+    subtypes: [Electrical, Mechanical, Thermal, Process, Control, Instrumentation]
+    properties:
+      description: "the failure as described"
+      causes: "probable causes, as written (a list)"
+      effect: "what the failure does to the machine or the product"
+  Procedure:
+    description: "SOP, troubleshooting, inspection, lubrication or maintenance procedure (summary only)."
+    subtypes: [Inspection, Lubrication, Calibration, Commissioning, Corrective, Troubleshooting, Cleaning,
+               Replacement, Operation]
+    properties:
+      procedure_type: "the kind, as the source states it"
+      summary: "the steps, short"
+      interval: "how often, e.g. at least once a year, every 4,000 h"
+      amount: "quantities, e.g. grease per bearing"
+      status: "draft | approved"
+  Document:
+    description: "Source document (evidence lives in the document stores, not the graph)."
+    subtypes: [Operating instructions, Maintenance instructions, Technical specification, Data sheet, Drawing,
+               Spare parts list, Certificate, Standard operating procedure, Quality alert, Visual aid, Training, Report]
+    properties:
+      doc_key: "the library's document key"
+      doc_class: "VDI 2770 document class (the subtype)"
+      source_url: "where it was downloaded from"
+  DocumentSection: {description: "Section/page range of a document, referenced as evidence."}
+
+relationship_types:
+  CONTAINS:
+    description: Physical/organizational hierarchy.
+    pairs: [[Plant, Area], [Area, Line], [Line, Asset]]
+    aliases: [contains, includes area, includes line]
+  HAS_COMPONENT:
+    description: Composition.
+    pairs: [[Asset, Component], [Component, Component]]
+    aliases: [has component, has part, consists of, is equipped with, includes]
+  CONNECTED_TO:
+    description: "Connection between components (property `kind`: material_flow, electrical, mechanical, ...)."
+    pairs: [[Component, Component]]
+    aliases: [connected to, feeds, flows to, discharges to, coupled to]
+  MONITORED_BY:
+    description: Signal that monitors an asset or component.
+    pairs: [[Asset, Signal], [Component, Signal]]
+    aliases: [monitored by, measured by, sensed by, has signal, has sensor reading]
+  IMPLEMENTED_AS:
+    description: Signal realized by an OPC UA node.
+    pairs: [[Signal, OPCNode]]
+    aliases: [implemented as, mapped to opc node]
+  HAS_LIMIT:
+    description: Operating limit of a signal.
+    pairs: [[Signal, OperatingLimit]]
+    aliases: [has limit, has range, has setpoint, limited to]
+  HAS_ALARM:
+    description: "Alarm defined for an asset; a device's own fault or warning code (Component, v3); the alarm of a tag (Signal, v3, ISA-18.2)."
+    pairs: [[Asset, Alarm], [Component, Alarm], [Signal, Alarm]]
+    aliases: [has alarm, raises alarm, has fault code, alarms on]
+  ASSOCIATED_WITH:
+    description: Component involved in an alarm.
+    pairs: [[Component, Alarm]]
+    aliases: [associated with, triggers, causes alarm]
+  HAS_PROCEDURE:
+    description: "Procedure available for an asset, or for a component (v3)."
+    pairs: [[Asset, Procedure], [Component, Procedure]]
+    aliases: [has procedure, has sop, has maintenance procedure]
+  APPLIES_TO:
+    description: Scope of a procedure.
+    pairs: [[Procedure, Asset], [Procedure, Component]]
+    aliases: [applies to, used for, performed on]
+  ADDRESSES:
+    description: Alarm a procedure resolves.
+    pairs: [[Procedure, Alarm]]
+    aliases: [addresses, resolves, clears, fixes]
+  HAS_FAILURE_MODE:
+    description: "A way the component (or the asset) can fail (v3, ISO 14224)."
+    pairs: [[Component, FailureMode], [Asset, FailureMode]]
+    aliases: [has failure mode, can fail by, may fail by, failure of]
+  INDICATED_BY:
+    description: "The symptom of a failure mode: an alarm or fault code, or a signal (v3)."
+    pairs: [[FailureMode, Alarm], [FailureMode, Signal]]
+    aliases: [indicated by, signalled by, shown by, symptom]
+  MITIGATED_BY:
+    description: "The corrective action for a failure mode (v3)."
+    pairs: [[FailureMode, Procedure]]
+    aliases: [mitigated by, corrected by, remedied by, what to do]
+  DRIVES:
+    description: A drive, motor or gearbox drives another component.
+    pairs: [[Component, Component]]
+    aliases: [drives, runs, powers, turns]
+  PROTECTS:
+    description: A protective device (overload relay, breaker) protects a component.
+    pairs: [[Component, Component]]
+    aliases: [protects, guards, trips for]
+  CONTROLS:
+    description: A controller or drive controls a component or a signal.
+    pairs: [[Component, Component], [Component, Signal]]
+    aliases: [controls, regulates, adjusts, sets]
+  DOCUMENTED_BY:
+    description: "Document describing an asset, a component, or a procedure (v3)."
+    pairs: [[Asset, Document], [Component, Document], [Procedure, Document]]
+  HAS_SECTION:
+    description: Document structure.
+    pairs: [[Document, DocumentSection]]
+  DESCRIBES:
+    description: Evidence link from a document section to what it describes.
+    pairs: [[DocumentSection, Asset], [DocumentSection, Component], [DocumentSection, Signal], [DocumentSection, Alarm],
+            [DocumentSection, Procedure], [DocumentSection, FailureMode], [DocumentSection, OperatingLimit]]

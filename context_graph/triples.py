@@ -194,8 +194,10 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
 
     # Evidence pointers: document + section, linked to what they describe (where the schema allows).
     doc_id = make_id("Document", doc.doc_key)
-    repository.upsert_node(tx, schema, "Document", doc_id, {"name": doc.filename, "doc_key": doc.doc_key,
-                                                            "document_id": str(doc.id), "source": "library"})
+    # A Document an import already made (v3 manuals) keeps its name and source; text only adds its sections.
+    if not tx.run("MATCH (d:Entity {id: $id}) RETURN d.id", id=doc_id).single():
+        repository.upsert_node(tx, schema, "Document", doc_id, {"name": doc.filename, "doc_key": doc.doc_key,
+                                                                "document_id": str(doc.id), "source": "library"})
     section_id = _section_id(t)
     repository.upsert_node(tx, schema, "DocumentSection", section_id, {
         "name": (t.section_path or [doc.filename])[-1], "section_path": t.section_path or [],
@@ -356,9 +358,12 @@ def _uncommit(tx, t: CandidateTriple) -> None:
         "WHERE NOT (s)-[:DESCRIBES]->() DETACH DELETE s",
         doc=t.document.doc_key,
     )
+    # Only a Document text made and nothing else uses: never one an import's approved link still points to.
     tx.run(
         "MATCH (d:Document {doc_key: $doc, source: 'library'}) "
-        "WHERE NOT (d)-[:HAS_SECTION]->() DETACH DELETE d",
+        "WHERE NOT (d)-[:HAS_SECTION]->() "
+        "AND NOT EXISTS { MATCH (d)-[r]-() WHERE r.source <> 'library' OR size(coalesce(r.triple_ids, [])) > 0 } "
+        "DETACH DELETE d",
         doc=t.document.doc_key,
     )
 

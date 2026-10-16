@@ -520,7 +520,8 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         try:
             parts = [clean_part(key)] + ([clean_part(spec["id_suffix"])] if spec.get("id_suffix") else [])
             parts += [clean_part(values[c].lower()) for c in suffix_columns if values.get(c)]
-            proposed = make_id(label, *parts) if label == "Asset" else make_id(label, scope_key, *parts)
+            # Assets and documents are global (a library document is bsk:document:<doc_key>, as extraction writes it).
+            proposed = make_id(label, *parts) if label in ("Asset", "Document") else make_id(label, scope_key, *parts)
         except ValueError:
             result.row_errors.append({"row": number, "message": f"{spec['key']}: {key!r} can't be used as an id"})
             return None
