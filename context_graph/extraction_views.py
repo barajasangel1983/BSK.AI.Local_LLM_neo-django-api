@@ -209,6 +209,7 @@ def triple_json(t: CandidateTriple) -> dict:
                    "match": t.object_match or None, "candidates": t.object_candidates or [],
                    "properties": t.object_props or {}, "changes": (t.replaces or {}).get(t.object_id) or {}},
         "confidence": t.confidence, "issue": t.issue, "occurrences": t.occurrences, "edited": t.edited,
+        "auto_fix": t.auto_fix,
         # Every place the triple was found (P8a); `evidence` below is the first one (kept for older clients).
         "sources": [evidence_json(e) for e in t.evidence.all()],
         "evidence": {"chunk_index": t.chunk_index, "page_start": t.page_start, "page_end": t.page_end,

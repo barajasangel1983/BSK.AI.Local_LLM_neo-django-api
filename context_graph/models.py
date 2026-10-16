@@ -203,6 +203,8 @@ class CandidateTriple(models.Model):
     evidence = models.ManyToManyField(Evidence, related_name="triples", blank=True)
     confidence = models.FloatField(null=True, blank=True)
     issue = models.CharField(max_length=255, blank=True, default="")  # e.g. pair not allowed by the schema
+    # A change made when staging, with the link as the model wrote it ("flipped from Alarm -MITIGATED_BY-> Procedure").
+    auto_fix = models.CharField(max_length=255, blank=True, default="")
 
     # Evidence (text lives here, in the document library — never in Neo4j)
     chunk_index = models.PositiveIntegerField(default=0)

@@ -54,6 +54,10 @@ def edit(triple: CandidateTriple, changes: dict) -> CandidateTriple:
     for end in ("subject", "object"):
         if f"{end}_match" in changes and changes[f"{end}_match"] != "new":
             raise TripleError(f"{end}_match can only be set to 'new' (pick a candidate by setting {end}_id)")
+    if _swaps_ends(triple, changes):
+        # A flip (the Flip button): each end keeps its own properties. Swapping only names and types left the
+        # alarm's subtype on the procedure and the procedure's summary on the alarm (2026-10-16).
+        triple.subject_props, triple.object_props = triple.object_props, triple.subject_props
     for key, value in changes.items():
         if not key.endswith("_match"):
             setattr(triple, key, str(value or "").strip()[:512])
@@ -63,6 +67,15 @@ def edit(triple: CandidateTriple, changes: dict) -> CandidateTriple:
     triple.edited = True
     triple.save()
     return triple
+
+
+def _swaps_ends(t: CandidateTriple, changes: dict) -> bool:
+    """The edit puts the object's name and type on the subject, and the other way round."""
+    new = {k: str(changes.get(k, getattr(t, k)) or "").strip()
+           for k in ("subject_name", "subject_type", "object_name", "object_type")}
+    return ((t.subject_name, t.subject_type) != (t.object_name, t.object_type)
+            and (new["subject_name"], new["subject_type"]) == (t.object_name, t.object_type)
+            and (new["object_name"], new["object_type"]) == (t.subject_name, t.subject_type))
 
 
 def _reresolve(t: CandidateTriple, changes: dict, index=None) -> None:
