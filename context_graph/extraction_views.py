@@ -168,6 +168,31 @@ def extract(request):
     return Response({"jobs": [job_json(j) for j in jobs]}, status=status.HTTP_202_ACCEPTED)
 
 
+@api_view(["POST"])
+@graph_errors
+def suggest_pages(request):
+    """The pages of a document worth reading for Generate triples, chosen by the model from its outline."""
+    import requests
+    from . import page_suggest
+
+    doc = Document.objects.filter(pk=request.data.get("document_id") or None).first()
+    if doc is None:
+        return _error("document not found", status.HTTP_404_NOT_FOUND)
+    if doc.parse_status != Document.ParseStatus.PARSED or not library.parsed_path(doc).exists():
+        return _error("parse the document first (Library → Parse)")
+    params = extraction.validate_params({k: request.data.get(k) for k in ("asset_id", "anchor_id") if request.data.get(k)})
+    preset_id = request.data.get("preset_id")
+    preset = PromptPreset.objects.filter(pk=preset_id).first() if preset_id else extraction.default_preset("schema")
+    if preset is None:
+        return _error(f"unknown prompt preset {preset_id!r}", status.HTTP_404_NOT_FOUND)
+    try:
+        result = page_suggest.suggest(doc, preset=preset, asset_id=params["asset_id"], anchor_id=params["anchor_id"],
+                                      follow_languages=request.data.get("follow_languages", True) is not False)
+    except requests.RequestException as exc:
+        return _error(f"the DGX did not answer ({exc.__class__.__name__})", status.HTTP_502_BAD_GATEWAY)
+    return Response(result)
+
+
 # --- triples -------------------------------------------------------------------
 
 def triple_json(t: CandidateTriple) -> dict:
