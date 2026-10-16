@@ -133,6 +133,10 @@ Rules:
   - What to do is ONE Procedure per trouble, named "<trouble>: what to do", subtype Corrective, with "summary"
     giving each cause and its action ("Blown fuses: replace fuses with proper type and rating; Overload trips: ...").
     <trouble> MITIGATED_BY <procedure>.
+- A list of fault, warning or alarm messages (a code or name, its cause, what to do): each message is ONE Alarm,
+  named as written: <part> HAS_ALARM <alarm>. What to do is ONE Procedure named "<alarm>: what to do", subtype
+  Corrective, with "summary": <procedure> ADDRESSES <alarm>. The link goes from the procedure to the alarm,
+  never <alarm> MITIGATED_BY <procedure>.
 - Maintenance, inspection, lubrication: a Procedure named as the text names it, with a subtype and its
   "interval", "amount" and "summary" when the text gives them: <part> HAS_PROCEDURE <procedure>.
   Steps or instructions without a title of their own (a list under a heading) are the procedure named by the
@@ -710,11 +714,19 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
     subject_existing = object_existing = False
     matches: dict = {}
     props: dict = {}
+    auto_fix = ""
     if mode == "schema":
         # A synonym of an allowed relationship ("drives", "is monitored by") becomes the schema type.
         canonical = schema.relationship_for(t["predicate"], t["subject_type"], t["object_type"])
         if canonical:
             t = {**t, "predicate": canonical}
+        else:
+            # A link the schema allows only the other way round is flipped (the ACS880 fault list came as
+            # "Alarm -MITIGATED_BY-> Procedure", 2026-10-16); the reviewer sees it was.
+            flipped = schema.reversed_relationship(t["subject_type"], t["predicate"], t["object_type"])
+            if flipped:
+                auto_fix = f"flipped from {t['subject_type']} -{t['predicate']}-> {t['object_type']}"[:255]
+                t = {**_swap_ends(t), "predicate": flipped}
         for end in ("subject", "object"):
             subtype = schema.subtype_for(t[f"{end}_type"], t.get(f"{end}_subtype", ""))
             if subtype:
@@ -744,10 +756,21 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
         subject_name=t["subject"], subject_type=t["subject_type"], subject_id=subject_id, subject_existing=subject_existing,
         predicate=t["predicate"],
         object_name=t["object"], object_type=t["object_type"], object_id=object_id, object_existing=object_existing,
-        confidence=t["confidence"], issue=issue,
+        confidence=t["confidence"], issue=issue, auto_fix=auto_fix,
         chunk_index=i, page_start=window.page_start, page_end=window.page_end, section_path=window.section_path,
         evidence_text=window.text[:EVIDENCE_CHARS],
         model=model or settings.DGX_CHAT_MODEL, preset_name=preset.name, preset_version=preset.version,
         schema_version=schema.version, **matches,
         subject_props=props.get("subject", {}), object_props=props.get("object", {}),
     )
+
+
+def _swap_ends(t: dict) -> dict:
+    """`t` with the subject's name, type, subtype and properties as the object's, and the other way round."""
+    ends = {f"{end}{suffix}" for end in ("subject", "object") for suffix in ("", "_type", "_subtype", "_properties")}
+    out = {k: v for k, v in t.items() if k not in ends}
+    for a, b in (("subject", "object"), ("object", "subject")):
+        for suffix in ("", "_type", "_subtype", "_properties"):
+            if b + suffix in t:
+                out[a + suffix] = t[b + suffix]
+    return out

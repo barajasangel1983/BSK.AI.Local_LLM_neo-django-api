@@ -123,6 +123,22 @@ class Schema:
                     return rt.name
         return None
 
+    def reversed_relationship(self, from_label: str, phrase: str, to_label: str) -> str | None:
+        """The relationship for a link written the wrong way round ("Alarm -MITIGATED_BY-> Procedure" for
+        "Procedure -ADDRESSES-> Alarm", 2026-10-16), or None.
+
+        Only when no relationship allows from_label -> to_label and the reverse is allowed; the model's own
+        phrase when it is allowed reversed, else the reverse pair's only relationship (two or more: None).
+        """
+        pairs = {rt.name: rt.pairs for rt in self.relationship_types.values()}
+        if any((from_label, to_label) in p for p in pairs.values()):
+            return None
+        own = self.relationship_for(phrase, to_label, from_label)
+        if own:
+            return own
+        allowed = [name for name, p in pairs.items() if (to_label, from_label) in p]
+        return allowed[0] if len(allowed) == 1 else None
+
     def label_for_slug(self, slug: str) -> str | None:
         """Entity type whose ID slug is `slug` (bsk:<slug>:...)."""
         return next((label for label in self.entity_types if type_slug(label) == slug), None)
