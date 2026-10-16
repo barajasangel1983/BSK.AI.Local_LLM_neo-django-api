@@ -38,7 +38,7 @@ def _error(message: str, code=status.HTTP_400_BAD_REQUEST) -> Response:
 # --- presets -----------------------------------------------------------------
 
 def preset_json(p: PromptPreset) -> dict:
-    builtin = {name: template for name, template in extraction.DEFAULT_PRESETS.values()}
+    builtin = extraction.builtin_templates()
     return {
         "id": p.pk, "name": p.name, "mode": p.mode, "template": p.template, "version": p.version,
         "is_default": p.is_default, "builtin": p.name in builtin,
@@ -81,14 +81,15 @@ def preset_detail(request, preset_id):
     preset = PromptPreset.objects.filter(pk=preset_id).first()
     if preset is None:
         return _error("preset not found", status.HTTP_404_NOT_FOUND)
-    builtin_names = {name for name, _ in extraction.DEFAULT_PRESETS.values()}
+    builtin_names = set(extraction.builtin_templates())
+    default_names = {name for name, _ in extraction.DEFAULT_PRESETS.values()}
     if request.method == "DELETE":
         if preset.name in builtin_names:
             return _error("built-in presets can't be deleted (edit or restore them instead)", status.HTTP_409_CONFLICT)
         was_default, mode = preset.is_default, preset.mode
         preset.delete()
         if was_default:  # fall back to the built-in default for that mode
-            PromptPreset.objects.filter(mode=mode, name__in=builtin_names).update(is_default=True)
+            PromptPreset.objects.filter(mode=mode, name__in=default_names).update(is_default=True)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     data = request.data
@@ -157,6 +158,8 @@ def extract(request):
               if request.data.get(k)}
     if "follow_languages" in request.data:      # false is meaningful: read every language
         params["follow_languages"] = request.data.get("follow_languages")
+    if "tables_by_row" in request.data:         # false: tables are read inside the text windows, as before
+        params["tables_by_row"] = request.data.get("tables_by_row")
     try:
         params = extraction.validate_params(params)   # validate once, before anything is queued
         jobs = [library.enqueue(docs[str(i)], Job.Kind.EXTRACT, params) for i in ids]
