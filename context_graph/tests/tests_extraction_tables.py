@@ -193,3 +193,25 @@ class MaintenancePresetTests(LibraryTestCase):
         # The built-in maintenance preset can be edited and restored, not deleted.
         r = APIClient().delete(f"/api/graph/presets/{preset.pk}/")
         self.assertEqual(r.status_code, 409)
+
+
+@override_settings(GRAPH_ENABLED=False)
+class ReviewByConfidenceTests(LibraryTestCase):
+    """Step 4: the review list ranked by confidence; low confidence hidden unless asked."""
+
+    def test_order_and_floor(self):
+        doc, _ = self.upload()
+        for name, confidence in (("a", 0.5), ("b", 0.95), ("c", None), ("d", 0.8)):
+            CandidateTriple.objects.create(document=doc, mode="schema", subject_name=name, subject_type="Component",
+                                           predicate="HAS_PROCEDURE", object_name=f"p{name}", object_type="Procedure",
+                                           confidence=confidence)
+        client = APIClient()
+        names = lambda **qp: [t["subject"]["name"] for t in client.get("/api/graph/triples/", qp).json()["triples"]]  # noqa: E731
+        self.assertEqual(names(), ["a", "b", "c", "d"])                         # unchanged without the options
+        self.assertEqual(names(order="-confidence"), ["b", "d", "a", "c"])
+        self.assertEqual(names(order="confidence"), ["a", "d", "b", "c"])
+        self.assertEqual(names(order="-confidence", min_confidence="0.8"), ["b", "d", "c"])   # no confidence: always shown
+        ids = client.get("/api/graph/triples/", {"fields": "ids", "min_confidence": "0.9"}).json()
+        self.assertEqual(ids["total"], 2)
+        self.assertEqual(client.get("/api/graph/triples/", {"min_confidence": "x"}).status_code, 400)
+        self.assertEqual(client.get("/api/graph/triples/", {"order": "name"}).status_code, 400)
