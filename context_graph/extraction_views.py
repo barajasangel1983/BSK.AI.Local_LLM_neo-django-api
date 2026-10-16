@@ -13,7 +13,7 @@
 """
 
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -214,6 +214,20 @@ def triple_list(request):
     if qp.get("q"):
         q = qp["q"]
         qs = qs.filter(Q(subject_name__icontains=q) | Q(object_name__icontains=q) | Q(predicate__icontains=q))
+    if qp.get("min_confidence"):      # review step 4: the model's low-confidence guesses hidden unless asked
+        try:
+            floor = float(qp["min_confidence"])
+        except ValueError:
+            return _error("min_confidence must be a number between 0 and 1")
+        # Import rows have no confidence (they are not guesses): they always pass.
+        qs = qs.filter(Q(confidence__gte=floor) | Q(confidence__isnull=True))
+    order = qp.get("order") or ""
+    if order not in ("", "confidence", "-confidence"):
+        return _error("order must be confidence or -confidence")
+    if order == "-confidence":        # highest first; ties in the document's order
+        qs = qs.order_by(F("confidence").desc(nulls_last=True), "document_id", "chunk_index", "id")
+    elif order == "confidence":
+        qs = qs.order_by(F("confidence").asc(nulls_last=True), "document_id", "chunk_index", "id")
     counts = {s: 0 for s in CandidateTriple.Status.values}
     for row in qs.order_by().values("status").annotate(n=Count("id")):
         counts[row["status"]] = row["n"]
