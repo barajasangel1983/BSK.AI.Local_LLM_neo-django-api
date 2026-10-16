@@ -266,14 +266,15 @@ def triple_detail(request, triple_id):
     return Response(triple_json(triple))
 
 
-def _selected(request) -> list[CandidateTriple] | Response:
+def _selected(request, skip_missing: bool = False) -> list[CandidateTriple] | Response:
+    """The triples of a request's ids; an unknown id is a 404, unless skip_missing (a delete: already gone)."""
     ids = request.data.get("ids") or []
     if not isinstance(ids, list) or not ids:
         return _error("ids must be a non-empty list")
     if len(ids) > MAX_TRIPLES:
         return _error(f"at most {MAX_TRIPLES} triples per request")
     found = list(CandidateTriple.objects.select_related("document", "data_file", "job").filter(pk__in=ids))
-    if len(found) != len(set(map(str, ids))):
+    if len(found) != len(set(map(str, ids))) and not skip_missing:
         known = {str(t.pk) for t in found}
         return _error(f"unknown triple(s): {', '.join(str(i) for i in ids if str(i) not in known)}",
                       status.HTTP_404_NOT_FOUND)
@@ -310,13 +311,17 @@ def triples_reject(request):
 @api_view(["POST"])
 @graph_errors
 def triples_delete(request):
-    selected = _selected(request)
+    # A list open while a new run replaced its pending triples sends ids that are gone (2026-10-16): those are
+    # already deleted, so they are skipped and reported, not a 404 for the whole selection.
+    selected = _selected(request, skip_missing=True)
     if isinstance(selected, Response):
         return selected
     doc_ids = [t.document_id for t in selected if t.document_id]
     deleted = triples.delete(selected)
     _settle_graph_status(doc_ids)
-    return Response({"deleted": deleted})
+    known = {str(t.pk) for t in selected}
+    missing = [i for i in request.data.get("ids") if str(i) not in known]
+    return Response({"deleted": deleted, **({"missing": missing} if missing else {})})
 
 
 @api_view(["POST"])

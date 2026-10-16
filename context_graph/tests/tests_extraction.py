@@ -233,8 +233,11 @@ class ExtractionApiTests(LibraryTestCase):
         # Approving needs the graph.
         r = self.client.post("/api/graph/triples/approve/", {"ids": [by_pred["MONITORED_BY"]["id"]]}, format="json")
         self.assertEqual(r.status_code, 503)
-        self.assertEqual(self.client.post("/api/graph/triples/delete/", {"ids": [bad, 99999]},
+        self.assertEqual(self.client.post("/api/graph/triples/reject/", {"ids": [bad, 99999]},
                                           format="json").status_code, 404)
+        # A delete skips ids that are already gone (a newer run replaced them) and reports them.
+        self.assertEqual(self.client.post("/api/graph/triples/delete/", {"ids": [99999]}, format="json").json(),
+                         {"deleted": 0, "missing": [99999]})
         r = self.client.post("/api/graph/triples/delete/", {"ids": [t["id"] for t in body["triples"]]}, format="json")
         self.assertEqual(r.json(), {"deleted": 3})
         self.doc.refresh_from_db()
