@@ -16,7 +16,9 @@ never used: it isn't trusted asset knowledge.
 from __future__ import annotations
 
 import logging
+import math
 import re
+from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -45,6 +47,7 @@ class Line:
     text: str
     pinned: bool = False   # always included
     node_id: str = ""      # the entity the fact is about (for its source label, P8c)
+    related: tuple[str, ...] = ()   # entities kept with it when it is in focus (an alarm's procedure; P16a)
 
 
 @dataclass
@@ -322,7 +325,7 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
             text += f"; components: {', '.join(names.get(c, c) for c in a['components'])}"
         if a["procedures"]:
             text += f"; procedures: {', '.join(pr['name'] for pr in a['procedures'])}"
-        lines.append(Line("ALARMS", text, node_id=a["id"]))
+        lines.append(Line("ALARMS", text, node_id=a["id"], related=tuple(pr["id"] for pr in a["procedures"])))
 
     for pr in ctx["procedures"]:
         p = pr["properties"]
@@ -330,13 +333,18 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
         meta = [m for m in (p.get("procedure_type"), p.get("status") and f"status {p['status']}") if m]
         if meta:
             text += f" ({', '.join(meta)})"
+        if _amounts(p):
+            text += f": {_amounts(p)}"
         if p.get("summary"):
             text += f": {str(p['summary']).rstrip('.')}"
         if pr.get("applies_to"):
             text += f"; applies to: {', '.join(names.get(t, t) for t in pr['applies_to'])}"
         if pr.get("addresses"):
             text += f"; addresses: {', '.join(alarm_names.get(a, a) for a in pr['addresses'])}"
-        lines.append(Line("PROCEDURES", text, node_id=pr["id"]))
+        lines.append(Line("PROCEDURES", text, node_id=pr["id"], related=tuple(pr.get("addresses") or ())))
+
+    part_lines, part_props = _part_lines(ctx, names, {a["id"] for a in ctx["alarms"]}, {pr["id"] for pr in ctx["procedures"]})
+    lines += part_lines
 
     for conn in ctx["connections"]:
         kind = f" ({conn['kind']})" if conn.get("kind") else ""
@@ -355,6 +363,7 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
     node_props.update({s["id"]: s["properties"] for s, _ in signals})
     node_props.update({a["id"]: a["properties"] for a in ctx["alarms"]})
     node_props.update({pr["id"]: pr["properties"] for pr in ctx["procedures"]})
+    node_props.update(part_props)
     node_props.update({f"edge:{c['source']}>{c['target']}": {"source": c.get("origin"), "evidence_ids": c.get("evidence_ids")}
                        for c in ctx["connections"]})
     labels = provenance.fact_source_labels({ln.node_id: node_props.get(ln.node_id, {}) for ln in cited if ln.node_id})
@@ -371,6 +380,97 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
                 "focus": ln.node_id in focus_ids} for ln in cited],
         values=values,
     )
+
+
+SUMMARY_CHARS = 500     # a procedure's summary on its fact line (P16a)
+
+
+def _amounts(p: dict) -> str:
+    """A procedure's interval and amount ("interval 5,600 h; amount 70 g/bearing")."""
+    return "; ".join(f"{k} {p[k]}" for k in ("interval", "amount") if p.get(k))
+
+
+def _cut(text, limit: int = SUMMARY_CHARS) -> str:
+    text = str(text).strip().rstrip(".")
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
+
+
+def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set) -> tuple[list[Line], dict]:
+    """Fact lines for the parts' alarms, procedures and failure modes (P16a, 2026-10-16), and their properties.
+
+    A procedure reached from an alarm or a failure mode is listed once, with the part it is for. Alarms and
+    procedures already listed for the asset are not repeated."""
+    parts = lambda ids: ", ".join(names.get(c, c) for c in ids)
+    alarm_name = {a["id"]: a["properties"].get("code") or a["name"]
+                  for a in [*ctx["alarms"], *ctx.get("part_alarms", [])]}
+    procedures: dict[str, dict] = {}       # id -> {node, components, addresses}
+
+    def add_procedure(node, components=(), addresses=()):
+        entry = procedures.setdefault(node["id"], {"node": node, "components": [], "addresses": []})
+        entry["components"] += [c for c in components if c not in entry["components"]]
+        entry["addresses"] += [a for a in addresses if a not in entry["addresses"]]
+
+    for pr in ctx.get("part_procedures", []):
+        add_procedure(pr, pr["components"], pr["addresses"])
+    for a in ctx.get("part_alarms", []):
+        for pr in a["procedures"]:
+            add_procedure(pr, a["components"], [a["id"]])
+    for f in ctx.get("failure_modes", []):
+        for pr in f["fixes"]:
+            add_procedure(pr, f["components"])
+
+    lines: list[Line] = []
+    props: dict = {}
+    for a in ctx.get("part_alarms", []):
+        if a["id"] in asset_alarms:
+            continue
+        p = a["properties"]
+        code = str(p.get("code") or "")
+        text = f"- {code} {a['name']}" if code and not a["name"].startswith(code) else f"- {a['name']}"
+        meta = [m for m in (p.get("subtype"), p.get("severity") and f"severity {p['severity']}") if m]
+        if meta:
+            text += f" ({', '.join(meta)})"
+        text += f" on {parts(a['components'])}"
+        if p.get("description"):
+            text += f": {_cut(p['description'])}"
+        if a["procedures"]:
+            text += f"; procedure: {', '.join(pr['name'] for pr in a['procedures'])}"
+        lines.append(Line("PART_ALARMS", text, node_id=a["id"], related=tuple(pr["id"] for pr in a["procedures"])))
+        props[a["id"]] = p
+
+    for pid, entry in procedures.items():
+        if pid in asset_procedures:
+            continue
+        node, p = entry["node"], entry["node"]["properties"]
+        text = f"- {node['name']}"
+        meta = [m for m in (p.get("subtype") or p.get("procedure_type"), p.get("status") and f"status {p['status']}") if m]
+        if meta:
+            text += f" ({', '.join(meta)})"
+        if entry["components"]:
+            text += f" for {parts(entry['components'])}"
+        if _amounts(p):
+            text += f": {_amounts(p)}"
+        if p.get("summary"):
+            text += f": {_cut(p['summary'])}"
+        if entry["addresses"]:
+            text += f"; addresses: {', '.join(alarm_name.get(a, a) for a in entry['addresses'])}"
+        lines.append(Line("PART_PROCEDURES", text, node_id=pid, related=tuple(entry["addresses"])))
+        props[pid] = p
+
+    for f in ctx.get("failure_modes", []):
+        p = f["properties"]
+        text = f"- {f['name']}" + (f" ({p['subtype']})" if p.get("subtype") else "") + f" on {parts(f['components'])}"
+        causes = p.get("causes")
+        if causes:
+            text += f": causes: {_cut('; '.join(causes) if isinstance(causes, list) else causes)}"
+        if f["indicated_by"]:
+            text += f"; indicated by: {', '.join(alarm_name.get(x, names.get(x, x)) for x in f['indicated_by'])}"
+        if f["fixes"]:
+            text += f"; fix: {', '.join(pr['name'] for pr in f['fixes'])}"
+        lines.append(Line("FAILURE_MODES", text, node_id=f["id"],
+                          related=tuple(pr["id"] for pr in f["fixes"]) + tuple(f["indicated_by"])))
+        props[f["id"]] = p
+    return lines, props
 
 
 def entities(asset_id: str) -> list[dict]:
@@ -398,12 +498,24 @@ def entities(asset_id: str) -> list[dict]:
         add(alarm, "Alarm")
     for proc in ctx["procedures"]:
         add(proc, "Procedure")
+    # The parts' alarms, procedures and failure modes (P16a), each once.
+    seen = {e["id"] for e in out}
+    part_nodes = [(a, "Alarm") for a in ctx.get("part_alarms", [])]
+    part_nodes += [(pr, "Procedure") for pr in ctx.get("part_procedures", [])]
+    part_nodes += [(pr, "Procedure") for a in ctx.get("part_alarms", []) for pr in a["procedures"]]
+    part_nodes += [(f, "FailureMode") for f in ctx.get("failure_modes", [])]
+    part_nodes += [(pr, "Procedure") for f in ctx.get("failure_modes", []) for pr in f["fixes"]]
+    for node, label in part_nodes:
+        if node["id"] not in seen:
+            seen.add(node["id"])
+            add(node, label)
     return out
 
 
 SECTION_TITLES = {
     "ASSET": None, "COMPONENTS": "Components (tree)", "SIGNALS": "Signals",
     "ALARMS": "Alarms", "PROCEDURES": "Procedures", "CONNECTIONS": "Connections", "DOCUMENTS": "Documents",
+    "PART_ALARMS": "Alarms on parts", "PART_PROCEDURES": "Procedures on parts", "FAILURE_MODES": "Failure modes",
 }
 
 
@@ -423,12 +535,7 @@ def _fit(lines: list[Line], question: str, budget: int, focus_ids: set[str] | No
     then the best-matching ones, in original order."""
     if len(_render(lines)) <= budget:
         return lines
-    q = _tokens(question)
-    focus_ids = focus_ids or set()
-    scored = sorted(
-        (i for i, ln in enumerate(lines) if not ln.pinned),
-        key=lambda i: (lines[i].node_id not in focus_ids, -len(q & _tokens(lines[i].text)), i),
-    )
+    scored = [i for i, _ in _ranked(lines, question, focus_ids)]
     keep = {i for i, ln in enumerate(lines) if ln.pinned}
     for i in scored:
         trial = keep | {i}
@@ -436,6 +543,23 @@ def _fit(lines: list[Line], question: str, budget: int, focus_ids: set[str] | No
             continue
         keep = trial
     return [lines[i] for i in sorted(keep)]
+
+
+def _ranked(lines: list[Line], question: str, focus_ids: set[str] | None = None) -> list[tuple[int, bool]]:
+    """Unpinned lines, best first: (index, matched), matched = in focus or sharing a question word."""
+    q = _tokens(question)
+    focus_ids = set(focus_ids or ())
+    # A fact in focus brings its related ones: an alarm its procedure, a failure mode its fix (P16a).
+    focus_ids |= {r for ln in lines if ln.node_id in focus_ids for r in ln.related}
+    # A question word found in many facts counts for less ("main drive" is on each of the drive's alarms, P16a).
+    words = [q & _tokens(ln.text) for ln in lines]
+    df = Counter(w for ws in words for w in ws)
+    weight = [sum(math.log(1 + len(lines) / df[w]) for w in ws) for ws in words]
+    scored = sorted(
+        (i for i, ln in enumerate(lines) if not ln.pinned),
+        key=lambda i: (lines[i].node_id not in focus_ids, -weight[i], i),
+    )
+    return [(i, lines[i].node_id in focus_ids or weight[i] > 0) for i in scored]
 
 
 # --- prompt --------------------------------------------------------------------
