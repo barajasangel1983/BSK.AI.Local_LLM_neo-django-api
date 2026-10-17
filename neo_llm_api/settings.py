@@ -306,6 +306,28 @@ RAG_CHAT_TOP_N = int(os.getenv("RAG_CHAT_TOP_N", "5"))
 # P16b: a bigger excerpt budget keeps more chunks: one per this many characters of it (at least
 # RAG_CHAT_TOP_N, at most RAG_V2_CANDIDATES); only for a model with a CHAT_CONTEXT_MAX_TOKENS_* budget.
 RAG_CHAT_CHARS_PER_CHUNK = int(os.getenv("RAG_CHAT_CHARS_PER_CHUNK", "1500"))
+# P17a: an asset chat also offers the reranker the excerpts of its best graph facts' own pages
+# (the facts in focus, then those sharing a question word), up to this many pages (0 = off).
+CHAT_FACT_PAGES = int(os.getenv("CHAT_FACT_PAGES", "0"))
+# P17a: an excerpt longer than the room left is cut to its lines that best match the question (a fault
+# table's row), not to its start; later excerpts get the room that is left the same way.
+CHAT_EXCERPT_WINDOW = os.getenv("CHAT_EXCERPT_WINDOW", "0") == "1"
+# P17a: excerpts lose their tables' padding (runs of spaces, long dash rows) before they are measured.
+CHAT_EXCERPT_SQUEEZE = os.getenv("CHAT_EXCERPT_SQUEEZE", "0") == "1"
+# P17a: the reranker scores each chunk squeezed and cut to its lines that best match the query (this many
+# characters), not its first ~800 tokens.
+RAG_RERANK_FOCUS = os.getenv("RAG_RERANK_FOCUS", "0") == "1"
+RAG_RERANK_FOCUS_CHARS = int(os.getenv("RAG_RERANK_FOCUS_CHARS", "2000"))
+# P17b: the retrieval planner (chat/planner.py): the manuals of the parts a question is about join the search
+# (and the query names their make and model), and a parts-list question gives the graph facts more of the prompt.
+CHAT_PLANNER = os.getenv("CHAT_PLANNER", "0") == "1"
+PLANNER_MAX_MANUALS = int(os.getenv("PLANNER_MAX_MANUALS", "3"))
+# Parts (name: make model) added to the search query, the first ones the planner found.
+PLANNER_QUERY_PARTS = int(os.getenv("PLANNER_QUERY_PARTS", "2"))
+# Candidates taken from those parts' manuals, reranked with the asset-wide search's.
+PLANNER_PART_CANDIDATES = int(os.getenv("PLANNER_PART_CANDIDATES", "10"))
+PLANNER_PARTS_FACTS_SHARE = float(os.getenv("PLANNER_PARTS_FACTS_SHARE", "0.45"))
+PLANNER_PARTS_EXCERPTS_SHARE = float(os.getenv("PLANNER_PARTS_EXCERPTS_SHARE", "0.1"))
 # Default top_k on /api/rag/query/ (RAG Lab Top-K slider marker).
 RAG_QUERY_DEFAULT_TOP_K = int(os.getenv("RAG_QUERY_DEFAULT_TOP_K", "5"))
 # Upper bound for top_k on /api/rag/query/ (RAG Lab Top-K slider).

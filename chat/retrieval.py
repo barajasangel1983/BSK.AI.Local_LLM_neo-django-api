@@ -100,26 +100,9 @@ def _vector_search(query: str, n_candidates: int, where: dict | None = None) -> 
         **({"where": where} if where else {}),
     )
 
-    chunks: list[V2Chunk] = []
-    for chunk_id, text, meta, distance in zip(
-        result["ids"][0], result["documents"][0], result["metadatas"][0], result["distances"][0]
-    ):
-        meta = meta or {}
-        section_path = meta.get("section_path") or []
-        chunks.append(
-            V2Chunk(
-                id=str(chunk_id),
-                text=text or "",
-                source=str(meta.get("source", "")),
-                asset_id=str(meta.get("asset_id", "")),
-                section_path=list(section_path) if isinstance(section_path, (list, tuple)) else [str(section_path)],
-                page_start=meta.get("page_start"),
-                page_end=meta.get("page_end"),
-                content_type=str(meta.get("content_type", "")),
-                vector_score=round(to_similarity(float(distance), space), 4),
-            )
-        )
-    return chunks
+    return [_chunk(chunk_id, text, meta, round(to_similarity(float(distance), space), 4))
+            for chunk_id, text, meta, distance in zip(
+                result["ids"][0], result["documents"][0], result["metadatas"][0], result["distances"][0])]
 
 
 def _rerank(query: str, chunks: list[V2Chunk], top_n: int) -> list[V2Chunk]:
@@ -152,16 +135,23 @@ def _fit_for_reranker(query: str, text: str) -> str:
     return text if len(tokens) <= budget else enc.decode(tokens[:budget])
 
 
-def _rerank_text(chunk: V2Chunk) -> str:
+def _rerank_text(chunk: V2Chunk, query: str = "") -> str:
     """What the reranker scores: the chunk under its document name and section headings.
 
     A chunk's own text often does not name what it is about (the warranty paragraph of the BX80
     manual says neither "BX80" nor "warranty": both are in its headings), so scored alone it
     gets ~0 for "BX80 warranty conditions".
+    With RAG_RERANK_FOCUS (P17a), the text loses its table padding and a long one is cut to its lines that
+    best match the query: the reranker reads only ~800 tokens, and a fault table's row (F30001 on p.386 of
+    the G120C manual) is often past them.
     """
     name = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", chunk.source or "")
     heading = " > ".join(dict.fromkeys(p for p in [name, *(chunk.section_path or [])] if p))
-    return f"{heading}\n{chunk.text}" if heading else chunk.text
+    text = chunk.text
+    if settings.RAG_RERANK_FOCUS and query:
+        from .excerpts import excerpt_window, squeeze_padding
+        text = excerpt_window(squeeze_padding(text), query, settings.RAG_RERANK_FOCUS_CHARS)
+    return f"{heading}\n{text}" if heading else text
 
 
 def _post_rerank(query: str, chunks: list[V2Chunk], top_n: int):
@@ -170,7 +160,7 @@ def _post_rerank(query: str, chunks: list[V2Chunk], top_n: int):
         json={
             "model": settings.DGX_RERANK_MODEL,
             "query": query,
-            "documents": [_fit_for_reranker(query, _rerank_text(c)) for c in chunks],
+            "documents": [_fit_for_reranker(query, _rerank_text(c, query)) for c in chunks],
             "top_n": top_n,
         },
         timeout=settings.RAG_RERANK_TIMEOUT,
@@ -179,15 +169,58 @@ def _post_rerank(query: str, chunks: list[V2Chunk], top_n: int):
     return resp
 
 
-def search_v2(query: str, top_n: int, rerank: bool = True, doc_keys: list[str] | None = None) -> SearchResult:
+def _chunk(chunk_id, text, meta, vector_score: float = 0.0) -> V2Chunk:
+    meta = meta or {}
+    section_path = meta.get("section_path") or []
+    return V2Chunk(
+        id=str(chunk_id),
+        text=text or "",
+        source=str(meta.get("source", "")),
+        asset_id=str(meta.get("asset_id", "")),
+        section_path=list(section_path) if isinstance(section_path, (list, tuple)) else [str(section_path)],
+        page_start=meta.get("page_start"),
+        page_end=meta.get("page_end"),
+        content_type=str(meta.get("content_type", "")),
+        vector_score=vector_score,
+    )
+
+
+def page_chunks(pages: list[tuple[str, int]]) -> list[V2Chunk]:
+    """The chunks covering these (doc_key, page) pages, in that order (P17a: a graph fact's own manual page)."""
+    collection = get_v2_collection()
+    if collection is None or not pages:
+        return []
+    chunks: dict[str, V2Chunk] = {}
+    for doc_key, page in pages:
+        found = collection.get(where={"$and": [{"asset_id": doc_key}, {"page_start": {"$lte": page}},
+                                               {"page_end": {"$gte": page}}]},
+                               include=["documents", "metadatas"])
+        for chunk_id, text, meta in zip(found.get("ids") or [], found.get("documents") or [], found.get("metadatas") or []):
+            chunks.setdefault(str(chunk_id), _chunk(chunk_id, text, meta))
+    return list(chunks.values())
+
+
+def part_candidates(query: str, doc_keys: list[str]) -> list[V2Chunk]:
+    """Vector-search candidates in these documents only (P17b: the manuals of the parts a question is about),
+    to rerank together with the asset-wide search."""
+    if not doc_keys:
+        return []
+    return _vector_search(query, settings.PLANNER_PART_CANDIDATES, {"asset_id": {"$in": list(doc_keys)}})
+
+
+def search_v2(query: str, top_n: int, rerank: bool = True, doc_keys: list[str] | None = None,
+              extra: list[V2Chunk] = ()) -> SearchResult:
     """Vector search + rerank over bsk_rag_v2. Raises if embedding/search fails.
 
     `doc_keys` limits the search to those documents (chunk metadata `asset_id` holds the document key).
+    `extra` chunks (P17a: the graph facts' own pages) join the candidates before the reranker.
     """
 
     start = time.time()
     where = {"asset_id": {"$in": list(doc_keys)}} if doc_keys else None
     candidates = _vector_search(query, max(settings.RAG_V2_CANDIDATES, top_n), where)
+    seen = {c.id for c in candidates}
+    candidates += [c for c in extra if c.id not in seen and not seen.add(c.id)]
 
     reranker = "skipped"
     chunks = candidates

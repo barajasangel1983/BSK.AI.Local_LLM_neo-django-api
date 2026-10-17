@@ -17,6 +17,7 @@
 
 import logging
 import os
+import re
 import time
 import requests
 from collections import defaultdict
@@ -38,7 +39,9 @@ from usage import recorder as usage
 
 from .models import Conversation, Message
 from ingestion import folders
-from .retrieval import search_v2
+from . import planner
+from .excerpts import excerpt_window, squeeze_padding
+from .retrieval import page_chunks, part_candidates, search_v2
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
 from .titles import DEFAULT_TITLE, RENAME_MAX_CHARS, generate_title, normalize_title
 
@@ -306,28 +309,40 @@ def to_citation(entry: dict) -> dict:
 
 
 def build_rag_context(entries: list[dict], budget_chars: int, header: str = RAG_CONTEXT_HEADER,
-                      footer: str = RAG_CONTEXT_FOOTER) -> tuple[str | None, list[dict]]:
+                      footer: str = RAG_CONTEXT_FOOTER, question: str = "") -> tuple[str | None, list[dict]]:
     """Build the RAG system prompt from ranked entries within `budget_chars`.
 
     Entries are added in order; ones that don't fit are skipped. If even the
     top entry doesn't fit, it is truncated so RAG still contributes context.
+    With `question` and CHAT_EXCERPT_WINDOW (P17a), an entry that doesn't fit is cut to its lines that best
+    match the question, taking at most half the room left while other entries follow.
     Returns (system_prompt or None, entries actually used).
     """
 
+    from django.conf import settings
+
+    window = bool(question) and settings.CHAT_EXCERPT_WINDOW
+    squeeze = settings.CHAT_EXCERPT_SQUEEZE
     remaining = budget_chars - len(header) - len(footer) - 2
     blocks: list[str] = []
     used: list[dict] = []
-    for entry in entries:
+    for n, entry in enumerate(entries):
         label = f"[{len(used) + 1}] (source: {citation_label(entry)})\n"
         text = (entry.get("text") or "").strip()
+        if squeeze:
+            text = squeeze_padding(text)
         cost = len(label) + len(text) + 2
         if cost > remaining:
-            if used:
+            if used and not window:
                 continue
             room = remaining - len(label) - 2
             if room < RAG_MIN_CHUNK_CHARS:
+                if used:
+                    continue
                 break
-            text = text[:room]
+            if window and n + 1 < len(entries):              # leave room for the excerpts after it
+                room = max(RAG_MIN_CHUNK_CHARS, room // 2)
+            text = excerpt_window(text, question, room) if window else text[:room]
             cost = len(label) + len(text) + 2
         blocks.append(f"{label}{text}\n")
         used.append(entry)
@@ -733,10 +748,17 @@ def _chat(request):
 
     asset_ctx = None
     asset_note = ""
+    route = None                                      # the retrieval plan (P17b)
     if scope:
-        facts_budget, _ = asset_context.budgets(total_budget)
+        if settings.CHAT_PLANNER:
+            route = planner.question_kind(user_message)
+        shares = (route.facts_share, route.excerpts_share) if route else (0.0, 0.0)
+        facts_budget, _ = asset_context.budgets(total_budget, *shares)
         try:
-            asset_ctx = asset_context.build(scope, user_message, facts_budget, _focus(scope, user_message))
+            focus = _focus(scope, user_message)
+            asset_ctx = asset_context.build(scope, user_message, facts_budget, focus)
+            if route:
+                route = planner.plan(user_message, asset_ctx.parts, focus)
         except (GraphUnavailable, asset_context.AssetScopeError) as exc:
             logger.warning("asset context failed conversation=%s asset=%s: %s", conversation.id, scope, exc)
             asset_note = (f"You are Neo, the assistant for asset {scope}. Its facts are unavailable right now "
@@ -750,7 +772,8 @@ def _chat(request):
     if use_rag:
         rag_start = time.time()
         entries: list[dict] = []
-        rag_budget = (asset_context.budgets(total_budget)[1] if asset_ctx
+        rag_budget = (asset_context.budgets(total_budget, *((route.facts_share, route.excerpts_share) if route
+                                                           else (0.0, 0.0)))[1] if asset_ctx
                       else int(total_budget * settings.RAG_CONTEXT_SHARE))
         v2_top_n = rag_top_n(rag_budget, uses_token_budget(model_id))
 
@@ -768,6 +791,7 @@ def _chat(request):
 
         reranker = "error"
         doc_scope = "library"
+        fact_pages = 0
         try:
             relevant = lambda result: [  # noqa: E731
                 c.to_dict() for c in result.chunks
@@ -779,10 +803,19 @@ def _chat(request):
             asset_keys = asset_ctx.doc_keys if asset_ctx else []
             if in_folders is not None:
                 asset_keys = [k for k in asset_keys if k in in_folders]
+            part_keys = [k for k in (route.doc_keys if route else []) if k in asset_keys]
+            query = route.query(user_message) if route else user_message      # the parts' make and model (P17b)
             if asset_keys:
                 # The asset's own documents first; the (chosen part of the) library when none of them match.
-                result = search_v2(user_message, top_n=v2_top_n, doc_keys=asset_keys)
-                found, reranker, doc_scope = relevant(result), result.reranker, "asset"
+                # The graph facts' own pages join the candidates (P17a).
+                pages = [(k, p) for k, p in asset_ctx.pages if k in asset_keys]
+                # The manuals of the parts the question is about (P17b) are searched too, and their chunks are
+                # reranked with the asset-wide ones: a part's manual is not always where the answer is (the valve's
+                # stroke is in its actuator's manual).
+                extra = page_chunks(pages) + part_candidates(query, part_keys)
+                fact_pages = len(pages)
+                result = search_v2(query, top_n=v2_top_n, doc_keys=asset_keys, extra=extra)
+                found, reranker, doc_scope = relevant(result), result.reranker, "asset+part" if part_keys else "asset"
             if not found and in_folders != set():          # folders with no document: nothing to search
                 result = (search_v2(user_message, top_n=v2_top_n, doc_keys=sorted(in_folders)) if in_folders
                           else search_v2(user_message, top_n=v2_top_n))
@@ -793,16 +826,18 @@ def _chat(request):
             logger.exception("v2 retrieval failed conversation=%s", conversation.id)
 
         if asset_ctx:
-            rag_block, used = build_rag_context(entries, rag_budget, header="DOCUMENT EXCERPTS:", footer="---")
+            rag_block, used = build_rag_context(entries, rag_budget, header="DOCUMENT EXCERPTS:", footer="---",
+                                                question=user_message)
         else:
-            system_prompt, used = build_rag_context(entries, rag_budget)
+            system_prompt, used = build_rag_context(entries, rag_budget, question=user_message)
             rag_block = system_prompt
         citations = [to_citation(e) for e in used]
         logger.info(
             "rag conversation=%s model=%s retrieved=%d used=%d reranker=%s "
-            "rag_chars=%d/%d doc_scope=%s latency_ms=%d",
+            "rag_chars=%d/%d doc_scope=%s fact_pages=%d plan=%s latency_ms=%d",
             conversation.id, model_id, len(entries), len(used), reranker,
-            len(rag_block or ""), rag_budget, doc_scope, round((time.time() - rag_start) * 1000),
+            len(rag_block or ""), rag_budget, doc_scope, fact_pages, route.describe() if route else "-",
+            round((time.time() - rag_start) * 1000),
         )
 
     if asset_ctx:
