@@ -235,9 +235,33 @@ def context_budget_chars(model_id: str) -> int:
 
     from django.conf import settings
 
-    if model_id == "ollama-qwen3-8b":
-        return settings.CHAT_CONTEXT_MAX_CHARS_OLLAMA
-    return settings.CHAT_CONTEXT_MAX_CHARS
+    ollama = model_id == "ollama-qwen3-8b"
+    tokens = settings.CHAT_CONTEXT_MAX_TOKENS_OLLAMA if ollama else settings.CHAT_CONTEXT_MAX_TOKENS_DGX
+    if tokens:                                          # P16b: the context in tokens, minus the answer's room
+        prompt_tokens = max(tokens - settings.CHAT_ANSWER_RESERVE_TOKENS, tokens // 2)
+        return int(prompt_tokens * settings.CHAT_CHARS_PER_TOKEN)
+    return settings.CHAT_CONTEXT_MAX_CHARS_OLLAMA if ollama else settings.CHAT_CONTEXT_MAX_CHARS
+
+
+def uses_token_budget(model_id: str) -> bool:
+    """The model's budget comes from CHAT_CONTEXT_MAX_TOKENS_* (P16b)."""
+
+    from django.conf import settings
+
+    return bool(settings.CHAT_CONTEXT_MAX_TOKENS_OLLAMA if model_id == "ollama-qwen3-8b"
+                else settings.CHAT_CONTEXT_MAX_TOKENS_DGX)
+
+
+def rag_top_n(rag_budget_chars: int, grow: bool = True) -> int:
+    """Chunks kept for a chat's excerpt budget (P16b): RAG_CHAT_TOP_N, more when the budget is bigger
+    (`grow`: only for a model with a token budget, so today's chats keep RAG_CHAT_TOP_N)."""
+
+    from django.conf import settings
+
+    if not grow:
+        return settings.RAG_CHAT_TOP_N
+    return max(settings.RAG_CHAT_TOP_N,
+               min(settings.RAG_V2_CANDIDATES, rag_budget_chars // max(settings.RAG_CHAT_CHARS_PER_CHUNK, 1)))
 
 
 RAG_CONTEXT_HEADER = (
@@ -726,7 +750,9 @@ def _chat(request):
     if use_rag:
         rag_start = time.time()
         entries: list[dict] = []
-        v2_top_n = settings.RAG_CHAT_TOP_N
+        rag_budget = (asset_context.budgets(total_budget)[1] if asset_ctx
+                      else int(total_budget * settings.RAG_CONTEXT_SHARE))
+        v2_top_n = rag_top_n(rag_budget, uses_token_budget(model_id))
 
         # Asset-scoped chats already carry the asset's historian values in its fact sheet;
         # the legacy shift summaries would only use up document budget there.
@@ -767,10 +793,8 @@ def _chat(request):
             logger.exception("v2 retrieval failed conversation=%s", conversation.id)
 
         if asset_ctx:
-            _, rag_budget = asset_context.budgets(total_budget)
             rag_block, used = build_rag_context(entries, rag_budget, header="DOCUMENT EXCERPTS:", footer="---")
         else:
-            rag_budget = int(total_budget * settings.RAG_CONTEXT_SHARE)
             system_prompt, used = build_rag_context(entries, rag_budget)
             rag_block = system_prompt
         citations = [to_citation(e) for e in used]
