@@ -62,6 +62,9 @@ class AssetContext:
     #  "collector_age_seconds", "out_of_range": [...]}
     historian: dict | None = None
     doc_keys: list[str] = field(default_factory=list)  # documents linked to the asset (DOCUMENTED_BY)
+    pages: list[tuple[str, int]] = field(default_factory=list)  # (doc_key, page) of the best facts (P17a)
+    # The asset's parts for the planner (P17b): {id, name, parent, model, doc_keys (its manuals, from manual_title)}
+    parts: list[dict] = field(default_factory=list)
     # Structured forms of the above, for the Context Service (context_service/service.py):
     items: list[dict] = field(default_factory=list)    # {text, section, entity_id, source, focus} per included fact
     values: list[dict] = field(default_factory=list)   # {signal_id, name, value, unit, low, high, status} (last RUNNING sample)
@@ -366,6 +369,7 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
     node_props.update(part_props)
     node_props.update({f"edge:{c['source']}>{c['target']}": {"source": c.get("origin"), "evidence_ids": c.get("evidence_ids")}
                        for c in ctx["connections"]})
+    manuals = {d["name"]: d["properties"]["doc_key"] for d in ctx["documents"] if d["properties"].get("doc_key")}
     labels = provenance.fact_source_labels({ln.node_id: node_props.get(ln.node_id, {}) for ln in cited if ln.node_id})
     return AssetContext(
         asset_id=asset_id, name=asset["name"], text=text,
@@ -379,6 +383,11 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
                 "source": labels.get(ln.node_id, historian["source"] if historian and ln.text.startswith("Historian") else ""),
                 "focus": ln.node_id in focus_ids} for ln in cited],
         values=values,
+        pages=fact_pages(lines, question, focus_ids, node_props, settings.CHAT_FACT_PAGES),
+        parts=[{"id": c["id"], "name": c["name"], "parent": c.get("parent") or "",
+                "model": " ".join(str(c["properties"][k]) for k in ("manufacturer", "model") if c["properties"].get(k)),
+                "doc_keys": [manuals[t] for t in re.split(r"\s+\|\s+", str(c["properties"].get("manual_title") or ""))
+                             if t in manuals]} for c, _ in flat],
     )
 
 
@@ -562,6 +571,27 @@ def _ranked(lines: list[Line], question: str, focus_ids: set[str] | None = None)
     return [(i, lines[i].node_id in focus_ids or weight[i] > 0) for i in scored]
 
 
+def fact_pages(lines: list[Line], question: str, focus_ids: set[str] | None, node_props: dict,
+               limit: int) -> list[tuple[str, int]]:
+    """The document pages (doc_key, page) of the best facts for the question, best first (P17a): the facts in
+    focus, then those sharing a question word. Their excerpts are offered to the reranker with the search's."""
+    if limit <= 0:
+        return []
+    from context_graph.models import Evidence
+    wanted = [eid for i, matched in _ranked(lines, question, focus_ids) if matched and lines[i].node_id
+              for eid in (node_props.get(lines[i].node_id, {}).get("evidence_ids") or [])[:2]]
+    found = {e.pk: e for e in Evidence.objects.filter(pk__in=wanted, document__isnull=False, page_start__isnull=False)
+             .select_related("document")}
+    pages: list[tuple[str, int]] = []
+    for eid in wanted:
+        e = found.get(eid)
+        if e is not None and (e.document.doc_key, e.page_start) not in pages:
+            pages.append((e.document.doc_key, e.page_start))
+            if len(pages) >= limit:
+                break
+    return pages
+
+
 # --- prompt --------------------------------------------------------------------
 
 ASSET_PROMPT = """You are Neo, the assistant for {name} ({asset_id}) in the BSKLAB plant.
@@ -601,6 +631,8 @@ def citations(ctx: AssetContext) -> list[dict]:
     return out
 
 
-def budgets(total_chars: int) -> tuple[int, int]:
-    """(asset facts, document excerpts) character budgets for an asset-scoped prompt."""
-    return int(total_chars * settings.ASSET_CONTEXT_SHARE), int(total_chars * settings.ASSET_RAG_SHARE)
+def budgets(total_chars: int, facts_share: float = 0.0, excerpts_share: float = 0.0) -> tuple[int, int]:
+    """(asset facts, document excerpts) character budgets for an asset-scoped prompt; a share of 0 is the
+    setting's (the planner, P17b, may give others)."""
+    return (int(total_chars * (facts_share or settings.ASSET_CONTEXT_SHARE)),
+            int(total_chars * (excerpts_share or settings.ASSET_RAG_SHARE)))
