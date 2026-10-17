@@ -254,6 +254,14 @@ CHAT_CONTEXT_MAX_CHARS = int(os.getenv("CHAT_CONTEXT_MAX_CHARS", "24000"))
 # Ollama defaults to a ~4k-token context and silently truncates the start of
 # the prompt on overflow, so keep its budget small.
 CHAT_CONTEXT_MAX_CHARS_OLLAMA = int(os.getenv("CHAT_CONTEXT_MAX_CHARS_OLLAMA", "6000"))
+# P16b: the model's whole context in tokens (0 = not set: the CHAT_CONTEXT_MAX_CHARS* budgets above apply).
+# When set, the prompt budget is (tokens - answer reserve) x chars per token.
+CHAT_CONTEXT_MAX_TOKENS_DGX = int(os.getenv("CHAT_CONTEXT_MAX_TOKENS_DGX", "0"))
+CHAT_CONTEXT_MAX_TOKENS_OLLAMA = int(os.getenv("CHAT_CONTEXT_MAX_TOKENS_OLLAMA", "0"))
+# Room left for the answer (and thinking) out of the context.
+CHAT_ANSWER_RESERVE_TOKENS = int(os.getenv("CHAT_ANSWER_RESERVE_TOKENS", "4096"))
+# Characters per prompt token, measured on our asset prompts (session log 150); a little low, as a margin.
+CHAT_CHARS_PER_TOKEN = float(os.getenv("CHAT_CHARS_PER_TOKEN", "3.0"))
 
 
 # === Logging ===
@@ -295,6 +303,9 @@ CHROMA_DIR = os.getenv(
 RAG_V2_CANDIDATES = int(os.getenv("RAG_V2_CANDIDATES", "20"))
 # Chunks kept after reranking for chat context (before the context budget cap).
 RAG_CHAT_TOP_N = int(os.getenv("RAG_CHAT_TOP_N", "5"))
+# P16b: a bigger excerpt budget keeps more chunks: one per this many characters of it (at least
+# RAG_CHAT_TOP_N, at most RAG_V2_CANDIDATES); only for a model with a CHAT_CONTEXT_MAX_TOKENS_* budget.
+RAG_CHAT_CHARS_PER_CHUNK = int(os.getenv("RAG_CHAT_CHARS_PER_CHUNK", "1500"))
 # Default top_k on /api/rag/query/ (RAG Lab Top-K slider marker).
 RAG_QUERY_DEFAULT_TOP_K = int(os.getenv("RAG_QUERY_DEFAULT_TOP_K", "5"))
 # Upper bound for top_k on /api/rag/query/ (RAG Lab Top-K slider).
