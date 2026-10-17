@@ -7,4 +7,5 @@ urlpatterns = [
     path("overview/", views.overview, name="monitor-overview"),
     path("posts/", views.posts, name="monitor-posts"),
     path("settings/", views.settings_view, name="monitor-settings"),
+    path("calendar/", views.calendar_view, name="monitor-calendar"),
 ]
