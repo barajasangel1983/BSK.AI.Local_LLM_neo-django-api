@@ -43,3 +43,21 @@ class MonitorSettings(models.Model):
     @classmethod
     def get(cls) -> "MonitorSettings":
         return cls.objects.get_or_create(pk=1)[0]
+
+
+class PlantCalendar(models.Model):
+    """A plant's shifts, working days and time zone (P18a0); the chat, Home and reports read the same one.
+
+    `working_days` are "mon" … "sun"; `shifts` are [{name, start, end}] with "HH:MM" times. A shift may cross
+    midnight and belongs to the day it starts. Validation is in monitor.calendar.
+    """
+
+    plant_id = models.CharField(max_length=512, unique=True)   # the Plant node's id in the graph
+    time_zone = models.CharField(max_length=64)                 # IANA, e.g. America/Chicago
+    working_days = models.JSONField(default=list, blank=True)
+    shifts = models.JSONField(default=list, blank=True)
+    updated_by = models.CharField(max_length=200, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "monitor_plant_calendar"
