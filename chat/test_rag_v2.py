@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from rest_framework.test import APIClient
 
 from .models import Message
@@ -183,6 +183,8 @@ class ChatViewRagTests(TestCase):
         self.assertIn("chunk0", system)
         self.assertIn("(source: paper.pdf — S0, p.1)", system)
 
+    # The char budget and whole excerpts, whatever the live .env turns on (P17, session log 154).
+    @override_settings(CHAT_CONTEXT_MAX_TOKENS_OLLAMA=0, CHAT_EXCERPT_WINDOW=False, CHAT_EXCERPT_SQUEEZE=False)
     @patch("chat.views.requests.post")
     @patch("chat.views.search_v2")
     def test_ollama_budget_limits_rag_chunks(self, mock_search, mock_post):
