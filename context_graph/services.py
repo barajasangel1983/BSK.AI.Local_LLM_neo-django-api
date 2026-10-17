@@ -419,6 +419,40 @@ def get_asset_context(asset_id: str) -> dict:
             )
         ]
 
+        # The parts' own alarms, procedures and failure modes (schema v3; P16a, 2026-10-16): what the manuals
+        # gave the graph hangs on the components, not on the asset.
+        part_alarms = [
+            {**repository.serialize_node(row["al"]), "components": row["comps"],
+             "procedures": [repository.serialize_node(p) for p in row["procs"]]}
+            for row in tx.run(
+                "MATCH (c:Component)-[:HAS_ALARM]->(al:Alarm) WHERE c.id IN $ids "
+                "OPTIONAL MATCH (p:Procedure)-[:ADDRESSES]->(al) "
+                "RETURN al, collect(DISTINCT c.id) AS comps, collect(DISTINCT p) AS procs ORDER BY al.name",
+                ids=list(components),
+            )
+        ]
+        part_procedures = [
+            {**repository.serialize_node(row["p"]), "components": row["comps"], "addresses": row["alarms"]}
+            for row in tx.run(
+                "MATCH (c:Component)-[:HAS_PROCEDURE]->(p:Procedure) WHERE c.id IN $ids "
+                "OPTIONAL MATCH (p)-[:ADDRESSES]->(al:Alarm) "
+                "RETURN p, collect(DISTINCT c.id) AS comps, collect(DISTINCT al.id) AS alarms ORDER BY p.name",
+                ids=list(components),
+            )
+        ]
+        failure_modes = [
+            {**repository.serialize_node(row["f"]), "components": row["comps"],
+             "fixes": [repository.serialize_node(p) for p in row["fixes"]], "indicated_by": row["indicators"]}
+            for row in tx.run(
+                "MATCH (o:Entity)-[:HAS_FAILURE_MODE]->(f:FailureMode) WHERE o.id IN $owners "
+                "OPTIONAL MATCH (f)-[:MITIGATED_BY]->(p:Procedure) "
+                "OPTIONAL MATCH (f)-[:INDICATED_BY]->(x:Entity) "
+                "RETURN f, collect(DISTINCT o.id) AS comps, collect(DISTINCT p) AS fixes, "
+                "collect(DISTINCT x.id) AS indicators ORDER BY f.name",
+                owners=owner_ids,
+            )
+        ]
+
         documents = [
             {**repository.serialize_node(row["d"]), "describes": row["about"],
              "sections": [repository.serialize_node(sec) for sec in row["sections"]]}
@@ -439,12 +473,18 @@ def get_asset_context(asset_id: str) -> dict:
             "alarms": alarms,
             "procedures": procedures,
             "documents": documents,
+            "part_alarms": part_alarms,
+            "part_procedures": part_procedures,
+            "failure_modes": failure_modes,
             "counts": {
                 "components": len(components),
                 "signals": sum(len(v) for v in signals_by_owner.values()),
                 "alarms": len(alarms),
                 "procedures": len(procedures),
                 "documents": len(documents),
+                "part_alarms": len(part_alarms),
+                "part_procedures": len(part_procedures),
+                "failure_modes": len(failure_modes),
             },
         }
 

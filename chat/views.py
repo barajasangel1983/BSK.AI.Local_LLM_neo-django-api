@@ -430,6 +430,18 @@ def generate_vlm_reply(message: str, history: list[tuple[str, str]], jpeg: bytes
     return reply, len(messages) - 2
 
 
+def _focus(asset_id: str, question: str) -> set[str]:
+    """The asset's entities the question names (P16a): their facts are kept first. A phrase naming several
+    entities keeps them all (the chat answers; it does not ask back as the Context Service does)."""
+    from context_service.service import resolve
+    try:
+        scope = resolve(question, asset_id)
+    except GraphUnavailable:
+        return set()
+    return {f["id"] for f in scope["focus"]} | {
+        c["id"] for a in scope["ambiguous"] if a["phrase"] != "asset" for c in a["candidates"]}
+
+
 def _gpu_response(exc: Exception) -> Response:
     """503 for the two ways the BSK GPU can be unavailable to a chat request."""
     busy = isinstance(exc, gpu.GpuBusy) or isinstance(exc.__cause__, gpu.GpuBusy)
@@ -700,7 +712,7 @@ def _chat(request):
     if scope:
         facts_budget, _ = asset_context.budgets(total_budget)
         try:
-            asset_ctx = asset_context.build(scope, user_message, facts_budget)
+            asset_ctx = asset_context.build(scope, user_message, facts_budget, _focus(scope, user_message))
         except (GraphUnavailable, asset_context.AssetScopeError) as exc:
             logger.warning("asset context failed conversation=%s asset=%s: %s", conversation.id, scope, exc)
             asset_note = (f"You are Neo, the assistant for asset {scope}. Its facts are unavailable right now "
