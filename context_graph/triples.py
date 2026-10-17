@@ -27,7 +27,7 @@ from django.utils import timezone
 from . import registry, repository
 from .driver import session
 from . import evidence
-from .extraction import scope_key_for
+from .extraction import part_scope_for, scope_key_for
 from .identity import EntityIndex, normalize, tag_key
 from .ids import is_valid_id, make_id
 from .models import CandidateTriple
@@ -81,10 +81,12 @@ def _swaps_ends(t: CandidateTriple, changes: dict) -> bool:
 def _reresolve(t: CandidateTriple, changes: dict, index=None) -> None:
     """Re-match/propose ids for ends whose name or type changed (unless an id was given)."""
     index = index or EntityIndex.load()
+    part = None
     if t.data_file_id:
         scope = t.data_file.asset_id.split(":", 2)[2] if t.data_file.asset_id else t.data_file.key
     else:
         scope = scope_key_for(t.job.params if t.job else {}, t.document)
+        part = part_scope_for(t.job.params if t.job else {}, index, scope)          # P21: the run's part
     for end in ("subject", "object"):
         given = changes.get(f"{end}_id")
         if given:  # a reviewer chose the entity (e.g. one of the possible matches)
@@ -98,7 +100,7 @@ def _reresolve(t: CandidateTriple, changes: dict, index=None) -> None:
             setattr(t, f"{end}_candidates", [])
         elif f"{end}_name" in changes or f"{end}_type" in changes or not getattr(t, f"{end}_id"):
             try:
-                match = index.resolve(getattr(t, f"{end}_type"), getattr(t, f"{end}_name"), scope)
+                match = index.resolve(getattr(t, f"{end}_type"), getattr(t, f"{end}_name"), scope, part=part)
                 node_id, existing, kind, candidates = match.id, match.existing, match.kind, match.candidates
             except ValueError:
                 node_id, existing, kind, candidates = "", False, "", []

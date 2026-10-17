@@ -521,6 +521,12 @@ def scope_key_for(params: dict, doc) -> str:
     return params["asset_id"].split(":", 2)[2] if (params or {}).get("asset_id") else doc.doc_key
 
 
+def part_scope_for(params: dict, index: EntityIndex, scope_key: str):
+    """The part a run's document describes, for part-scoped ids and matching (P21); None without one."""
+    anchor = (params or {}).get("anchor_id")
+    return index.part_scope(anchor, scope_key) if anchor and settings.GRAPH_PART_SCOPED_IDS else None
+
+
 # --- the job -------------------------------------------------------------------
 
 def run_extract(job) -> None:
@@ -578,6 +584,7 @@ def run_extract(job) -> None:
     presets = {m: PromptPreset.objects.get(pk=pk) for m, pk in params["presets"].items()}
     index = EntityIndex.load()
     scope_key = scope_key_for(params, doc)
+    part = part_scope_for(params, index, scope_key)
     total = (len(selected) + len(table_parts) + len(drawing_figures)) * len(presets)
     scope_note = "" if len(selected) == all_windows else f" of {all_windows}" + (
         f" (pages {pages_text(params['pages'])})" if params.get("pages") else "") + (
@@ -604,7 +611,7 @@ def run_extract(job) -> None:
                 for end in ("subject", "object"):
                     if t[f"{end}_type"] == "Component" and normalize(t[end]) in anchor["generic"]:
                         t = {**t, end: anchor["name"]}
-            candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model)
+            candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model, part=part)
             key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
                              candidate.object_name, candidate.object_type)
             if key in reviewed:
@@ -708,7 +715,7 @@ def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:
     )
 
 
-def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=None) -> CandidateTriple:
+def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=None, part=None) -> CandidateTriple:
     issue = ""
     subject_id = object_id = ""
     subject_existing = object_existing = False
@@ -744,8 +751,8 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
             except Exception as exc:
                 issue = str(exc)[:255]
             try:
-                sm = index.resolve(t["subject_type"], t["subject"], scope_key)
-                om = index.resolve(t["object_type"], t["object"], scope_key)
+                sm = index.resolve(t["subject_type"], t["subject"], scope_key, part=part)
+                om = index.resolve(t["object_type"], t["object"], scope_key, part=part)
                 subject_id, subject_existing, object_id, object_existing = sm.id, sm.existing, om.id, om.existing
                 matches = {"subject_match": sm.kind, "subject_candidates": sm.candidates,
                            "object_match": om.kind, "object_candidates": om.candidates}

@@ -82,11 +82,29 @@ class Match:
         return self.kind in EXISTING
 
 
+# Facts that belong to a part (P21): their new ids carry the part, and they are matched within its family only.
+PART_LABELS = ("Alarm", "Procedure", "FailureMode", "Component")
+# Component -> fact links that make a part own a fact; a procedure is also owned through what it serves.
+OWNING = ("HAS_ALARM", "HAS_PROCEDURE", "HAS_FAILURE_MODE")
+
+
+@dataclass(frozen=True)
+class PartScope:
+    """The part a manual describes (extraction's anchor), for its new ids and its matching (P21)."""
+    anchor_id: str
+    key: str                     # id key of its new nodes: "EXTR01/cutter-motor"
+    family: frozenset[str]       # the part, its parent parts and its sub-parts
+
+
 @dataclass
 class EntityIndex:
     """Curated entities by label, for resolving names to ids."""
 
     by_label: dict[str, list[Node]] = field(default_factory=dict)
+    # P21: which parts own a fact, the part tree, and the parts list's components (matched by name asset-wide).
+    owners: dict[str, set[str]] = field(default_factory=dict)
+    parents: dict[str, str] = field(default_factory=dict)
+    bom: set[str] = field(default_factory=set)
 
     @classmethod
     def load(cls) -> "EntityIndex":
@@ -96,8 +114,23 @@ class EntityIndex:
                 rows = s.run(
                     "MATCH (n:Entity) RETURN n.id AS id, n.name AS name, labels(n) AS labels, "
                     "coalesce(n.aliases, []) AS aliases, n.tag AS tag, n.code AS code").data()
+                links = s.run(
+                    "MATCH (c:Component)-[r]->(n:Entity) WHERE type(r) IN $owning RETURN c.id AS part, n.id AS id",
+                    owning=list(OWNING)).data()
+                serves = s.run(
+                    "MATCH (p:Procedure)-[:ADDRESSES]->(x:Entity) RETURN p.id AS id, x.id AS served "
+                    "UNION MATCH (x:FailureMode)-[:MITIGATED_BY]->(p:Procedure) RETURN p.id AS id, x.id AS served").data()
+                tree = s.run("MATCH (p:Component)-[:HAS_COMPONENT]->(c:Component) RETURN p.id AS parent, c.id AS id").data()
+                bom = s.run("MATCH (c:Component) WHERE c.source = 'structured' RETURN c.id AS id").data()
         except GraphUnavailable:
             return index
+        for link in links:
+            index.owners.setdefault(link["id"], set()).add(link["part"])
+        for row in serves:                              # a procedure belongs to the parts of what it serves
+            if row["served"] in index.owners:
+                index.owners.setdefault(row["id"], set()).update(index.owners[row["served"]])
+        index.parents = {row["id"]: row["parent"] for row in tree}
+        index.bom = {row["id"] for row in bom}
         for row in rows:
             index.add(row["id"], repository.node_label(row["labels"]), row["name"] or "", row["aliases"],
                       [t for t in (row["tag"], row["code"]) if t])
@@ -114,17 +147,50 @@ class EntityIndex:
     def get(self, node_id: str) -> Node | None:
         return next((n for nodes in self.by_label.values() for n in nodes if n.id == node_id), None)
 
+    def part_scope(self, anchor_id: str, scope_key: str) -> PartScope:
+        """The scope of a run whose document describes `anchor_id` (a component id of the asset `scope_key`)."""
+        _, _, key = anchor_id.split(":", 2)
+        part_key = key.split("/", 1)[1] if key.startswith(f"{scope_key}/") else key
+        family = {anchor_id}
+        up = self.parents.get(anchor_id)
+        while up and up not in family:
+            family.add(up)
+            up = self.parents.get(up)
+        children: dict[str, list[str]] = {}
+        for child, parent in self.parents.items():
+            children.setdefault(parent, []).append(child)
+        todo = [anchor_id]
+        while todo:
+            for child in children.get(todo.pop(), []):
+                if child not in family:
+                    family.add(child)
+                    todo.append(child)
+        return PartScope(anchor_id, f"{scope_key}/{part_key}", frozenset(family))
+
+    def _visible(self, label: str, nodes: list[Node], part: PartScope | None) -> list[Node]:
+        """The nodes a name of this run may match: with a part, its family's and the unowned ones (P21)."""
+        if part is None or label not in PART_LABELS:
+            return nodes
+        if label == "Component":
+            return [n for n in nodes if n.id in part.family or n.id in self.bom]
+        return [n for n in nodes if not self.owners.get(n.id) or self.owners[n.id] & part.family]
+
     # --- resolution -------------------------------------------------------------
 
     def resolve(self, label: str, name: str, scope_key: str, proposed: str | None = None,
-                fuzzy: bool = True, tag: str | None = None) -> Match:
-        """Resolve `name` (an entity of type `label`) to an existing id, a possible match or a new id."""
-        nodes = self.by_label.get(label, [])
-        new_id = proposed or proposed_id(label, name, scope_key)
+                fuzzy: bool = True, tag: str | None = None, part: PartScope | None = None) -> Match:
+        """Resolve `name` (an entity of type `label`) to an existing id, a possible match or a new id.
 
-        # 1. explicit canonical id (the name *is* an id, or the proposed id already exists)
+        `part` (P21): the part the document describes. A new alarm, procedure, failure mode or sub-part gets
+        its id under the part, and names are matched only within the part's family (and unowned nodes)."""
+        everything = self.by_label.get(label, [])
+        nodes = self._visible(label, everything, part)
+        scoped = part is not None and label in PART_LABELS
+        new_id = proposed or proposed_id(label, name, part.key if scoped else scope_key)
+
+        # 1. explicit canonical id (the name *is* an id, or the proposed id already exists); any part
         for candidate in (name.strip(), new_id):
-            if is_valid_id(candidate) and any(n.id == candidate for n in nodes):
+            if is_valid_id(candidate) and any(n.id == candidate for n in everything):
                 return Match(candidate, "id")
 
         # 2–3. engineering tags: same asset scope first, then any scope of the same type
@@ -172,13 +238,15 @@ def score(target: str, node: Node) -> float:
         sim = len(tokens & words) / len(tokens | words)
         if len(target) >= 4 and (target in other or other in target):
             sim = max(sim, 0.75)
-        # Differing numbers ("zone 1" vs "zone 2") mean different things.
-        if {w for w in tokens if w.isdigit()} != {w for w in words if w.isdigit()}:
-            sim = min(sim, 0.5)
+        # Differing numbers or codes ("zone 1" vs "zone 2", "F01000" vs "A798", "F30001" vs "0001") mean
+        # different things: never suggested (P21; they were capped at 0.5, which still suggested them).
+        if {w for w in tokens if any(c.isdigit() for c in w)} != {w for w in words if any(c.isdigit() for c in w)}:
+            continue
         best = max(best, sim)
     return best
 
 
 def proposed_id(label: str, name: str, scope_key: str) -> str:
+    """`scope_key` may have several parts ("EXTR01/cutter-motor", P21): each stays an id key part."""
     part = clean_part(name)
-    return make_id(label, part) if label == "Asset" else make_id(label, scope_key, part)
+    return make_id(label, part) if label == "Asset" else make_id(label, *scope_key.split("/"), part)
