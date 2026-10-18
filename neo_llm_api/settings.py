@@ -328,6 +328,10 @@ PLANNER_QUERY_PARTS = int(os.getenv("PLANNER_QUERY_PARTS", "2"))
 PLANNER_PART_CANDIDATES = int(os.getenv("PLANNER_PART_CANDIDATES", "10"))
 PLANNER_PARTS_FACTS_SHARE = float(os.getenv("PLANNER_PARTS_FACTS_SHARE", "0.45"))
 PLANNER_PARTS_EXCERPTS_SHARE = float(os.getenv("PLANNER_PARTS_EXCERPTS_SHARE", "0.1"))
+# P18a: a data question in an asset chat ("OEE in the last 24 h") gets its window's numbers from the historian's rows
+# (Home's stats), in a block cited [H], capped at this many characters (and a third of the prompt).
+CHAT_HISTORIAN_WINDOWS = os.getenv("CHAT_HISTORIAN_WINDOWS", "0") == "1"
+CHAT_HISTORIAN_WINDOW_CHARS = int(os.getenv("CHAT_HISTORIAN_WINDOW_CHARS", "2500"))
 # Default top_k on /api/rag/query/ (RAG Lab Top-K slider marker).
 RAG_QUERY_DEFAULT_TOP_K = int(os.getenv("RAG_QUERY_DEFAULT_TOP_K", "5"))
 # Upper bound for top_k on /api/rag/query/ (RAG Lab Top-K slider).
