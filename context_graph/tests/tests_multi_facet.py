@@ -55,7 +55,11 @@ class MultiFacetRunTests(LibraryTestCase):
                                                 "object_properties": {"value": "7", "unit": "bar"}, "confidence": 0.9}]})
             return json.dumps({"triples": [{"subject": "Dosing pump", "subject_type": "Component", "predicate": "HAS_PROCEDURE",
                                             "object": "Replace the diaphragm", "object_type": "Procedure",
-                                            "object_properties": {"subtype": "Replacement"}, "confidence": 0.9}]})
+                                            "object_properties": {"subtype": "Replacement"}, "confidence": 0.9},
+                                           # the Maintenance prompt also finds ratings under v5 (the Opta, 2026-10-18)
+                                           {"subject": "Dosing pump", "subject_type": "Component", "predicate": "HAS_SPEC",
+                                            "object": "Rated pressure", "object_type": "Specification",
+                                            "object_properties": {"value": "7", "unit": "bar"}, "confidence": 0.8}]})
         p = patch("context_graph.extraction.call_llm", side_effect=llm)
         p.start()
         self.addCleanup(p.stop)
@@ -105,6 +109,19 @@ class MultiFacetRunTests(LibraryTestCase):
         self.assertEqual(staged["Maintenance (v3)"].facets, ["Maintenance"])
         self.assertEqual((staged["Specifications (v4)"].object_type, staged["Specifications (v4)"].status),
                          ("Specification", "pending"))
+
+    def test_a_facet_leaves_what_another_facet_of_the_job_owns(self):
+        results = self.by_facet_run(self.run_all())
+        self.assertEqual((results["maintenance"]["staged"], results["maintenance"]["left"]), (1, 1))
+        self.assertIn("1 left to Specification run", results["maintenance"]["note"])
+        self.assertFalse(CandidateTriple.objects.filter(document=self.doc, preset_name="Maintenance (v3)",
+                                                        object_type="Specification").exists())
+        CandidateTriple.objects.filter(document=self.doc).delete()
+        self.client.post("/api/graph/extract/", {"document_ids": [str(self.doc.id)], "facet_runs": ["maintenance"]},
+                         format="json")                     # no Ratings run in this job: Maintenance keeps its ratings
+        self.drain()
+        self.assertTrue(CandidateTriple.objects.filter(document=self.doc, preset_name="Maintenance (v3)",
+                                                       object_type="Specification").exists())
 
     def test_a_run_replaces_only_its_own_prompts_pending_triples(self):
         self.run_all()
