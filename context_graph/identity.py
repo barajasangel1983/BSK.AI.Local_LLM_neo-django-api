@@ -38,8 +38,9 @@ _TAG_PATTERNS = (
 )
 
 
-def normalize(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
+def normalize(name) -> str:
+    # str(): imported properties can be numbers (an all-digit part number from a CSV)
+    return re.sub(r"[^a-z0-9]+", " ", str(name if name is not None else "").lower()).strip()
 
 
 def tag_key(tag: str) -> str:

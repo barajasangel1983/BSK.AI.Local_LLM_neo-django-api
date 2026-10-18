@@ -16,7 +16,7 @@ from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APIClient
 
 from context_graph import driver, registry, services, structured, triples
-from context_graph.identity import EntityIndex, tag_key, tags_in
+from context_graph.identity import EntityIndex, normalize, tag_key, tags_in
 from context_graph.models import CandidateTriple
 from context_graph.schema import Schema, validate_definition
 from context_graph.units import normalize_unit
@@ -51,6 +51,14 @@ class TagTests(SimpleTestCase):
         self.assertEqual(tags_in("the main motor"), [])
         self.assertEqual(tags_in("p. 3"), [])                                 # too short to be a tag
         self.assertEqual({tag_key(t) for t in ("VFD-101", "vfd_101", "VFD 101")}, {"VFD101"})
+
+
+class NormalizeTests(SimpleTestCase):
+    def test_numbers_and_none(self):
+        # The BOM import stores an all-digit part number as an int (Water dosing pump 99159395)
+        self.assertEqual(normalize(99159395), "99159395")
+        self.assertEqual(normalize(None), "")
+        self.assertEqual(normalize("DDA 120-7"), "dda 120 7")
 
 
 class ResolverTests(SimpleTestCase):
