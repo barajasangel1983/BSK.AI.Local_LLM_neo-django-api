@@ -30,7 +30,7 @@ logger = logging.getLogger("chat")
 
 PROMPT_NAME = "suggest_maps"
 PROMPT_VERSION = 1
-EXCERPTS = 8
+EXCERPTS = 10
 UNITS = {"rpm": "rpm", "1/min": "rpm", "min-1": "rpm", "r/min": "rpm", "%": "%", "kw": "kw", "w": "w", "a": "a",
          "v": "v", "hz": "hz", "nm": "nm", "°c": "°c", "degc": "°c", "bar": "bar", "kg/h": "kg/h", "l/h": "l/h"}
 
@@ -44,6 +44,20 @@ Reply with one JSON object and nothing else:
 - If no excerpt names such a parameter with its number, reply {"code": "", "reason": "..."}."""
 
 
+NOT_A_READOUT = re.compile(r"\b(ref|reference|setpoint|set point|limit|scaling|max|min|maximum|minimum)\b", re.I)
+
+
+def code_in(code: str, text: str) -> str:
+    """The code as the text prints it, or "": "1.1" is found as "01.01", "p310" as "p0310" (numbers compared, not
+    characters — "1.1" inside "01.10" is not a match)."""
+    parts = re.findall(r"[A-Za-z]+|\d+", code)
+    if not parts:
+        return ""
+    pattern = r"(?<![\w.])" + r"[.\s]?".join(re.escape(p) if p.isalpha() else rf"0*{int(p)}" for p in parts) + r"(?![\w]|\.\d)"
+    m = re.search(pattern, text, re.I)
+    return m.group(0) if m else ""
+
+
 def unit_key(unit: str) -> str:
     u = re.sub(r"\s+", "", str(unit or "")).lower()
     return UNITS.get(u, u)
@@ -55,10 +69,12 @@ def assembly_signals(part_id: str) -> list[dict]:
         rows = s.run(
             "MATCH (d:Component {id: $id}) OPTIONAL MATCH (p:Component)-[:HAS_COMPONENT]->(d) "
             "OPTIONAL MATCH (p)-[:HAS_COMPONENT]->(sib:Component) "
-            "WITH [d] + collect(DISTINCT p) + collect(DISTINCT sib) AS parts UNWIND parts AS c "
+            "WITH d, collect(DISTINCT p) + collect(DISTINCT sib) AS more "
+            "UNWIND [d] + more AS c "
             "MATCH (c)-[:MONITORED_BY]->(sg:Signal) WHERE sg.unit IS NOT NULL AND sg.unit <> '' "
-            "RETURN DISTINCT sg.id AS id, sg.name AS name, sg.subtype AS subtype, sg.unit AS unit, "
-            "collect(DISTINCT c.name) AS on_parts ORDER BY name", id=part_id).data()
+            "WITH sg, collect(DISTINCT c.name) AS on_parts "
+            "RETURN sg.id AS id, sg.name AS name, sg.subtype AS subtype, sg.unit AS unit, on_parts ORDER BY name",
+            id=part_id).data()
     return rows
 
 
@@ -75,10 +91,11 @@ def device(part_id: str) -> dict:
 def _excerpts(signal: dict, doc_keys: list[str]) -> list:
     from chat.retrieval import search_v2
     quantity = (signal.get("subtype") or signal["name"]).lower()
-    queries = [f"{quantity} actual value {signal['unit']}", f"actual {quantity} parameter", signal["name"]]
+    queries = [f"{quantity} actual value {signal['unit']}", f"actual values {quantity}", f"actual {quantity} parameter",
+               signal["name"]]
     found, seen = [], set()
     for q in queries:
-        for c in search_v2(q, top_n=4, doc_keys=doc_keys).chunks:
+        for c in search_v2(q, top_n=5, doc_keys=doc_keys).chunks:
             if c.id not in seen:
                 seen.add(c.id)
                 found.append(c)
@@ -101,13 +118,19 @@ def look_up(dev: dict, signal: dict) -> dict:
     code = str(answer.get("code") or "").strip()
     if not code:
         return {"state": "none", "reason": str(answer.get("reason") or "no parameter named")[:200]}
-    chunk = next((c for c in chunks if code in c.text), None)
-    if chunk is None:
+    found = next(((c, code_in(code, c.text)) for c in chunks if code_in(code, c.text)), None)
+    if found is None:
         return {"state": "none", "reason": f"{code} is not in the excerpts (not staged)", "code": code}
+    chunk, code = found
+    code = extraction.normalize_code(code)[0]             # one form: a parsed "1.1" is ABB's 01.01
+    name = str(answer.get("name") or code)
+    if NOT_A_READOUT.search(name):
+        return {"state": "none", "reason": f"{code} {name} is a reference, setpoint or limit, not a readout (not staged)",
+                "code": code}
     if unit_key(answer.get("unit")) != unit_key(signal["unit"]):
         return {"state": "none", "reason": f"unit {answer.get('unit')!r} is not the signal's {signal['unit']!r} (not staged)",
                 "code": code}
-    return {"state": "found", "code": code, "name": str(answer.get("name") or code)[:200], "unit": signal["unit"],
+    return {"state": "found", "code": code, "name": name[:200], "unit": signal["unit"],
             "page": chunk.page_start, "quote": str(answer.get("quote") or "")[:300], "chunk": chunk}
 
 

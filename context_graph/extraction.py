@@ -1063,10 +1063,16 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
 _SIEMENS_CODE = re.compile(r"^([pr])\s*0*(\d{1,5})\s*(?:\[(.*?)\]|[.-](\w+))?$", re.I)
 
 
+_GROUP_INDEX = re.compile(r"^(\d{1,2})\.(\d{1,2})$")
+
+
 def normalize_code(code: str) -> tuple[str, str]:
     """A parameter code in one form, and its index: "P310" -> ("p0310", ""), "p1070[0]" -> ("p1070", "0"),
-    "r0021" stays. Other makers' codes ("01.01", "99.06") are kept as written."""
+    "r0021" stays; a group.index code has two digits each ("1.1" -> "01.01"). Anything else is kept as written."""
     code = code.strip()
+    group = _GROUP_INDEX.match(code)
+    if group:   # ABB style "group.index", two digits each; a parsed table drops zeros ("1.1" is 01.01, "46.3" is 46.03)
+        return f"{int(group.group(1)):02d}.{int(group.group(2)):02d}", ""
     m = _SIEMENS_CODE.match(code)
     if not m:
         return code, ""
