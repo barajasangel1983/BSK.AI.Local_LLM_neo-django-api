@@ -201,7 +201,7 @@ class ExtractionApiTests(LibraryTestCase):
         r = self.client.patch(f"/api/graph/presets/{pid}/", {"template": "T2 {text}", "is_default": True}, format="json")
         self.assertEqual((r.json()["version"], r.json()["is_default"]), (2, True))
         self.assertEqual(extraction.default_preset("schema").pk, pid)
-        builtin = next(p for p in listed if p["mode"] == "schema")
+        builtin = next(p for p in listed if p["mode"] == "schema" and p["is_default"])   # the default, whatever the order
         self.assertEqual(self.client.delete(f"/api/graph/presets/{builtin['id']}/").status_code, 409)
         self.assertEqual(self.client.delete(f"/api/graph/presets/{pid}/").status_code, 204)
         self.assertTrue(PromptPreset.objects.get(pk=builtin["id"]).is_default)   # default falls back
