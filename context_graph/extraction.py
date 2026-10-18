@@ -261,10 +261,12 @@ PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "
 FACET_RUNS = (
     {"key": "maintenance", "label": "Maintenance", "preset": "Maintenance (v3)", "needs": "", "owns": ()},
     {"key": "ratings", "label": "Ratings", "preset": "Specifications (v4)", "needs": "Specification",
-     "owns": ("Specification",)},
+     "owns": ("Specification",), "keeps": ("HAS_SPEC",)},
     # Smaller windows: parameter-heavy pages give long answers; fewer facts per window keep each answer whole.
     {"key": "controls", "label": "Controls & Setup", "preset": "Controls & Setup (v6)", "needs": "Parameter",
-     "owns": ("Parameter", "IOPoint", "Interface"), "chunking": {"strategy": "fixed", "params": {"size": 400, "overlap": 50}}},
+     "owns": ("Parameter", "IOPoint", "Interface"), "chunking": {"strategy": "fixed", "params": {"size": 400, "overlap": 50}},
+     # only its own links: on the G120C it also staged 30 fieldbus error codes as alarms (2026-10-18)
+     "keeps": ("HAS_PARAMETER", "HAS_IO", "COMMUNICATES_VIA", "CONFIGURED_BY", "SETS")},
 )
 FACET_RUN_BY_KEY = {r["key"]: r for r in FACET_RUNS}
 
@@ -722,7 +724,7 @@ def _run_facets(job, doc, params: dict) -> None:
         out["pages"] = suggestion["pages"]
         leave = sorted({t for other in runs if other != key for t in FACET_RUN_BY_KEY[other]["owns"]})
         sub = {**params, "mode": "schema", "presets": {"schema": preset.pk}, "pages": parse_pages(suggestion["pages"]),
-               "facet_runs": [], "leave_types": leave}
+               "facet_runs": [], "leave_types": leave, "keep_links": list(run.get("keeps") or ())}
         if run.get("chunking") and not params.get("chunking_custom"):
             from ingestion.chunking import resolve_params
             sub["chunking"] = {"strategy": run["chunking"]["strategy"],
@@ -817,6 +819,7 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     done = failed = skipped = 0
     left: set[tuple] = set()      # distinct triples left to another facet run
     leave_types = set(params.get("leave_types") or ())   # owned by another facet run of the same job (P22c-0)
+    keep_links = set(params.get("keep_links") or ())     # a facet run stages only its own links (empty: all)
 
     def stage(raw, mode, window, i, preset, make_evidence, model=None):
         """Stage the raw triples found in one place (a text window or a figure)."""
@@ -831,7 +834,8 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model, part=part)
             key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
                              candidate.object_name, candidate.object_type)
-            if candidate.subject_type in leave_types or candidate.object_type in leave_types:
+            if (candidate.subject_type in leave_types or candidate.object_type in leave_types
+                    or (keep_links and candidate.predicate not in keep_links)):
                 left.add(key)      # checked after staging: a part's limit becomes a Specification there
                 continue
             if key in reviewed:
@@ -1012,6 +1016,13 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
             given = {k: v for k, v in (t.get(f"{end}_properties") or {}).items() if k in known}
             if given:
                 props.setdefault(end, {}).update(given)
+        for end in ("subject", "object"):      # P22c: one form of a parameter code ("P310", "p0310", "p1070[0]")
+            p = props.get(end) or {}
+            if t[f"{end}_type"] == "Parameter" and p.get("code"):
+                code, position = normalize_code(str(p["code"]))
+                p["code"] = code
+                if position and not p.get("data_set"):
+                    p["data_set"] = position
         if t["subject_type"] not in schema.entity_types or t["object_type"] not in schema.entity_types:
             issue = f"type not in schema ({t['subject_type']} / {t['object_type']})"
         else:
@@ -1041,6 +1052,20 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
         schema_version=schema.version, **matches,
         subject_props=props.get("subject", {}), object_props=props.get("object", {}),
     )
+
+
+_SIEMENS_CODE = re.compile(r"^([pr])\s*0*(\d{1,5})\s*(?:\[(.*?)\]|[.-](\w+))?$", re.I)
+
+
+def normalize_code(code: str) -> tuple[str, str]:
+    """A parameter code in one form, and its index: "P310" -> ("p0310", ""), "p1070[0]" -> ("p1070", "0"),
+    "r0021" stays. Other makers' codes ("01.01", "99.06") are kept as written."""
+    code = code.strip()
+    m = _SIEMENS_CODE.match(code)
+    if not m:
+        return code, ""
+    letter, number, index, suffix = m.groups()
+    return f"{letter.lower()}{int(number):04d}", (index or suffix or "").strip()
 
 
 def _keyed(t: dict, end: str, props: dict, scope_key: str, part) -> dict:

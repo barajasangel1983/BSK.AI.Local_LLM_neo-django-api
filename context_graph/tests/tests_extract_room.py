@@ -61,7 +61,8 @@ class ExtractRoomTests(LibraryTestCase):
                     .values_list("object_id", "chunk_index", "occurrences"))
 
     def test_parallel_windows_give_the_same_triples(self):
-        one = self.run_extract()
+        with override_settings(GRAPH_EXTRACT_PARALLEL=1):      # explicit: the live .env sets 2
+            one = self.run_extract()
         self.assertEqual(len(self.threads), 1)
         with override_settings(GRAPH_EXTRACT_PARALLEL=3):
             three = self.run_extract()
@@ -77,3 +78,28 @@ class ExtractRoomTests(LibraryTestCase):
             chosen = list(self.texts)                                               # the reviewer's windows are kept
         self.assertGreater(len(small), len(chosen))
         self.assertLess(max(len(t) for t in small), max(len(t) for t in chosen))
+
+
+@override_settings(GRAPH_ENABLED=False)
+class FacetKeepsTests(ExtractRoomTests):
+    def test_the_controls_run_stages_only_its_links(self):
+        def llm(messages):
+            return json.dumps({"triples": [
+                {"subject": "Drive", "subject_type": "Component", "predicate": "HAS_PARAMETER", "object": "Maximum speed",
+                 "object_type": "Parameter", "object_properties": {"code": "p1082"}, "confidence": 0.9},
+                {"subject": "Drive", "subject_type": "Component", "predicate": "HAS_ALARM", "object": "Illegal parameter number",
+                 "object_type": "Alarm", "confidence": 0.8}]})
+        with patch("context_graph.extraction.call_llm", side_effect=llm), \
+                patch("context_graph.page_suggest.suggest", return_value={"pages": "1", "sections": [], "note": ""}):
+            self.run_extract(facet_runs=["controls"])
+        staged = set(CandidateTriple.objects.filter(document=self.doc).values_list("predicate", flat=True))
+        self.assertEqual(staged, {"HAS_PARAMETER"})
+        from ingestion.models import Job
+        result = Job.objects.filter(kind="extract").latest("created_at").params["facet_results"][0]
+        self.assertEqual(result["left"], 1)
+
+    def test_parallel_windows_give_the_same_triples(self):   # covered by the parent class
+        pass
+
+    def test_the_controls_run_reads_smaller_windows(self):
+        pass
