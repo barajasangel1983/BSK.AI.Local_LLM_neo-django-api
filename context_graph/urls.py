@@ -34,6 +34,7 @@ urlpatterns = [
     path("triples/approve/", extraction_views.triples_approve, name="graph-triples-approve"),
     path("triples/reject/", extraction_views.triples_reject, name="graph-triples-reject"),
     path("triples/delete/", extraction_views.triples_delete, name="graph-triples-delete"),
+    path("triples/make-rating/", extraction_views.triples_make_rating, name="graph-triples-make-rating"),
     path("triples/<int:triple_id>/", extraction_views.triple_detail, name="graph-triple"),
     path("evidence/<int:evidence_id>/", extraction_views.evidence_detail, name="graph-evidence"),
     path("triples/<int:triple_id>/promote/", extraction_views.triple_promote, name="graph-triple-promote"),

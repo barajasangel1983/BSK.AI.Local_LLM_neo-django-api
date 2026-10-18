@@ -52,7 +52,8 @@ class GraphIntegrationTests(TestCase):
 
         self.assertEqual([n["name"] for n in ctx["hierarchy"]], ["BSKLAB Demo Plant", "Extrusion", "Extrusion Line 1"])
         self.assertEqual(ctx["counts"], {"components": 9, "signals": 30, "alarms": 20, "procedures": 8, "documents": 0,
-                                         "part_alarms": 0, "part_procedures": 0, "failure_modes": 0})   # P16a
+                                         "part_alarms": 0, "part_procedures": 0, "failure_modes": 0,   # P16a
+                                     "specifications": 0})                                         # P22a
         screw = next(c for c in ctx["components"] if c["id"].endswith("/screw-barrel"))
         self.assertEqual([c["name"] for c in screw["children"]], ["Barrel Zone 1", "Barrel Zone 2", "Barrel Zone 3"])
         die = next(c for c in ctx["components"] if c["id"].endswith("/die-head"))

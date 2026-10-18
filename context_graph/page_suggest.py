@@ -32,11 +32,23 @@ What will be extracted: {goal}
 Entity types: {types}
 
 The user message is the document's outline: one line per page with its headings and table captions, then its first words; "Pages 24-26" is a page with the pages after it that have no heading (they continue it).
-Pick the pages that hold facts about the subject for that goal. Such facts are usually in: troubleshooting; fault, warning and alarm messages with their causes and remedies; maintenance, inspection and lubrication (intervals, amounts, steps); procedures with steps; technical data, ratings and operating limits; protections and monitoring.
+Pick the pages that hold facts about the subject for that goal. Such facts are usually in: {where}.
 Manuals are usually written for a whole product family or series: what applies to the family applies to the subject (a series' fault list is the subject's fault list). Leave out only what is about other models, sizes or options.
 Leave out pages that do not hold such facts: covers, contents, declarations, general safety notes, transport and storage, pages only about other models or options, long reference lists of settings or parameters (a list of fault, warning or alarm messages is not one: keep it), figures without text. Keep a table's continuation pages with it.
 Answer in JSON: {{"note": "one sentence", "sections": [{{"pages": "18-21", "title": "7 Maintenance", "why": "short reason"}}]}}
 If no page applies, answer {{"note": "why", "sections": []}}."""
+
+
+# Where a preset's facts usually are (P22a): the maintenance chapters, or the technical data.
+WHERE = ("troubleshooting; fault, warning and alarm messages with their causes and remedies; maintenance, inspection "
+         "and lubrication (intervals, amounts, steps); procedures with steps; technical data, ratings and operating limits; "
+         "protections and monitoring")
+WHERE_BY_PRESET = {
+    "Specifications (v4)": ("technical data and specifications; ratings (electrical data, rated current, power, pulse "
+                            "frequency); measuring range, accuracy, repeatability, response time; ambient, storage and operating "
+                            "conditions; dimensions and weights; tables of ratings for several models or sizes (keep them: "
+                            "the subject's row is chosen later)"),
+}
 
 
 class SuggestError(ValueError):
@@ -122,7 +134,8 @@ def suggest(doc, *, preset: PromptPreset | None = None, asset_id: str = "", anch
     else:
         subject = f'the product that the document "{doc.filename}" describes'
     entity_types, _ = extraction.extractable(registry.active_schema())
-    system = SYSTEM.format(subject=subject, goal=goal_of(preset), types=", ".join(entity_types))
+    where = WHERE_BY_PRESET.get(preset.name, WHERE) if preset else WHERE
+    system = SYSTEM.format(subject=subject, goal=goal_of(preset), types=", ".join(entity_types), where=where)
 
     entry_of = {p: (a, b) for a, b, _ in lines for p in range(a, b + 1)}
     chosen: set[int] = set()

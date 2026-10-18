@@ -27,7 +27,7 @@ from django.utils import timezone
 from . import registry, repository
 from .driver import session
 from . import evidence
-from .extraction import part_scope_for, scope_key_for
+from .extraction import is_part_rating, part_scope_for, rating_props, scope_key_for
 from .identity import EntityIndex, normalize, tag_key
 from .ids import is_valid_id, make_id
 from .models import CandidateTriple
@@ -64,6 +64,31 @@ def edit(triple: CandidateTriple, changes: dict) -> CandidateTriple:
     if triple.mode == "schema":
         _reresolve(triple, changes)
         triple.issue = _schema_issue(triple)
+    triple.edited = True
+    triple.save()
+    return triple
+
+
+def make_rating(triple: CandidateTriple) -> CandidateTriple:
+    """A part's limit as its rating (P22a, review action "Make it a rating"): `Component -HAS_LIMIT->
+    OperatingLimit` becomes `Component -HAS_SPEC-> Specification`, with the limit's values as the rating's
+    (low/high -> min/max, target -> value). A rejected triple is pending again; the evidence is kept.
+    Approval stays with the reviewer."""
+    if triple.status == CandidateTriple.Status.APPROVED:
+        raise TripleError("approved triples can't be changed")
+    if triple.mode != "schema" or not is_part_rating(triple.subject_type, triple.predicate, triple.object_type,
+                                                       registry.active_schema()):
+        raise TripleError("only a part's limit (Component -HAS_LIMIT-> OperatingLimit) can be made a rating, "
+                          "and the active schema must have Specification (v4)")
+    triple.predicate, triple.object_type = "HAS_SPEC", "Specification"
+    triple.object_props = {**rating_props(triple.object_props),
+                           **({"subtype": triple.object_props["subtype"]} if (triple.object_props or {}).get("subtype")
+                              and registry.active_schema().subtype_for("Specification", triple.object_props["subtype"]) else {})}
+    triple.object_id = ""
+    _reresolve(triple, {"object_type": "Specification"})
+    triple.issue = _schema_issue(triple)
+    triple.auto_fix = "made a rating: was Component -HAS_LIMIT-> OperatingLimit"
+    triple.status = CandidateTriple.Status.PENDING
     triple.edited = True
     triple.save()
     return triple

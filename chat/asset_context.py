@@ -479,7 +479,31 @@ def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set
         lines.append(Line("FAILURE_MODES", text, node_id=f["id"],
                           related=tuple(pr["id"] for pr in f["fixes"]) + tuple(f["indicated_by"])))
         props[f["id"]] = p
+
+    for sp in ctx.get("specifications", []):
+        p = sp["properties"]
+        text = f"- {sp['name']} of {parts(sp['components'])}"
+        if _rating(p):
+            text += f": {_rating(p)}"
+        extra = [m for m in (p.get("condition"), p.get("subtype")) if m]
+        if extra:
+            text += f" ({', '.join(str(m) for m in extra)})"
+        lines.append(Line("SPECIFICATIONS", text, node_id=sp["id"]))
+        props[sp["id"]] = p
     return lines, props
+
+
+def _rating(p: dict) -> str:
+    """A Specification's value: "-200 to 600 °C", "at least -20 °C", "16.5 A", "±1.0 °C or ±1.0 %"."""
+    unit = f" {p['unit']}" if p.get("unit") else ""
+    low, high, value = (p.get(k) for k in ("min", "max", "value"))
+    if low not in (None, "") and high not in (None, ""):
+        return f"{low} to {high}{unit}"
+    if low not in (None, ""):
+        return f"at least {low}{unit}"
+    if high not in (None, ""):
+        return f"at most {high}{unit}"
+    return f"{value}{unit}" if value not in (None, "") else ""
 
 
 def entities(asset_id: str) -> list[dict]:
@@ -514,6 +538,7 @@ def entities(asset_id: str) -> list[dict]:
     part_nodes += [(pr, "Procedure") for a in ctx.get("part_alarms", []) for pr in a["procedures"]]
     part_nodes += [(f, "FailureMode") for f in ctx.get("failure_modes", [])]
     part_nodes += [(pr, "Procedure") for f in ctx.get("failure_modes", []) for pr in f["fixes"]]
+    part_nodes += [(sp, "Specification") for sp in ctx.get("specifications", [])]
     for node, label in part_nodes:
         if node["id"] not in seen:
             seen.add(node["id"])
@@ -525,6 +550,7 @@ SECTION_TITLES = {
     "ASSET": None, "COMPONENTS": "Components (tree)", "SIGNALS": "Signals",
     "ALARMS": "Alarms", "PROCEDURES": "Procedures", "CONNECTIONS": "Connections", "DOCUMENTS": "Documents",
     "PART_ALARMS": "Alarms on parts", "PART_PROCEDURES": "Procedures on parts", "FAILURE_MODES": "Failure modes",
+    "SPECIFICATIONS": "Ratings of parts (datasheet values, not process limits)",
 }
 
 

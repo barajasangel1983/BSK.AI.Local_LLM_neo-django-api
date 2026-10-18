@@ -352,6 +352,24 @@ def triples_delete(request):
 
 @api_view(["POST"])
 @graph_errors
+def triples_make_rating(request):
+    """Make the selected part limits ratings (P22a); each comes back pending for review."""
+    selected = _selected(request)
+    if isinstance(selected, Response):
+        return selected
+    done, errors = [], {}
+    for t in selected:
+        try:
+            done.append(triple_json(triples.make_rating(t)))
+        except triples.TripleError as exc:
+            errors[str(t.pk)] = str(exc)
+    if errors and not done:
+        return _error(next(iter(errors.values())))
+    return Response({"triples": done, "errors": errors})
+
+
+@api_view(["POST"])
+@graph_errors
 def triple_promote(request, triple_id):
     triple = CandidateTriple.objects.select_related("document", "data_file", "job").filter(pk=triple_id).first()
     if triple is None:

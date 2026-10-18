@@ -31,6 +31,11 @@ Step 3 (2026-10-16):
   It asks for a short "note" before the triples (thinking is off on the DGX): without it the model skipped
   untitled lists of steps and read the wrong column of Table 7.2 (2026-10-16, ABB motors manual).
 
+P22a (2026-10-18, schema v4): a part's ratings are Specifications (`Component -HAS_SPEC-> Specification`).
+A `Component -HAS_LIMIT-> OperatingLimit` (allowed only from a Signal) is staged as one, with the limit's
+values as the rating's, and the reviewer sees it was converted. The "Specifications (v4)" preset reads
+technical-data pages.
+
 The DGX's constrained decoding (guided_json / json_schema) was too slow to use
 (80+ s and invalid output per window), so JSON is requested in the prompt with
 `response_format: json_object` and validated here.
@@ -161,6 +166,39 @@ Rules:
                 "predicate": str, "object": str, "object_type": str, "object_subtype": str, "object_properties": {},
                 "confidence": number 0-1}]}
   Subtypes and properties are optional. Return {"triples": []} if the text has nothing of this kind.
+
+Document: {document}
+Section: {section}""",
+    ),
+    "Specifications (v4)": (
+        "schema",
+        """You extract the ratings and technical data of an industrial part from its manual or datasheet.
+
+Entity types (use exactly these names):
+{entity_types}
+
+Relationships (predicate: allowed subject type -> object type):
+{relationships}
+
+Properties an entity may have (only these names):
+{properties}
+
+Rules:
+- Only values stated in the text; never guess or convert a value.
+- Each rating is ONE Specification: <part> HAS_SPEC <specification>, named after the quantity as written
+  (e.g. "Measuring range", "Ambient temperature (head)", "Rated output current at 2 kHz"), with a subtype.
+  - A range: "min" and "max". A single value: "value". Always "unit" when the text gives one.
+  - "condition": when it applies, if the text says (a pulse frequency, a version, "with display").
+  - "basis": the table, its row and its column, or the section.
+- A table for many models, sizes or variants: only the row or column of the part this document describes
+  (its model designation, power or order code). If none applies, return nothing for the table.
+- A rating of the part is never an OperatingLimit: those are the process's limits on a signal.
+- Never create a Signal, an Alarm or a Procedure.
+- First a key "note": one sentence on which ratings this text gives about the part, or that it gives none.
+- Return ONLY compact JSON:
+  {"note": str, "triples": [{"subject": str, "subject_type": str, "predicate": str, "object": str, "object_type": str,
+                "object_subtype": str, "object_properties": {}, "confidence": number 0-1}]}
+  Return {"triples": []} if the text has nothing of this kind.
 
 Document: {document}
 Section: {section}""",
@@ -715,6 +753,27 @@ def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:
     )
 
 
+# A limit's properties as a rating's (P22a): the values are kept, under the Specification's names.
+RATING_PROPS = {"low": "min", "high": "max", "target": "value", "unit": "unit", "basis": "basis", "group": "condition"}
+
+
+def rating_props(props: dict | None) -> dict:
+    """An OperatingLimit's properties as a Specification's ({"low": "-50", "high": "600"} -> min / max)."""
+    out = {}
+    for key, value in (props or {}).items():
+        if key in RATING_PROPS and value not in (None, ""):
+            out[RATING_PROPS[key]] = value
+    return out
+
+
+def is_part_rating(subject_type: str, predicate: str, object_type: str, schema: Schema) -> bool:
+    """A part's limit the schema refuses but can hold as a rating (Component -HAS_LIMIT-> OperatingLimit, v4)."""
+    return (subject_type == "Component" and predicate == "HAS_LIMIT" and object_type == "OperatingLimit"
+            and "HAS_SPEC" in schema.relationship_types
+            and ("Component", "Specification") in schema.relationship_types["HAS_SPEC"].pairs
+            and ("Component", "OperatingLimit") not in schema.relationship_types["HAS_LIMIT"].pairs)
+
+
 def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=None, part=None) -> CandidateTriple:
     issue = ""
     subject_id = object_id = ""
@@ -723,6 +782,12 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
     props: dict = {}
     auto_fix = ""
     if mode == "schema":
+        canonical_limit = schema.relationship_for(t["predicate"], "Signal", "OperatingLimit")
+        if canonical_limit == "HAS_LIMIT" and is_part_rating(t["subject_type"], "HAS_LIMIT", t["object_type"], schema):
+            # A part's rating read as a limit (the overnight batch's 29, 2026-10-17): staged as a Specification.
+            auto_fix = "a part's rating: was Component -HAS_LIMIT-> OperatingLimit"
+            t = {**t, "predicate": "HAS_SPEC", "object_type": "Specification",
+                 "object_properties": rating_props(t.get("object_properties"))}
         # A synonym of an allowed relationship ("drives", "is monitored by") becomes the schema type.
         canonical = schema.relationship_for(t["predicate"], t["subject_type"], t["object_type"])
         if canonical:
