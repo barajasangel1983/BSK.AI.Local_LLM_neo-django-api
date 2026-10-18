@@ -167,6 +167,11 @@ class ViewTests(SimpleTestCase):
             self.client.get("/api/graph/data/", {"root": "bsk:asset:EXTR01", "depth": "9", "types": "Signal,Alarm"})
         mock_data.assert_called_once_with("bsk:asset:EXTR01", depth=4, labels=["Signal", "Alarm"], limit=300,
                                           layer="curated", doc_key=None)
+        # The visualizer may ask for the whole graph (2026-10-18: ~2,100 nodes), up to 5,000; lists stay at 1,000.
+        for asked, served in (("2500", 2500), ("9000", 5000)):
+            with patch("context_graph.views.services.graph_data", return_value={}) as mock_data:
+                self.client.get("/api/graph/data/", {"limit": asked})
+            self.assertEqual(mock_data.call_args.kwargs["limit"], served)
 
     def test_errors_map_to_statuses(self):
         cases = [

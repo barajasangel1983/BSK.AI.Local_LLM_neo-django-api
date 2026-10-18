@@ -18,6 +18,8 @@ from .schema import SchemaError
 from .services import SchemaConflict
 
 MAX_LIMIT = 1000
+# The visualizer's cap (2026-10-18): the whole graph is ~2,100 nodes and 1 s to serve; lists and searches keep MAX_LIMIT.
+GRAPH_MAX_NODES = 5000
 
 
 def graph_errors(view):
@@ -201,7 +203,7 @@ def graph_data(request):
         request.query_params.get("root") or None,
         depth=max(1, _int(request, "depth", 2, maximum=4)),
         labels=types or None,
-        limit=max(1, _int(request, "limit", 300)),
+        limit=max(1, _int(request, "limit", 300, maximum=GRAPH_MAX_NODES)),
         layer=request.query_params.get("layer") or "curated",
         doc_key=request.query_params.get("doc") or None,
     ))
