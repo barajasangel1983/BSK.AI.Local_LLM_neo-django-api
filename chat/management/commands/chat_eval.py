@@ -7,7 +7,10 @@ Each question goes through the chat's own answer path (POST /api/chat/, asset sc
 conversation, which is deleted afterwards: an eval run leaves nothing in the chat list. An answer is scored by
 the facts it states (`expect`: each fact a list of accepted spellings): ✓ all, ◐ some, ✗ none. A question with
 `abstain` expects the answer to say the fact is not documented; one with `forbid` (regexes) is ✗ when the answer
-states one of them (a wrong value). The score is a first pass; a reviewer reads the saved answers (`--out`) to
+states one of them (a wrong value). A data question (P18b, `measures`) has no fixed answer: its numbers are
+computed from the historian when it is asked (`historian_window.stats`, the numbers the chat's block states),
+just before and just after, and each measure is found when the answer states it within its tolerance of
+either. The score is a first pass; a reviewer reads the saved answers (`--out`) to
 confirm it. Each result also records the chat call's prompt and completion tokens (Analytics' ModelCall).
 """
 
@@ -23,7 +26,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.test import override_settings
 from rest_framework.test import APIRequestFactory
 
-from chat import views
+from chat import historian_window, views
 from chat.models import Conversation
 from usage.models import ModelCall
 
@@ -69,6 +72,69 @@ def is_wrong(answer: str, found: list[bool], forbid: list[str], abstain: bool) -
     return bool(wrong(answer, forbid)) and (abstain or not all(found))
 
 
+# A data question's measures (P18b): the number in hour_stats and how near the answer must be.
+PERCENT = ("oee", "availability", "performance", "quality")
+MINUTES = ("running_min", "downtime_min", "not_running_min")
+NUMBER = re.compile(r"(?<![\w.])(\d+(?:\.\d+)?)(?:\s*(%|percent|minutes?|mins?|min|hours?|hrs?|hr|h|kg)\b)?")
+NONE_OUT = re.compile(r"\bno (signals?|values?|readings?)\b[^.]*\b(out|outside|left|exceed)|\b(none|nothing) (of the signals |was |were )?"
+                      r"(out|outside)|\b(stayed|remained|were|was|all) (with)?in (its|their|the|normal)|\bnot out of")
+
+
+def expected(stats: dict, measure: str):
+    """The value a measure expects, from hour_stats: a number, or for alarms/out_of_range a list of names."""
+    if measure.startswith("state:"):
+        return stats["states"].get(measure[6:], 0)
+    if measure == "alarm_top":                                   # the three alarms that started most often
+        return [code for code, _ in sorted(stats["alarms"].items(), key=lambda x: -x[1])[:3]]
+    if measure == "out_of_range":
+        return [o["name"] for o in stats["out_of_range"]]
+    return stats.get(measure)
+
+
+def tolerance(measure: str, value: float) -> float:
+    if measure in PERCENT:
+        return 0.5
+    if measure == "throughput":
+        return max(5.0, abs(value) * 0.01)
+    return max(2.0, abs(value) * 0.02)                           # minutes (running, downtime, a state)
+
+
+def numbers(answer: str) -> list[tuple[float, str]]:
+    """The numbers an answer states with their unit word ("17.3 h" -> (17.3, "h"))."""
+    return [(float(m.group(1)), (m.group(2) or "").lower()) for m in NUMBER.finditer(normalize(answer))]
+
+
+def _words(text: str) -> str:
+    """"OUT_OF_SPEC_DENSITY", "out-of-spec density" -> "out of spec density"."""
+    return re.sub(r"[\s_-]+", " ", text.lower())
+
+
+def states_measure(answer: str, measure: str, values: list) -> bool:
+    """Does the answer state `measure` near any of `values` (the numbers computed before and after it ran)?"""
+    text = normalize(answer)
+    if measure == "alarm_top":
+        return any(all(_words(c) in _words(text) for c in v) for v in values)
+    if measure == "out_of_range":
+        return any((all(n.lower() in text for n in v) if v else bool(NONE_OUT.search(text))) for v in values)
+    said = numbers(answer)
+    for v in values:
+        if v is None:
+            continue
+        tol = tolerance(measure, v)
+        for n, unit in said:
+            if unit in ("h", "hr", "hrs", "hour", "hours") and (measure in MINUTES or measure.startswith("state:")):
+                if abs(n * 60 - v) <= max(tol, 6.0):             # "17.3 hours" for 1,035 min
+                    return True
+            elif abs(n - v) <= tol:
+                return True
+    return False
+
+
+def score_data(answer: str, measures: list[str], values: dict[str, list]) -> tuple[str, list[bool]]:
+    found = [states_measure(answer, m, values[m]) for m in measures]
+    return ("✓" if all(found) else "◐" if any(found) else "✗"), found
+
+
 class Command(BaseCommand):
     help = "Run a chat reference set (questions with expected facts) against a model and score the answers."
 
@@ -112,6 +178,8 @@ class Command(BaseCommand):
         with override_settings(**overrides):
             for q in questions:
                 started = time.time()
+                measures = q.get("measures") or []
+                before = historian_window.stats(ref["asset_id"], q["question"]) if measures else None
                 request = factory.post("/api/chat/", {"conversation_id": None, "message": q["question"],
                                                       "model": opts["model"], "use_rag": True,
                                                       "asset_id": ref["asset_id"]}, format="json")
@@ -123,8 +191,20 @@ class Command(BaseCommand):
                 if data.get("id"):
                     Conversation.objects.filter(pk=data["id"]).delete()     # leave nothing in the chat list
                 forbid, abstain = q.get("forbid") or [], bool(q.get("abstain"))
-                mark, found = (score(answer, q["expect"], forbid, abstain) if reply
-                               else ("✗", [False] * len(q["expect"])))
+                data_check = {}
+                if measures:
+                    after = historian_window.stats(ref["asset_id"], q["question"])
+                    found_stats = [s for s in (before, after) if s]
+                    values = {m: [expected(st, m) for _, st in found_stats] for m in measures}
+                    mark, found = score_data(answer, measures, values) if reply else ("✗", [False] * len(measures))
+                    window = next((s.get("source", "") for s in reply.get("sources") or [] if s.get("kind") == "historian"
+                                   and s.get("source", "").startswith("Historian — ")), "")
+                    labels = {f"Historian — {w.label}" for w, _ in found_stats}
+                    data_check = {"measures": measures, "values": values, "window": window,
+                                  "window_ok": window in labels, "window_expected": sorted(labels)}
+                else:
+                    mark, found = (score(answer, q["expect"], forbid, abstain) if reply
+                                   else ("✗", [False] * len(q["expect"])))
                 call = ModelCall.objects.filter(conversation_id=data.get("id"), purpose="chat").first() \
                     if data.get("id") else None
                 sources = reply.get("sources") or []
@@ -137,11 +217,13 @@ class Command(BaseCommand):
                     "completion_tokens": call.completion_tokens if call else None,
                     "graph_facts": graph.get("snippet", ""),
                     "documents": [s.get("source") for s in sources if s.get("kind") not in ("graph", "historian")],
+                    **data_check,
                 })
                 r = results[-1]
                 self.stdout.write(f"{q['id']:>4} {mark} {sum(found)}/{len(found)}  {r['seconds']:>5}s  "
                                   f"{r['prompt_tokens'] or '-':>6} tok  {graph.get('snippet', '')}"
-                                  + (f"  WRONG {r['wrong']}" if r["wrong"] else ""))
+                                  + (f"  WRONG {r['wrong']}" if r["wrong"] else "")
+                                  + (f"  window {'ok' if r['window_ok'] else 'WRONG ' + repr(r['window'])}" if measures else ""))
         summary = f"{opts['model']}: {_totals(results)}"
         tokens = [r["prompt_tokens"] for r in results if r["prompt_tokens"]]
         if tokens:
@@ -166,6 +248,12 @@ class Command(BaseCommand):
             q = key[r["id"]]
             forbid, abstain = q.get("forbid") or [], bool(q.get("abstain"))
             ok = r.get("status") == 200
+            if q.get("measures"):                       # the numbers computed when it was asked
+                r["mark"], r["found"] = score_data(r["answer"], q["measures"], r["values"]) if ok \
+                    else ("✗", [False] * len(q["measures"]))
+                r["expected"], r["kind"] = q["answer"], q.get("kind", "")
+                self.stdout.write(f"{r['id']:>4} {r['mark']} {sum(r['found'])}/{len(r['found'])}")
+                continue
             r["mark"], r["found"] = score(r["answer"], q["expect"], forbid, abstain) if ok else ("✗", [False] * len(q["expect"]))
             r["wrong"] = wrong(r["answer"], forbid) if ok and is_wrong(r["answer"], r["found"], forbid, abstain) else []
             r["expected"], r["kind"] = q["answer"], q.get("kind", "")
