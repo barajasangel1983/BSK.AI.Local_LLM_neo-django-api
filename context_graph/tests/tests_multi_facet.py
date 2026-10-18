@@ -113,7 +113,7 @@ class MultiFacetRunTests(LibraryTestCase):
     def test_a_facet_leaves_what_another_facet_of_the_job_owns(self):
         results = self.by_facet_run(self.run_all())
         self.assertEqual((results["maintenance"]["staged"], results["maintenance"]["left"]), (1, 1))
-        self.assertIn("1 left to Specification run", results["maintenance"]["note"])
+        self.assertIn("1 left to the Specification run", results["maintenance"]["note"])
         self.assertFalse(CandidateTriple.objects.filter(document=self.doc, preset_name="Maintenance (v3)",
                                                         object_type="Specification").exists())
         CandidateTriple.objects.filter(document=self.doc).delete()

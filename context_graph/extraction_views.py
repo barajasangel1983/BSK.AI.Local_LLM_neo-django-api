@@ -409,3 +409,41 @@ def triple_promote(request, triple_id):
         return _error(str(exc))
     triple.refresh_from_db()
     return Response(triple_json(triple))
+
+
+# --- quicker review: the same thing under different names (2026-10-18) -------------------
+
+def _pending_of(request):
+    doc = request.query_params.get("document") or request.data.get("document")
+    data_file = request.query_params.get("data_file") or request.data.get("data_file")
+    if not doc and not data_file:
+        return None
+    qs = CandidateTriple.objects.filter(status=CandidateTriple.Status.PENDING, mode="schema").prefetch_related("evidence")
+    return qs.filter(document_id=doc) if doc else qs.filter(data_file_id=data_file)
+
+
+@api_view(["GET"])
+def triples_duplicates(request):
+    """GET /api/graph/triples/duplicates/?document=<id> — groups of one thing staged under several names, and
+    terminals that may not be signal channels (pending triples of the document)."""
+    from . import duplicates
+    qs = _pending_of(request)
+    if qs is None:
+        return _error("document or data_file is required")
+    return Response(duplicates.find(list(qs)))
+
+
+@api_view(["POST"])
+def triples_merge(request):
+    """POST /api/graph/triples/merge/ {document, type, names, into} — one name and id for a group; identical
+    triples are folded. Pending triples only; nothing is approved."""
+    from . import duplicates
+    qs = _pending_of(request)
+    names, into, type_ = request.data.get("names") or [], str(request.data.get("into") or ""), str(request.data.get("type") or "")
+    if qs is None or not isinstance(names, list) or not into or not type_:
+        return _error("document, type, names (a list) and into are required")
+    try:
+        result = duplicates.merge(list(qs), type_, [str(n) for n in names], into)
+    except ValueError as exc:
+        return _error(str(exc))
+    return Response(result)

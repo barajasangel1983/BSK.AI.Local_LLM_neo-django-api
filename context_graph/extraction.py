@@ -735,7 +735,8 @@ def _run_facets(job, doc, params: dict) -> None:
             out.update(state="failed", note=str(exc)[:300])
             continue
         notes = [f"{result['skipped']} already reviewed" if result["skipped"] else "",
-                 f"{result['left']} left to {', '.join(leave)} run" if result["left"] else ""]
+                 (f"{result['left']} left to the {', '.join(leave)} run" if leave else
+                  f"{result['left']} outside this facet") if result["left"] else ""]
         out.update(state="done", staged=result["staged"], failed_calls=result["failed"], left=result["left"],
                    note="; ".join(n for n in notes if n))
 
