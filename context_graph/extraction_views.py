@@ -109,8 +109,12 @@ def preset_detail(request, preset_id):
             if not template.strip():
                 return _error("template must not be empty")
             if template != preset.template:
-                preset.template = template
-                preset.version += 1   # triples record name + version of the prompt that produced them
+                # P23: through the version store, so a number is never reused after a rollback
+                from . import prompts
+                try:
+                    prompts.save_version(preset, template, source="edit")
+                except prompts.PromptError as exc:
+                    return _error(str(exc))
         if data.get("is_default") is True:
             preset.is_default = True
             _set_default(preset)

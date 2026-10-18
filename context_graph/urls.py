@@ -5,7 +5,7 @@ Canonical IDs contain ':' and '/', so ID segments use the `path` converter.
 
 from django.urls import path
 
-from . import extraction_views, import_views, views
+from . import extraction_views, import_views, prompts_views, views
 
 urlpatterns = [
     path("health/", views.graph_health, name="graph-health"),
@@ -26,6 +26,18 @@ urlpatterns = [
     path("lab/", views.lab_summary, name="graph-lab"),
     # Triple extraction (GraphLab "Generate triples") and review
     path("presets/", extraction_views.presets, name="graph-presets"),
+    # P23: the Prompts tab
+    path("prompts/", prompts_views.prompt_list, name="graph-prompts"),
+    path("prompts/validate/", prompts_views.prompt_validate, name="graph-prompts-validate"),
+    path("prompts/export/", prompts_views.prompt_export_all, name="graph-prompts-export"),
+    path("prompts/import/", prompts_views.prompt_import, name="graph-prompts-import"),
+    path("prompts/test/", prompts_views.prompt_test, name="graph-prompts-test"),
+    path("prompts/<int:prompt_id>/", prompts_views.prompt_detail, name="graph-prompt"),
+    path("prompts/<int:prompt_id>/versions/", prompts_views.prompt_save, name="graph-prompt-save"),
+    path("prompts/<int:prompt_id>/versions/<int:version>/activate/", prompts_views.prompt_activate,
+         name="graph-prompt-activate"),
+    path("prompts/<int:prompt_id>/adopt-builtin/", prompts_views.prompt_adopt_builtin, name="graph-prompt-adopt"),
+    path("prompts/<int:prompt_id>/export/", prompts_views.prompt_export, name="graph-prompt-export"),
     path("presets/<int:preset_id>/", extraction_views.preset_detail, name="graph-preset"),
     path("extract/", extraction_views.extract, name="graph-extract"),
     path("extract/config/", extraction_views.extract_config, name="graph-extract-config"),
