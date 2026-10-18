@@ -205,6 +205,8 @@ class CandidateTriple(models.Model):
     issue = models.CharField(max_length=255, blank=True, default="")  # e.g. pair not allowed by the schema
     # A change made when staging, with the link as the model wrote it ("flipped from Alarm -MITIGATED_BY-> Procedure").
     auto_fix = models.CharField(max_length=255, blank=True, default="")
+    # Knowledge facets (P22b): derived from the active schema's mapping (context_graph/facets.py), never typed
+    facets = models.JSONField(default=list, blank=True)
 
     # Evidence (text lives here, in the document library — never in Neo4j)
     chunk_index = models.PositiveIntegerField(default=0)

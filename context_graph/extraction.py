@@ -59,7 +59,7 @@ from usage import recorder as usage
 from . import registry, repository
 from .driver import GraphUnavailable, session
 from .ids import clean_part, is_valid_id, make_id
-from . import evidence
+from . import evidence, facets
 from .identity import EntityIndex, normalize, proposed_id  # noqa: F401 (re-exported)
 from .models import CandidateTriple, Evidence, PromptPreset
 from .schema import Schema
@@ -205,7 +205,7 @@ Section: {section}""",
     ),
 }
 # Never from the model: identity, provenance, and `status` (draft / approved is a person's decision).
-PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "created_by_triple", "status"}
+PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "created_by_triple", "status", "facets"}
 MAX_PROPERTY = 1000
 MAX_LIST = 40
 
@@ -730,6 +730,7 @@ def run_extract(job) -> None:
     with transaction.atomic():
         # A new run replaces the document's pending triples of the modes it ran; reviewed ones are kept.
         CandidateTriple.objects.filter(document=doc, status=CandidateTriple.Status.PENDING, mode__in=list(presets)).delete()
+        facets.stamp(staged.values(), registry.active_schema())
         triples = CandidateTriple.objects.bulk_create(staged.values())
         evidence.attach(triples, found)
         evidence.drop_orphans(document=doc)
