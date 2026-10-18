@@ -145,6 +145,8 @@ def extract_config(request):
             # P22b: the facet names, and whether this schema maps them (v5 on)
             "facets": list(facets.FACETS) if facets.mapping_of(schema) else [],
         },
+        # P22c-0: the facet runs of "All facets" (one job per document, each facet with its own prompt and pages)
+        "facet_runs": extraction.facet_runs_available(schema),
     })
 
 
@@ -157,7 +159,8 @@ def extract(request):
     missing = [i for i in ids if str(i) not in docs]
     if missing:
         return _error(f"unknown document(s): {', '.join(map(str, missing))}", status.HTTP_404_NOT_FOUND)
-    params = {k: request.data.get(k) for k in ("mode", "chunking", "presets", "asset_id", "include_drawings", "pages", "anchor_id")
+    params = {k: request.data.get(k) for k in ("mode", "chunking", "presets", "asset_id", "include_drawings", "pages", "anchor_id",
+                                               "facet_runs", "rerun_reviewed")
               if request.data.get(k)}
     if "follow_languages" in request.data:      # false is meaningful: read every language
         params["follow_languages"] = request.data.get("follow_languages")
@@ -238,14 +241,6 @@ def triple_list(request):
         qs = qs.filter(mode=qp["mode"])
     if qp.get("issues") in ("1", "true"):
         qs = qs.exclude(issue="")
-    if qp.get("facet"):   # P22b: one facet, or "none" for triples with no facet (core)
-        if qp["facet"] == "none":
-            qs = qs.filter(Q(facets=[]) | Q(facets__isnull=True))
-        elif qp["facet"] in facets.FACETS:
-            # JSON lists in SQLite: match the quoted name in the stored text
-            qs = qs.annotate(facets_text=Cast("facets", TextField())).filter(facets_text__contains=f'"{qp["facet"]}"')
-        else:
-            return _error(f"facet must be one of {', '.join(facets.FACETS)} or none")
     if qp.get("new") in ("1", "true"):   # triples that would add an entity to the graph
         qs = qs.filter(Q(subject_existing=False) | Q(object_existing=False))
     if qp.get("q"):
@@ -258,6 +253,15 @@ def triple_list(request):
             return _error("min_confidence must be a number between 0 and 1")
         # Import rows have no confidence (they are not guesses): they always pass.
         qs = qs.filter(Q(confidence__gte=floor) | Q(confidence__isnull=True))
+    facet_base = qs           # before the facet filter: the tabs count every facet
+    if qp.get("facet"):   # P22b: one facet, or "none" for triples with no facet (core)
+        if qp["facet"] == "none":
+            qs = qs.filter(Q(facets=[]) | Q(facets__isnull=True))
+        elif qp["facet"] in facets.FACETS:
+            # JSON lists in SQLite: match the quoted name in the stored text
+            qs = qs.annotate(facets_text=Cast("facets", TextField())).filter(facets_text__contains=f'"{qp["facet"]}"')
+        else:
+            return _error(f"facet must be one of {', '.join(facets.FACETS)} or none")
     order = qp.get("order") or ""
     if order not in ("", "confidence", "-confidence"):
         return _error("order must be confidence or -confidence")
@@ -268,6 +272,12 @@ def triple_list(request):
     counts = {s: 0 for s in CandidateTriple.Status.values}
     for row in qs.order_by().values("status").annotate(n=Count("id")):
         counts[row["status"]] = row["n"]
+    facet_counts = None
+    if qp.get("facet_counts") in ("1", "true"):   # P22c-0: the review's facet tabs (same filters, every facet)
+        facet_counts = {f: 0 for f in (*facets.FACETS, "none")}
+        for tags in facet_base.values_list("facets", flat=True):
+            for f in (tags or ["none"]):
+                facet_counts[f] = facet_counts.get(f, 0) + 1
     if qp.get("fields") == "ids":   # "select all matching" in the review table
         return Response({"total": qs.count(), "ids": list(qs.values_list("id", flat=True)[:MAX_IDS])})
     try:
@@ -277,6 +287,7 @@ def triple_list(request):
         return _error(str(exc))
     return Response({
         "total": qs.count(), "counts": counts, "offset": offset, "limit": limit,
+        **({"facet_counts": facet_counts} if facet_counts is not None else {}),
         "triples": [triple_json(t) for t in qs[offset:offset + limit]],
     })
 
