@@ -48,11 +48,11 @@ WHERE_BY_PRESET = {
                             "frequency); measuring range, accuracy, repeatability, response time; ambient, storage and operating "
                             "conditions; dimensions and weights; tables of ratings for several models or sizes (keep them: "
                             "the subject's row is chosen later)"),
-    "Controls & Setup (v6)": ("commissioning and quick commissioning; parameter lists and the parameters to set (motor "
-                              "data, limits, ramps, control mode); terminal strips, inputs and outputs and their wiring "
-                              "examples; the default settings or macros of the interfaces; fieldbus and communication "
-                              "(PROFINET, PROFIBUS, USS, Modbus, addresses, telegrams). Not function diagrams of internal "
-                              "control, nor troubleshooting"),
+    "Controls & Setup (v6)": ("commissioning and quick commissioning (the steps and the parameters they set); terminal "
+                              "strips, inputs and outputs and their wiring; the default settings (macros) of the "
+                              "interfaces; fieldbus and communication (PROFINET, PROFIBUS, USS, Modbus, addresses, "
+                              "telegrams); the 'basic settings' paragraph of a function. Not the full description of a "
+                              "function nor its function diagrams, not parameter lists or indexes, not troubleshooting"),
 }
 
 
