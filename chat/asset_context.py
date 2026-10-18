@@ -604,7 +604,10 @@ If the facts and excerpts don't contain the answer, say so plainly — do not in
 
 
 WINDOW_NOTE = ("\n{block}\nThe historian window above is computed from the historian's rows for the time the question asks "
-               "about; answer questions about that time from it, cite it as [H], and say which window it covers.\n")
+               "about; answer questions about that time from it, cite it as [H], and say which window it covers. "
+               "Its numbers are the answer for that window: never give a live value or a latest sample from the facts "
+               "above in their place (those are one moment, now). State the running minutes with an OEE, and only the "
+               "downtime minutes as downtime (changeover, cool down, warm up and flush are other stops).\n")
 
 
 def system_prompt(ctx: AssetContext, window: str = "") -> str:

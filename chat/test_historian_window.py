@@ -1,5 +1,6 @@
 """Historian windows in the asset chat (P18a): data questions, their windows, the block, the view."""
 
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -37,14 +38,21 @@ class DataQuestionTests(SimpleTestCase):
     def test_data_questions(self):
         for q in ("what was the OEE the last 24 hrs", "downtime yesterday?", "how did shift B do today",
                   "which alarms in the last 8 h", "OEE?", "throughput this week", "was die pressure out of range today",
-                  "how many times did F30004 start today", "how is it going this shift"):
+                  "how many times did F30004 start today", "how is it going this shift",
+                  "how much time did changeovers take yesterday", "minutes in cool down today"):
             self.assertTrue(hw.is_data_question(q), q)
 
     def test_not_data_questions(self):
         for q in ("what does alarm F30004 mean", "which alarms does the cutter drive have", "alarm F30004?",
                   "how do I reset the alarm from yesterday", "what is the replacement interval of the bearings",
-                  "which motors are on the extruder"):
+                  "which motors are on the extruder", "what is the cool down procedure"):
             self.assertFalse(hw.is_data_question(q), q)
+
+
+    def test_the_data_set_is_all_data_questions(self):
+        from chat.management.commands.chat_eval import DEFAULT_SET
+        for q in json.loads((DEFAULT_SET.parent / "extr01_data.json").read_text())["questions"]:
+            self.assertTrue(hw.is_data_question(q["question"]), q["id"])
 
 
 class ParseTests(SimpleTestCase):
@@ -211,6 +219,7 @@ class ChatViewTests(TestCase):
         system = post.call_args.kwargs["json"]["messages"][0]["content"]
         self.assertIn("HISTORIAN WINDOW for Extruder EXTR01", system)
         self.assertIn("cite it as [H]", system)
+        self.assertIn("never give a live value or a latest sample", system)
         self.assertLess(system.index("ASSET FACTS"), system.index("HISTORIAN WINDOW"))
         self.assertIn("Historian — last 24 h", [s["source"] for s in r.data["messages"][-1]["sources"]])
         self.assertEqual(compute.call_args.args[:3], (ASSET, "Extruder EXTR01", "what was the OEE the last 24 hrs"))

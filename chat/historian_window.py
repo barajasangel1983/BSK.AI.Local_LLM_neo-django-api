@@ -38,7 +38,7 @@ MEASURE = re.compile(
 # … and ones that do only with a time ("which alarms does the drive have" is a graph question).
 WITH_TIME = re.compile(r"\b(alarms?|faults?|warnings?|quality|running|stopped|state|temperatures?|pressure|speed|"
                        r"moisture|density|flow|torque|power|how (?:did|was|were|has|is)|go|going|perform\w*|times|how many|how often|"
-                       r"start(?:ed|s)?|occur\w*|happen\w*)\b")
+                       r"start(?:ed|s)?|occur\w*|happen\w*|changeovers?|cool ?downs?|warm ?ups?|flush\w*|idle)\b")
 # Questions about a procedure or a meaning, even when they name a measure or a time.
 NOT_DATA = re.compile(r"\b(mean|means|meaning|stands? for|how (?:do|to|can|should) (?:i|we|you)|procedure|steps?|"
                       r"fix|replace|reset|troubleshoot\w*|interval|maintenance|manual|datasheet)\b")
@@ -276,7 +276,8 @@ def block(name: str, w: Window, rows, signals, period, source, bucketed, clk: di
             lines.append(f"- Outside working hours (plant calendar): {_min(agent._minutes(len(outside), period))} min, "
                          f"of which running {_min(agent._minutes(run, period))} min.")
     alarms = Counter(total["alarms"]).most_common(8)
-    lines.append("- Alarms started: " + (", ".join(f"{c} × {n}" for c, n in alarms) if alarms else "none") + ".")
+    lines.append(("- Alarms seen (from the means, so a count is at least this; short alarms can be missed): " if bucketed
+                  else "- Alarms started: ") + (", ".join(f"{c} × {n}" for c, n in alarms) if alarms else "none") + ".")
     if total["out_of_range"]:
         lines.append(f"- Out of normal range while running ({agent.OUT_MINUTES} min or more in a row): " + "; ".join(
             f"{o['name']} {_min(o['minutes'])} min (between {agent._fmt(o['min'])} and {agent._fmt(o['max'])} {o['unit']}; normal "
@@ -298,6 +299,27 @@ def block(name: str, w: Window, rows, signals, period, source, bucketed, clk: di
     return text[:budget]
 
 
+def window_rows(asset_id: str, question: str, real: datetime | None = None):
+    """(window, rows, signals, period, source, bucketed, clock, calendar) for a question, or None (no data)."""
+    clk = agent.clock(asset_id, real)
+    if clk is None:
+        return None
+    cal = plant_calendar.for_asset(asset_id)
+    w = parse(question, clk["now"], cal)
+    rows, signals, period, source, bucketed = read(asset_id, w)
+    signals = list({s["key"]: s for s in signals}.values())   # a signal monitored by two parts is listed twice
+    return w, rows, signals, period, source, bucketed, clk, cal
+
+
+def stats(asset_id: str, question: str, real: datetime | None = None) -> tuple[Window, dict] | None:
+    """The window and its numbers (hour_stats), as the block states them: what chat_eval checks answers against."""
+    found = window_rows(asset_id, question, real)
+    if found is None:
+        return None
+    w, rows, signals, period = found[:4]
+    return w, agent.hour_stats(rows, signals, period, w.minutes)
+
+
 @dataclass
 class Result:
     text: str
@@ -309,13 +331,10 @@ def compute(asset_id: str, name: str, question: str, budget: int, real: datetime
     """The window block for a data question about an asset, or None (not a data question, or no data)."""
     if not is_data_question(question):
         return None
-    clk = agent.clock(asset_id, real)
-    if clk is None:
+    found = window_rows(asset_id, question, real)
+    if found is None:
         return None
-    cal = plant_calendar.for_asset(asset_id)
-    w = parse(question, clk["now"], cal)
-    rows, signals, period, source, bucketed = read(asset_id, w)
-    signals = list({s["key"]: s for s in signals}.values())   # a signal monitored by two parts is listed twice
+    w, rows, signals, period, source, bucketed, clk, cal = found
     if not rows:
         text = (f"HISTORIAN WINDOW for {name}, {w.label}: {_local(w.start, cal)} – {_local(w.end, cal)}: "
                 f"the historian has no rows in this window.")
