@@ -185,3 +185,31 @@ class NormalizedStagingTests(StagingTests):
                               {"code": "p1070[0]"}))
         self.assertEqual((c.object_props["code"], c.object_props["data_set"], c.object_id.rsplit("/", 1)[-1]),
                          ("p1070", "0", "p1070"))
+
+
+@unittest.skipUnless(TEST_URI, "set GRAPH_TEST_URI to run against a test Neo4j")
+@override_settings(GRAPH_ENABLED=True, NEO4J_URI=TEST_URI or "", NEO4J_USER="neo4j", GRAPH_PART_SCOPED_IDS=True,
+                   NEO4J_PASSWORD=os.getenv("NEO4J_TEST_PASSWORD", "bsklab-test-only"), NEO4J_DATABASE="neo4j")
+class OwnerFromIdTests(LibraryTestCase):
+    """2026-10-18: a terminal approved only through CONFIGURED_BY has no link from its part; its id names the part."""
+
+    def setUp(self):
+        super().setUp()
+        driver.close_driver()
+        self.addCleanup(driver.close_driver)
+        with driver.session() as s:
+            s.run("MATCH (n) DETACH DELETE n").consume()
+        services.init_graph()
+        services.load_seed(SEED)
+        registry.save_version(V6, note="v6")
+        with driver.session() as s:
+            s.run("MERGE (c:Entity:Component {id: 'bsk:component:EXTR01/cutter-drive'}) SET c.name = 'Cutter drive' "
+                  "MERGE (n:Entity:IOPoint {id: 'bsk:io-point:EXTR01/feeder/DI-3'}) SET n.name = 'DI 3'").consume()
+
+    def test_the_id_names_the_owner(self):
+        index = EntityIndex.load()
+        self.assertEqual(index.owners.get("bsk:io-point:EXTR01/feeder/DI-3"), {"bsk:component:EXTR01/feeder"})
+        cutter = index.resolve("IOPoint", "DI 3", "EXTR01", part=index.part_scope("bsk:component:EXTR01/cutter-drive", "EXTR01"))
+        self.assertEqual((cutter.id, cutter.kind), ("bsk:io-point:EXTR01/cutter-drive/DI-3", "new"))
+        feeder = index.resolve("IOPoint", "DI 3", "EXTR01", part=index.part_scope("bsk:component:EXTR01/feeder", "EXTR01"))
+        self.assertEqual(feeder.id, "bsk:io-point:EXTR01/feeder/DI-3")
