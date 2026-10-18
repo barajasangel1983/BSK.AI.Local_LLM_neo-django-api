@@ -24,6 +24,14 @@ TEXT = ("01.01 Motor speed used. Estimated or measured motor speed. Unit: rpm. "
 
 
 class UnitTests(SimpleTestCase):
+    def test_codes_by_their_numbers(self):
+        self.assertEqual(maps.code_in("1.1", "see 01.01 Motor speed used"), "01.01")
+        self.assertEqual(maps.code_in("1.1", "see 01.10 Motor torque"), "")             # not inside another code
+        self.assertEqual(maps.code_in("01.14", "01.14 Output power"), "01.14")
+        self.assertEqual(maps.code_in("p310", "set p0310 to the rated frequency"), "p0310")
+        self.assertTrue(maps.NOT_A_READOUT.search("Torque ref ramp out"))
+        self.assertFalse(maps.NOT_A_READOUT.search("Motor speed used"))
+
     def test_units(self):
         self.assertEqual(maps.unit_key("1/min"), "rpm")
         self.assertEqual(maps.unit_key(" kW "), "kw")

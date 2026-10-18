@@ -164,7 +164,11 @@ class CodeTests(SimpleTestCase):
         self.assertEqual(n("p1071[C]"), ("p1071", "C"))
         self.assertEqual(n("p1070-0"), ("p1070", "0"))
         self.assertEqual(n("r0021"), ("r0021", ""))
-        self.assertEqual(n("01.01"), ("01.01", ""))          # another maker's form, kept as written
+        self.assertEqual(n("01.01"), ("01.01", ""))          # group.index: two digits each
+        self.assertEqual(n("1.1"), ("01.01", ""))            # a parsed table drops the zeros
+        self.assertEqual(n("46.3"), ("46.03", ""))
+        self.assertEqual(n("1.10"), ("01.10", ""))
+        self.assertEqual(n("2-03"), ("2-03", ""))            # anything else, as written
         self.assertEqual(n("KP"), ("KP", ""))
 
 
