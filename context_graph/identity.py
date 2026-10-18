@@ -127,6 +127,15 @@ class EntityIndex:
             return index
         for link in links:
             index.owners.setdefault(link["id"], set()).add(link["part"])
+        # A part-scoped id names its part (P21: bsk:io-point:EXTR01/feeder-screw-drive/DI-3): it is that part's even
+        # when no link from the part reaches it (a terminal approved only through CONFIGURED_BY, 2026-10-18).
+        part_by_key = {row["id"].split(":", 2)[2]: row["id"] for row in rows
+                       if repository.node_label(row["labels"]) == "Component"}
+        for row in rows:
+            key = row["id"].split(":", 2)[2] if row["id"].count(":") >= 2 else ""
+            owner = part_by_key.get(key.rsplit("/", 1)[0]) if "/" in key else None
+            if owner and owner != row["id"] and repository.node_label(row["labels"]) in PART_LABELS:
+                index.owners.setdefault(row["id"], set()).add(owner)
         for row in serves:                              # a procedure belongs to the parts of what it serves
             if row["served"] in index.owners:
                 index.owners.setdefault(row["id"], set()).update(index.owners[row["served"]])
