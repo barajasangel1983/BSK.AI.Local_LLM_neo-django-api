@@ -392,6 +392,8 @@ TEST_RUNNER = "neo_llm_api.test_runner.IsolatedTestRunner"
 # === GraphLab triple extraction (DGX) ===
 GRAPH_EXTRACT_TIMEOUT = float(os.getenv("GRAPH_EXTRACT_TIMEOUT", "120"))       # seconds per window call
 GRAPH_EXTRACT_MAX_TOKENS = int(os.getenv("GRAPH_EXTRACT_MAX_TOKENS", "2000"))  # output budget per window
+# Windows sent to the DGX at once in an extraction run (vLLM batches them); 1 = one after another, as before.
+GRAPH_EXTRACT_PARALLEL = int(os.getenv("GRAPH_EXTRACT_PARALLEL", "1"))
 # P21: a run with a part chosen ("This document describes") gives its new alarms, procedures, failure modes and
 # sub-parts ids under that part, and matches names within the part's family only.
 GRAPH_PART_SCOPED_IDS = os.getenv("GRAPH_PART_SCOPED_IDS", "true").lower() == "true"

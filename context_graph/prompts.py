@@ -178,7 +178,9 @@ def test_on_pages(doc, template: str, mode: str, pages: str, asset_id: str = "",
         raise PromptError(f"choose 1 to {MAX_TEST_PAGES} pages")
     params = extraction.validate_params({"asset_id": asset_id, "anchor_id": anchor_id, "pages": pages})
     parsed = library.load_parsed(doc)
-    windows = chunk_parsed(parsed, extraction.DEFAULT_CHUNKING["strategy"], extraction.DEFAULT_CHUNKING["params"])
+    run = next((r for r in extraction.FACET_RUNS if r["preset"] == name), None)
+    chunking = (run or {}).get("chunking") or extraction.DEFAULT_CHUNKING     # the windows its facet run uses
+    windows = chunk_parsed(parsed, chunking["strategy"], chunking["params"])
     selected = extraction.select_windows(windows, params, None)[:MAX_TEST_WINDOWS]
     if not selected:
         raise PromptError("no text on those pages")

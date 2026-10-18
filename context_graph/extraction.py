@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 
@@ -261,8 +262,9 @@ FACET_RUNS = (
     {"key": "maintenance", "label": "Maintenance", "preset": "Maintenance (v3)", "needs": "", "owns": ()},
     {"key": "ratings", "label": "Ratings", "preset": "Specifications (v4)", "needs": "Specification",
      "owns": ("Specification",)},
+    # Smaller windows: parameter-heavy pages give long answers; fewer facts per window keep each answer whole.
     {"key": "controls", "label": "Controls & Setup", "preset": "Controls & Setup (v6)", "needs": "Parameter",
-     "owns": ("Parameter", "IOPoint", "Interface")},
+     "owns": ("Parameter", "IOPoint", "Interface"), "chunking": {"strategy": "fixed", "params": {"size": 400, "overlap": 50}}},
 )
 FACET_RUN_BY_KEY = {r["key"]: r for r in FACET_RUNS}
 
@@ -356,6 +358,8 @@ def validate_params(params: dict | None) -> dict:
     return {
         "mode": mode,
         "chunking": {"strategy": chunking.get("strategy", "fixed"), "params": resolved},
+        # the reviewer chose windows: a facet run keeps them (kept as given when the params are validated again)
+        "chunking_custom": bool(params["chunking_custom"] if "chunking_custom" in params else params.get("chunking")),
         "presets": presets,
         "asset_id": asset_id,
         # Also read the document's described drawings with the VLM on BSK.
@@ -719,6 +723,10 @@ def _run_facets(job, doc, params: dict) -> None:
         leave = sorted({t for other in runs if other != key for t in FACET_RUN_BY_KEY[other]["owns"]})
         sub = {**params, "mode": "schema", "presets": {"schema": preset.pk}, "pages": parse_pages(suggestion["pages"]),
                "facet_runs": [], "leave_types": leave}
+        if run.get("chunking") and not params.get("chunking_custom"):
+            from ingestion.chunking import resolve_params
+            sub["chunking"] = {"strategy": run["chunking"]["strategy"],
+                               "params": resolve_params(run["chunking"]["strategy"], run["chunking"]["params"])}
         try:
             result = _extract(job, doc, sub, label=label)
         except ExtractionError as exc:
@@ -841,7 +849,7 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
                 places.append(make_evidence(t))
                 staged[key].occurrences = len(places)
 
-    def read(i, text, section, mode, preset, halves_left=1) -> list[dict] | None:
+    def read(i, text, section, mode, preset, halves_left=1, quiet=False) -> list[dict] | None:
         """The triples of one text; None when it failed. An invalid answer (often cut off at the output limit)
         is read again as two halves, once."""
         messages = build_messages(preset, schema, text, doc.filename, section,
@@ -849,7 +857,8 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
         for attempt in (1, 2):
             # Heartbeat before every attempt: one attempt is at most two LLM calls
             # (malformed-output retry), which stays under the stale-job threshold.
-            beat(done, total, None if attempt == 1 else f"window {i + 1}: DGX slow, retrying")
+            if not quiet:   # parallel windows: only the main thread reports (and writes the job row)
+                beat(done, total, None if attempt == 1 else f"window {i + 1}: DGX slow, retrying")
             try:
                 return extract_window(messages)
             except requests.RequestException as exc:  # timeout / connection: the shared DGX is busy
@@ -861,14 +870,27 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
                                "; reading it in two halves" if halves else "")
                 if not halves:
                     return None
-                parts = [read(i, half, section, mode, preset, halves_left - 1) for half in halves]
+                parts = [read(i, half, section, mode, preset, halves_left - 1, quiet) for half in halves]
                 return None if all(p is None for p in parts) else [t for p in parts if p for t in p]
         return None
 
-    for i, window in selected + table_parts:
-        section = " > ".join(window.section_path)
-        for mode, preset in presets.items():
-            raw = read(i, window.text, section, mode, preset)
+    # GRAPH_EXTRACT_PARALLEL windows go to the DGX at once (vLLM batches them); results are staged in the document's
+    # order by this thread, which alone reports progress, so a run gives the same triples whatever the setting.
+    calls = [(i, window, mode, preset) for i, window in selected + table_parts for mode, preset in presets.items()]
+    parallel = max(1, int(settings.GRAPH_EXTRACT_PARALLEL))
+
+    def work(call):
+        i, window, mode, preset = call
+        try:
+            return read(i, window.text, " > ".join(window.section_path), mode, preset, quiet=parallel > 1)
+        finally:
+            if parallel > 1:
+                from django.db import connection
+                connection.close()      # each thread's own connection (the usage records)
+
+    executor = ThreadPoolExecutor(max_workers=parallel) if parallel > 1 else None
+    try:
+        for (i, window, mode, preset), raw in zip(calls, executor.map(work, calls) if executor else map(work, calls)):
             if raw is None:
                 failed += 1
                 raw = []
@@ -876,6 +898,9 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
                   lambda t, window=window, i=i, preset=preset: _evidence(doc, window, i, preset, schema, t, params))
             done += 1
             beat(done, total)
+    finally:
+        if executor:   # a cancelled job stops sending the windows still queued
+            executor.shutdown(wait=False, cancel_futures=True)
 
     drawings_note = ""
     if drawing_figures:
