@@ -123,6 +123,17 @@ class MultiFacetRunTests(LibraryTestCase):
         self.assertTrue(CandidateTriple.objects.filter(document=self.doc, preset_name="Maintenance (v3)",
                                                        object_type="Specification").exists())
 
+    def test_reviewed_is_per_part(self):
+        """P22c-3a: one manual, two parts (the G120C: feed screw drive, cutter drive)."""
+        anchor = {"text": "Context for this document:\n- the part\n", "name": "Drive", "generic": set()}
+        with patch("context_graph.extraction.anchor_context", return_value=anchor):
+            first = self.run_all(asset_id="bsk:asset:EXTR01", anchor_id="bsk:component:EXTR01/feed-drive")
+            CandidateTriple.objects.filter(document=self.doc, job=first).update(status="approved")
+            same = self.by_facet_run(self.run_all(asset_id="bsk:asset:EXTR01", anchor_id="bsk:component:EXTR01/feed-drive"))
+            other = self.by_facet_run(self.run_all(asset_id="bsk:asset:EXTR01", anchor_id="bsk:component:EXTR01/cutter-drive"))
+        self.assertEqual(same["maintenance"]["state"], "skipped")
+        self.assertEqual(other["maintenance"]["state"], "done")
+
     def test_a_run_replaces_only_its_own_prompts_pending_triples(self):
         self.run_all()
         self.client.post("/api/graph/extract/", {"document_ids": [str(self.doc.id)], "facet_runs": ["ratings"]}, format="json")

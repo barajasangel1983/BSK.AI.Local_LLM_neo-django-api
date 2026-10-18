@@ -704,8 +704,13 @@ def _run_facets(job, doc, params: dict) -> None:
         if preset is None:
             out.update(state="failed", note=f"prompt {run['preset']!r} not found")
             continue
+        # Reviewed in this document *for this part* (P22c-3a): one manual can describe two parts (the G120C: the feed
+        # screw drive and the cutter drive); the second part's run is not skipped because of the first's review.
         reviewed = CandidateTriple.objects.filter(document=doc, preset_name=preset.name).exclude(
-            status=CandidateTriple.Status.PENDING).count()
+            status=CandidateTriple.Status.PENDING)
+        if params.get("anchor_id"):
+            reviewed = reviewed.filter(job__params__anchor_id=params["anchor_id"])
+        reviewed = reviewed.count()
         if reviewed and not params.get("rerun_reviewed"):
             out.update(state="skipped", note=f"{reviewed} triples already reviewed")
             continue
