@@ -26,7 +26,7 @@ from django.utils import timezone
 
 from . import registry, repository
 from .driver import session
-from . import evidence
+from . import evidence, facets
 from .extraction import is_part_rating, part_scope_for, rating_props, scope_key_for
 from .identity import EntityIndex, normalize, tag_key
 from .ids import is_valid_id, make_id
@@ -64,6 +64,7 @@ def edit(triple: CandidateTriple, changes: dict) -> CandidateTriple:
     if triple.mode == "schema":
         _reresolve(triple, changes)
         triple.issue = _schema_issue(triple)
+    facets.stamp([triple], registry.active_schema())
     triple.edited = True
     triple.save()
     return triple
@@ -89,6 +90,7 @@ def make_rating(triple: CandidateTriple) -> CandidateTriple:
     triple.issue = _schema_issue(triple)
     triple.auto_fix = "made a rating: was Component -HAS_LIMIT-> OperatingLimit"
     triple.status = CandidateTriple.Status.PENDING
+    facets.stamp([triple], registry.active_schema())
     triple.edited = True
     triple.save()
     return triple
@@ -229,6 +231,7 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
                "SET n.evidence_ids = [x IN coalesce(n.evidence_ids, []) WHERE NOT x IN $ev] + $ev", id=node_id, ev=ev)
     t.applied_props, t.applied_aliases, t.replaced_props = applied, aliased, replaced
     _supports(tx, schema, t, t.subject_id, t.predicate, t.object_id, _provenance(t))
+    facets.refresh(tx, schema, [t.subject_id, t.object_id])   # P22b: the new link may add a facet
     if doc is None:
         return   # structured import: no document evidence nodes
 
@@ -390,6 +393,7 @@ def _uncommit(tx, t: CandidateTriple) -> None:
         "AND NOT EXISTS { MATCH (n)-[r]-() WHERE NOT type(r) IN $evidence } DETACH DELETE n",
         ids=[t.subject_id, t.object_id], evidence=list(EVIDENCE_RELS), sources=STAGED_SOURCES,
     )
+    facets.refresh(tx, registry.active_schema(), [t.subject_id, t.object_id])   # P22b: a removed link may drop one
     if t.document is None:
         return
     # Sections that no longer describe anything, then documents with no sections left.
@@ -447,6 +451,7 @@ def promote(triple: CandidateTriple, mapping: dict) -> dict:
     candidate.mode, candidate.status, candidate.layer, candidate.issue, candidate.edited = (
         "schema", CandidateTriple.Status.PENDING, "", "", True)
     candidate.committed_at = None
+    facets.stamp([candidate], registry.active_schema())
     candidate.save()
     candidate.evidence.set(triple.evidence.all())
     result = approve([candidate])

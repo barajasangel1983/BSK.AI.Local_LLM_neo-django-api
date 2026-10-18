@@ -13,7 +13,8 @@
 """
 
 from django.db import transaction
-from django.db.models import Count, F, Q
+from django.db.models import Count, F, Q, TextField
+from django.db.models.functions import Cast
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -22,7 +23,7 @@ from ingestion import library
 from ingestion.library_views import job_json
 from ingestion.models import Document, Job
 
-from . import extraction, registry, triples
+from . import extraction, facets, registry, triples
 from .evidence import evidence_json
 from .models import CandidateTriple, Evidence, PromptPreset
 from .views import _int, graph_errors
@@ -141,6 +142,8 @@ def extract_config(request):
             "relationships": [{"name": name, "pairs": pairs, "aliases": list(schema.relationship_types[name].aliases)}
                               for name, pairs in rels.items()],
             "subtypes": {label: list(schema.subtypes.get(label, ())) for label in types if schema.subtypes.get(label)},
+            # P22b: the facet names, and whether this schema maps them (v5 on)
+            "facets": list(facets.FACETS) if facets.mapping_of(schema) else [],
         },
     })
 
@@ -209,7 +212,7 @@ def triple_json(t: CandidateTriple) -> dict:
                    "match": t.object_match or None, "candidates": t.object_candidates or [],
                    "properties": t.object_props or {}, "changes": (t.replaces or {}).get(t.object_id) or {}},
         "confidence": t.confidence, "issue": t.issue, "occurrences": t.occurrences, "edited": t.edited,
-        "auto_fix": t.auto_fix,
+        "auto_fix": t.auto_fix, "facets": t.facets or [],
         # Every place the triple was found (P8a); `evidence` below is the first one (kept for older clients).
         "sources": [evidence_json(e) for e in t.evidence.all()],
         "evidence": {"chunk_index": t.chunk_index, "page_start": t.page_start, "page_end": t.page_end,
@@ -235,6 +238,14 @@ def triple_list(request):
         qs = qs.filter(mode=qp["mode"])
     if qp.get("issues") in ("1", "true"):
         qs = qs.exclude(issue="")
+    if qp.get("facet"):   # P22b: one facet, or "none" for triples with no facet (core)
+        if qp["facet"] == "none":
+            qs = qs.filter(Q(facets=[]) | Q(facets__isnull=True))
+        elif qp["facet"] in facets.FACETS:
+            # JSON lists in SQLite: match the quoted name in the stored text
+            qs = qs.annotate(facets_text=Cast("facets", TextField())).filter(facets_text__contains=f'"{qp["facet"]}"')
+        else:
+            return _error(f"facet must be one of {', '.join(facets.FACETS)} or none")
     if qp.get("new") in ("1", "true"):   # triples that would add an entity to the graph
         qs = qs.filter(Q(subject_existing=False) | Q(object_existing=False))
     if qp.get("q"):

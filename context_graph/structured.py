@@ -51,14 +51,14 @@ from .extraction import normalize
 from .identity import EntityIndex, Match
 from .units import normalize_unit
 from .ids import clean_part, is_valid_id, make_id
-from . import evidence
+from . import evidence, facets
 from .driver import GraphUnavailable, session
 from .models import CandidateTriple, DataFile, Evidence
 from .schema import Schema, SchemaError
 
 KINDS = {".csv": "csv", ".tsv": "csv", ".txt": "csv", ".xlsx": "xlsx", ".xlsm": "xlsx"}
 PROPERTY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-RESERVED_PROPERTIES = {"id", "name", "source", "created_by_triple", "created_at", "updated_at", "data_file"}
+RESERVED_PROPERTIES = {"id", "name", "source", "created_by_triple", "created_at", "updated_at", "data_file", "facets"}
 SAMPLE_ROWS = 10
 LIMIT_KINDS = ("normal", "specification", "alarm", "trip")
 EVIDENCE_CHARS = 1000
@@ -672,6 +672,7 @@ def stage(df: DataFile, mapping: dict, asset_id: str) -> dict:
                    .values_list("subject_id", "predicate", "object_id"))
     fresh = [t for t in result.triples if (t.subject_id, t.predicate, t.object_id) not in reviewed]
     df.triples.filter(status=CandidateTriple.Status.PENDING).delete()
+    facets.stamp(fresh, registry.active_schema())
     evidence.attach(CandidateTriple.objects.bulk_create(fresh), result.evidence)
     evidence.drop_orphans(data_file=df)
     df.mapping, df.asset_id, df.staged_at = mapping, asset_id or "", timezone.now()

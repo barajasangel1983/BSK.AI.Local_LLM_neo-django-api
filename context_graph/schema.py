@@ -223,6 +223,9 @@ def validate_definition(definition: dict) -> list[str]:
             for end in pair:
                 if end not in entity_types:
                     errors.append(f"{name}: {end!r} is not an entity type")
+    # Knowledge facets (P22b): which facet each type, subtype and link belongs to.
+    from .facets import validate as validate_facets
+    errors += validate_facets(definition.get("facets"), entity_types, rel_types)
     return errors
 
 
@@ -243,6 +246,8 @@ def diff(old: Schema, new: Schema) -> dict:
         "changed_pairs": changed_pairs,
         # Vocabulary (P8b): subtypes of entity types and aliases of relationship types.
         "changed_vocabulary": _vocabulary_diff(old, new),
+        # The facet mapping (P22b): changing it changes tags only, never types or links.
+        "changed_facets": (old.definition or {}).get("facets") != (new.definition or {}).get("facets"),
     }
 
 
@@ -261,4 +266,5 @@ def _vocabulary_diff(old: "Schema", new: "Schema") -> dict:
 
 def is_empty_diff(d: dict) -> bool:
     return not any(d.get(k) for k in ("added_entity_types", "removed_entity_types", "added_relationship_types",
-                                      "removed_relationship_types", "changed_pairs", "changed_vocabulary"))
+                                      "removed_relationship_types", "changed_pairs", "changed_vocabulary",
+                                      "changed_facets"))
