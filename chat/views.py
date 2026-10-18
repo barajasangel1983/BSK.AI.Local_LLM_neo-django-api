@@ -39,7 +39,7 @@ from usage import recorder as usage
 
 from .models import Conversation, Message
 from ingestion import folders
-from . import planner
+from . import historian_window, planner
 from .excerpts import excerpt_window, squeeze_padding
 from .retrieval import page_chunks, part_candidates, search_v2
 from .serializers import ConversationSummarySerializer, ConversationDetailSerializer
@@ -749,6 +749,16 @@ def _chat(request):
     asset_ctx = None
     asset_note = ""
     route = None                                      # the retrieval plan (P17b)
+    window = None                                     # the historian window of a data question (P18a)
+    if scope and settings.CHAT_HISTORIAN_WINDOWS:
+        try:
+            window = historian_window.compute(scope, asset_context.check_asset(scope), user_message,
+                                              min(settings.CHAT_HISTORIAN_WINDOW_CHARS, total_budget // 3))
+        except Exception as exc:        # the graph or the historian is down: answer as before
+            logger.warning("historian window failed conversation=%s asset=%s: %s", conversation.id, scope, exc)
+        if window:
+            total_budget -= len(window.text)
+            logger.info("historian window conversation=%s asset=%s %s", conversation.id, scope, window.log)
     if scope:
         if settings.CHAT_PLANNER:
             route = planner.question_kind(user_message)
@@ -841,8 +851,9 @@ def _chat(request):
         )
 
     if asset_ctx:
-        system_prompt = asset_context.system_prompt(asset_ctx) + (f"\n\n{rag_block}" if rag_block else "")
-        citations = asset_context.citations(asset_ctx) + citations
+        system_prompt = asset_context.system_prompt(asset_ctx, window.text if window else "") + (
+            f"\n\n{rag_block}" if rag_block else "")
+        citations = asset_context.citations(asset_ctx) + ([window.citation] if window else []) + citations
         logger.info("asset context conversation=%s asset=%s facts=%d/%d chars=%d historian=%s docs_linked=%d",
                     conversation.id, scope, len(asset_ctx.facts), asset_ctx.total_facts, len(asset_ctx.text),
                     bool(asset_ctx.historian), len(asset_ctx.doc_keys))

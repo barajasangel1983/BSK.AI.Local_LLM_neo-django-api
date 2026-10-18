@@ -598,16 +598,22 @@ ASSET_PROMPT = """You are Neo, the assistant for {name} ({asset_id}) in the BSKL
 
 ASSET FACTS — from the curated Context Graph; treat them as authoritative:
 {facts}
-{historian_note}
+{historian_note}{window}
 Answer about this asset. Use the asset facts first and cite them as [G]; cite document excerpts as [1], [2], … when they are provided.
 If the facts and excerpts don't contain the answer, say so plainly — do not invent values, limits or procedures."""
 
 
-def system_prompt(ctx: AssetContext) -> str:
+WINDOW_NOTE = ("\n{block}\nThe historian window above is computed from the historian's rows for the time the question asks "
+               "about; answer questions about that time from it, cite it as [H], and say which window it covers.\n")
+
+
+def system_prompt(ctx: AssetContext, window: str = "") -> str:
+    """`window`: the historian window block of a data question (P18a)."""
     note = ""
     if ctx.historian and ctx.historian["out_of_range"]:
         note = "\nOut of normal range in the last running sample: " + "; ".join(ctx.historian["out_of_range"]) + "\n"
-    return ASSET_PROMPT.format(name=ctx.name, asset_id=ctx.asset_id, facts=ctx.text, historian_note=note)
+    return ASSET_PROMPT.format(name=ctx.name, asset_id=ctx.asset_id, facts=ctx.text, historian_note=note,
+                               window=WINDOW_NOTE.format(block=window) if window else "")
 
 
 def citations(ctx: AssetContext) -> list[dict]:
