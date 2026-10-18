@@ -453,6 +453,16 @@ def get_asset_context(asset_id: str) -> dict:
             )
         ]
 
+        # The parts' ratings (schema v4, P22a): datasheet values, apart from the signals' operating limits.
+        specifications = [
+            {**repository.serialize_node(row["sp"]), "components": row["comps"]}
+            for row in tx.run(
+                "MATCH (c:Component)-[:HAS_SPEC]->(sp:Specification) WHERE c.id IN $ids "
+                "RETURN sp, collect(DISTINCT c.id) AS comps ORDER BY sp.name",
+                ids=list(components),
+            )
+        ]
+
         documents = [
             {**repository.serialize_node(row["d"]), "describes": row["about"],
              "sections": [repository.serialize_node(sec) for sec in row["sections"]]}
@@ -476,6 +486,7 @@ def get_asset_context(asset_id: str) -> dict:
             "part_alarms": part_alarms,
             "part_procedures": part_procedures,
             "failure_modes": failure_modes,
+            "specifications": specifications,
             "counts": {
                 "components": len(components),
                 "signals": sum(len(v) for v in signals_by_owner.values()),
@@ -485,6 +496,7 @@ def get_asset_context(asset_id: str) -> dict:
                 "part_alarms": len(part_alarms),
                 "part_procedures": len(part_procedures),
                 "failure_modes": len(failure_modes),
+                "specifications": len(specifications),
             },
         }
 

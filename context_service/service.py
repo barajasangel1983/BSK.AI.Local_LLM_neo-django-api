@@ -34,7 +34,7 @@ logger = logging.getLogger("chat")
 
 PACKET_VERSION = "1"
 MIN_BUDGET, MAX_BUDGET = 2000, 60000
-FOCUS_LABELS = ("Component", "Signal", "Alarm", "Procedure", "FailureMode")   # FailureMode: P16a
+FOCUS_LABELS = ("Component", "Signal", "Alarm", "Procedure", "FailureMode", "Specification")   # FailureMode: P16a; Specification: P22a
 ANSWER_PROMPT = (
     "You are the assistant of the BSKLAB plant. Answer the question from the CONTEXT below.\n"
     "- Graph facts are authoritative; cite them as [G]. Cite document excerpts as [1], [2], … by their number.\n"
