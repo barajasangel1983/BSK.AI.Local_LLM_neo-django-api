@@ -152,3 +152,32 @@ class ParameterGraphTests(LibraryTestCase):
                                       "schema", schema, EntityIndex.load(), "EXTR01", self.doc, None, WINDOW, 0, PRESET,
                                       part=part)
         self.assertEqual((again.object_id, again.object_existing), ("bsk:parameter:EXTR01/feeder/p1082", True))
+
+
+class CodeTests(SimpleTestCase):
+    def test_one_form_of_a_code(self):
+        n = extraction.normalize_code
+        self.assertEqual(n("P310"), ("p0310", ""))
+        self.assertEqual(n("p0310"), ("p0310", ""))
+        self.assertEqual(n("P96"), ("p0096", ""))
+        self.assertEqual(n("p1070[0]"), ("p1070", "0"))
+        self.assertEqual(n("p1071[C]"), ("p1071", "C"))
+        self.assertEqual(n("p1070-0"), ("p1070", "0"))
+        self.assertEqual(n("r0021"), ("r0021", ""))
+        self.assertEqual(n("01.01"), ("01.01", ""))          # another maker's form, kept as written
+        self.assertEqual(n("KP"), ("KP", ""))
+
+
+@override_settings(GRAPH_ENABLED=False, GRAPH_PART_SCOPED_IDS=True)
+class NormalizedStagingTests(StagingTests):
+    def test_two_forms_one_parameter(self):
+        a = self.stage(triple("Feed screw drive", "Component", "HAS_PARAMETER", "Rated motor frequency", "Parameter",
+                              {"code": "P310"}))
+        b = self.stage(triple("Feed screw drive", "Component", "HAS_PARAMETER", "Rated frequency", "Parameter",
+                              {"code": "p0310"}))
+        self.assertEqual(a.object_id, b.object_id)
+        self.assertEqual(a.object_props["code"], "p0310")
+        c = self.stage(triple("Feed screw drive", "Component", "HAS_PARAMETER", "Speed setpoint", "Parameter",
+                              {"code": "p1070[0]"}))
+        self.assertEqual((c.object_props["code"], c.object_props["data_set"], c.object_id.rsplit("/", 1)[-1]),
+                         ("p1070", "0", "p1070"))
