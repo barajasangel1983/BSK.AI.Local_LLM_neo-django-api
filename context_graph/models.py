@@ -55,6 +55,42 @@ class PromptPreset(models.Model):
     def __str__(self) -> str:
         return f"{self.name} ({self.mode} v{self.version})"
 
+    def save(self, *args, **kwargs):
+        """Every version the active copy reaches is kept (P23): a version number with no PromptVersion row gets one,
+        whatever path saved it (the Prompts tab, the old preset PATCH, a built-in seeded from code). Callers may
+        set `_version_note`, `_version_source`, `_version_author` first."""
+        super().save(*args, **kwargs)
+        if not self.versions.filter(version=self.version).exists():
+            from . import registry
+            try:
+                schema_version = registry.active_schema().version
+            except Exception:   # no schema yet (a fresh database)
+                schema_version = None
+            PromptVersion.objects.create(
+                preset=self, version=self.version, template=self.template, schema_version=schema_version,
+                note=getattr(self, "_version_note", "")[:255], source=getattr(self, "_version_source", "edit"),
+                author=getattr(self, "_version_author", "")[:100])
+
+
+class PromptVersion(models.Model):
+    """Every saved text of a prompt (P23, like GraphSchemaVersion): triples record name + version, which points here."""
+
+    preset = models.ForeignKey(PromptPreset, on_delete=models.CASCADE, related_name="versions")
+    version = models.PositiveIntegerField()
+    template = models.TextField()
+    note = models.CharField(max_length=255, blank=True, default="")
+    schema_version = models.PositiveIntegerField(null=True, blank=True)   # the active schema when it was saved
+    source = models.CharField(max_length=16, default="edit")   # built-in | edit | import | adopt | migrated
+    author = models.CharField(max_length=100, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["preset", "-version"]
+        constraints = [models.UniqueConstraint(fields=["preset", "version"], name="prompt_version_unique")]
+
+    def __str__(self) -> str:
+        return f"{self.preset.name} v{self.version}"
+
 
 class DataFile(models.Model):
     """A structured data file (CSV / Excel: tag list, alarm list, BOM) for GraphLab Import.

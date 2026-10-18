@@ -285,10 +285,15 @@ class ExtractionError(ValueError):
 
 
 def ensure_default_presets() -> None:
-    for mode, (name, template) in DEFAULT_PRESETS.items():
-        PromptPreset.objects.get_or_create(name=name, defaults={"mode": mode, "template": template, "is_default": True})
-    for name, (mode, template) in EXTRA_PRESETS.items():
-        PromptPreset.objects.get_or_create(name=name, defaults={"mode": mode, "template": template, "is_default": False})
+    """The built-in prompts, copied from code the first time; later code changes are offered, never applied (P23)."""
+    wanted = [(name, mode, template, True) for mode, (name, template) in DEFAULT_PRESETS.items()]
+    wanted += [(name, mode, template, False) for name, (mode, template) in EXTRA_PRESETS.items()]
+    have = set(PromptPreset.objects.filter(name__in=[w[0] for w in wanted]).values_list("name", flat=True))
+    for name, mode, template, is_default in wanted:
+        if name not in have:
+            preset = PromptPreset(name=name, mode=mode, template=template, is_default=is_default)
+            preset._version_source, preset._version_note = "built-in", "the built-in text"
+            preset.save()
 
 
 def builtin_templates() -> dict[str, str]:
