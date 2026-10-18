@@ -206,6 +206,26 @@ Section: {section}""",
 }
 # Never from the model: identity, provenance, and `status` (draft / approved is a person's decision).
 PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "created_by_triple", "status", "facets"}
+# Multi-facet run (P22c-0): one job per document goes through these in order. Each facet run picks its own pages
+# (Suggest pages with its prompt), extracts them with its prompt and stages the triples. A run is offered when its
+# prompt exists and the active schema has the type it needs. New facet prompts (Controls/Setup, Safety, …) are added
+# here as they are built.
+FACET_RUNS = (
+    {"key": "maintenance", "label": "Maintenance", "preset": "Maintenance (v3)", "needs": ""},
+    {"key": "ratings", "label": "Ratings", "preset": "Specifications (v4)", "needs": "Specification"},
+)
+FACET_RUN_BY_KEY = {r["key"]: r for r in FACET_RUNS}
+
+
+def facet_runs_available(schema: Schema | None = None) -> list[dict]:
+    """The facet runs this Studio can do now: [{key, label, preset_id}] in their order."""
+    schema = schema or registry.active_schema()
+    ensure_default_presets()
+    presets = {p.name: p for p in PromptPreset.objects.filter(mode="schema", name__in=[r["preset"] for r in FACET_RUNS])}
+    return [{"key": r["key"], "label": r["label"], "preset_id": presets[r["preset"]].pk} for r in FACET_RUNS
+            if r["preset"] in presets and (not r["needs"] or r["needs"] in schema.entity_types)]
+
+
 MAX_PROPERTY = 1000
 MAX_LIST = 40
 
@@ -266,6 +286,18 @@ def validate_params(params: dict | None) -> dict:
             raise ExtractionError(f"anchor_id must be a component id (bsk:component:...), got {anchor_id!r}")
         if not asset_id:
             raise ExtractionError("choose the asset of the part the document describes")
+    facet_runs = params.get("facet_runs") or []
+    if facet_runs:
+        available = [r["key"] for r in facet_runs_available()]
+        wanted = available if facet_runs == "all" else facet_runs
+        if not isinstance(wanted, list) or not wanted:
+            raise ExtractionError("facet_runs must be \"all\" or a list of facet runs")
+        unknown = [k for k in wanted if k not in available]
+        if unknown:
+            raise ExtractionError(f"facet run(s) not available: {', '.join(map(str, unknown))} "
+                                  f"(available: {', '.join(available) or 'none'})")
+        facet_runs = [k for k in available if k in wanted]       # always in the facets' order
+        mode = "schema"
     return {
         "mode": mode,
         "chunking": {"strategy": chunking.get("strategy", "fixed"), "params": resolved},
@@ -277,6 +309,10 @@ def validate_params(params: dict | None) -> dict:
         "follow_languages": params.get("follow_languages", True) is not False,
         "anchor_id": anchor_id,
         "tables_by_row": params.get("tables_by_row", True) is not False,
+        # P22c-0: the facet runs of a multi-facet job (each picks its own pages; `pages` is ignored), and whether a
+        # facet with reviewed triples in this document is run again (default: skipped).
+        "facet_runs": facet_runs,
+        "rerun_reviewed": bool(params.get("rerun_reviewed")),
     }
 
 
@@ -570,7 +606,6 @@ def part_scope_for(params: dict, index: EntityIndex, scope_key: str):
 def run_extract(job) -> None:
     """Worker entry point for an extract job (ingestion.library.run_job dispatches here)."""
     from ingestion import library
-    from ingestion.chunking import chunk_parsed
     from ingestion.models import Document
 
     doc = Document.objects.get(pk=job.document_id)
@@ -581,6 +616,80 @@ def run_extract(job) -> None:
         library.heartbeat(job, message="parsing first")
         library.run_parse(job)
         doc.refresh_from_db()
+    if params.get("facet_runs"):
+        _run_facets(job, doc, params)
+    else:
+        _extract(job, doc, params)
+
+
+def _run_facets(job, doc, params: dict) -> None:
+    """A multi-facet run (P22c-0): each facet in turn picks its pages and extracts them; one result per facet.
+    A facet that fails (the DGX down, no text) doesn't stop the others; the job fails only if every facet that
+    was tried failed."""
+    from ingestion import library
+
+    from . import page_suggest
+
+    runs = params["facet_runs"]
+    results: list[dict] = []
+    for n, key in enumerate(runs, 1):
+        run = FACET_RUN_BY_KEY[key]
+        label = f"{run['label']} ({n}/{len(runs)})"
+        out = {"key": key, "label": run["label"], "state": "", "pages": "", "staged": 0, "failed_calls": 0, "note": ""}
+        results.append(out)
+        preset = PromptPreset.objects.filter(mode="schema", name=run["preset"]).first()
+        if preset is None:
+            out.update(state="failed", note=f"prompt {run['preset']!r} not found")
+            continue
+        reviewed = CandidateTriple.objects.filter(document=doc, preset_name=preset.name).exclude(
+            status=CandidateTriple.Status.PENDING).count()
+        if reviewed and not params.get("rerun_reviewed"):
+            out.update(state="skipped", note=f"{reviewed} triples already reviewed")
+            continue
+        library.heartbeat(job, 0, 0, f"{label}: choosing pages")
+        try:
+            suggestion = page_suggest.suggest(doc, preset=preset, asset_id=params["asset_id"],
+                                              anchor_id=params["anchor_id"],
+                                              follow_languages=params.get("follow_languages", True))
+        except (ValueError, requests.RequestException) as exc:
+            logger.warning("facet run %s: page choice failed doc=%s: %s", key, doc.doc_key, exc)
+            out.update(state="failed", note=f"choosing pages failed: {str(exc)[:150] or exc.__class__.__name__}")
+            continue
+        if not suggestion["pages"]:
+            out.update(state="none", note=(suggestion.get("note") or "")[:300])
+            continue
+        out["pages"] = suggestion["pages"]
+        sub = {**params, "mode": "schema", "presets": {"schema": preset.pk}, "pages": parse_pages(suggestion["pages"]),
+               "facet_runs": []}
+        try:
+            result = _extract(job, doc, sub, label=label)
+        except ExtractionError as exc:
+            out.update(state="failed", note=str(exc)[:300])
+            continue
+        out.update(state="done", staged=result["staged"], failed_calls=result["failed"],
+                   note=f"{result['skipped']} already reviewed" if result["skipped"] else "")
+
+    def short(r):
+        return {"done": f"{r['staged']}" + (f" ({r['failed_calls']} failed calls)" if r["failed_calls"] else ""),
+                "skipped": "skipped", "none": "nothing found"}.get(r["state"], "failed")
+    summary = " · ".join(f"{r['label']}: {short(r)}" for r in results)
+    job.params = {**job.params, "facet_results": results}
+    type(job).objects.filter(pk=job.pk).update(params=job.params)
+    library.heartbeat(job, len(runs), len(runs), summary)
+    tried = [r for r in results if r["state"] != "skipped"]
+    if tried and all(r["state"] == "failed" for r in tried):
+        raise ExtractionError("every facet failed: " + "; ".join(f"{r['label']}: {r['note']}" for r in tried))
+
+
+def _extract(job, doc, params: dict, label: str = "") -> dict:
+    """One prompt over the chosen pages: a single run, or one facet of a multi-facet run (`label` prefixes its
+    progress messages). Returns {staged, failed, skipped}."""
+    from ingestion import library
+    from ingestion.chunking import chunk_parsed
+    from ingestion.models import Document
+
+    def beat(done=None, total=None, message=None):
+        library.heartbeat(job, done, total, f"{label}: {message}" if label and message else message)
 
     parsed = library.load_parsed(doc)
     windows = chunk_parsed(parsed, params["chunking"]["strategy"], params["chunking"]["params"])
@@ -627,7 +736,7 @@ def run_extract(job) -> None:
     scope_note = "" if len(selected) == all_windows else f" of {all_windows}" + (
         f" (pages {pages_text(params['pages'])})" if params.get("pages") else "") + (
         f" ({', '.join(doc.languages)})" if kept is not None else "")
-    library.heartbeat(job, 0, total, f"extracting from {len(selected)}{scope_note} windows"
+    beat(0, total, f"extracting from {len(selected)}{scope_note} windows"
                       + (f", {len(table_parts)} table part(s)" if table_parts else "")
                       + (f" and {len(drawing_figures)} drawing(s)" if drawing_figures else "") + f" ({', '.join(presets)})")
 
@@ -675,7 +784,7 @@ def run_extract(job) -> None:
         for attempt in (1, 2):
             # Heartbeat before every attempt: one attempt is at most two LLM calls
             # (malformed-output retry), which stays under the stale-job threshold.
-            library.heartbeat(job, done, total, None if attempt == 1 else f"window {i + 1}: DGX slow, retrying")
+            beat(done, total, None if attempt == 1 else f"window {i + 1}: DGX slow, retrying")
             try:
                 return extract_window(messages)
             except requests.RequestException as exc:  # timeout / connection: the shared DGX is busy
@@ -701,7 +810,7 @@ def run_extract(job) -> None:
             stage(raw, mode, window, i, preset,
                   lambda t, window=window, i=i, preset=preset: _evidence(doc, window, i, preset, schema, t, params))
             done += 1
-            library.heartbeat(job, done, total)
+            beat(done, total)
 
     drawings_note = ""
     if drawing_figures:
@@ -711,7 +820,7 @@ def run_extract(job) -> None:
             for figure in drawing_figures:
                 place = drawings.FIGURE_CHUNK_BASE + figure["index"]
                 for mode in presets:
-                    library.heartbeat(job, done, total, f"drawing: figure {figure['index'] + 1} (p.{figure['page']})")
+                    beat(done, total, f"drawing: figure {figure['index'] + 1} (p.{figure['page']})")
                     raw = []
                     try:
                         raw = drawings.extract(doc, figure, mode, schema)
@@ -728,8 +837,11 @@ def run_extract(job) -> None:
             logger.warning("drawing triples skipped doc=%s: %s", doc.doc_key, exc)
 
     with transaction.atomic():
-        # A new run replaces the document's pending triples of the modes it ran; reviewed ones are kept.
-        CandidateTriple.objects.filter(document=doc, status=CandidateTriple.Status.PENDING, mode__in=list(presets)).delete()
+        # A new run replaces the document's pending triples of the prompts it ran (P22c-0: per prompt, not per mode:
+        # a Ratings run no longer erases a Maintenance run's pending triples); reviewed ones are kept.
+        ran = {p.name for p in presets.values()} | ({drawings.PROMPT_NAME} if drawing_figures else set())
+        CandidateTriple.objects.filter(document=doc, status=CandidateTriple.Status.PENDING, mode__in=list(presets),
+                                       preset_name__in=ran).delete()
         facets.stamp(staged.values(), registry.active_schema())
         triples = CandidateTriple.objects.bulk_create(staged.values())
         evidence.attach(triples, found)
@@ -739,9 +851,10 @@ def run_extract(job) -> None:
         graph_error="; ".join(n for n in (f"{failed} window call(s) failed" if failed else "", drawings_note) if n),
     )
     note = f", {skipped} already reviewed" if skipped else ""
-    library.heartbeat(job, total, total, f"{len(staged)} triples staged for review{note}")
+    beat(total, total, f"{len(staged)} triples staged for review{note}")
     logger.info("extraction done doc=%s windows=%d/%d table_parts=%d triples=%d failed_calls=%d anchor=%s", doc.doc_key,
                 len(selected), all_windows, len(table_parts), len(staged), failed, params.get("anchor_id") or "-")
+    return {"staged": len(staged), "failed": failed, "skipped": skipped}
 
 
 def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:
