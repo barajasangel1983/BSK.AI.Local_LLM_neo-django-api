@@ -210,9 +210,13 @@ PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "
 # (Suggest pages with its prompt), extracts them with its prompt and stages the triples. A run is offered when its
 # prompt exists and the active schema has the type it needs. New facet prompts (Controls/Setup, Safety, …) are added
 # here as they are built.
+# `owns`: the types a facet run is responsible for. In one job, the other facet runs leave those types to it (the
+# Maintenance prompt also extracts ratings under v5: on the Opta datasheet 80 of its 82 triples duplicated the
+# Ratings run's, 2026-10-18).
 FACET_RUNS = (
-    {"key": "maintenance", "label": "Maintenance", "preset": "Maintenance (v3)", "needs": ""},
-    {"key": "ratings", "label": "Ratings", "preset": "Specifications (v4)", "needs": "Specification"},
+    {"key": "maintenance", "label": "Maintenance", "preset": "Maintenance (v3)", "needs": "", "owns": ()},
+    {"key": "ratings", "label": "Ratings", "preset": "Specifications (v4)", "needs": "Specification",
+     "owns": ("Specification",)},
 )
 FACET_RUN_BY_KEY = {r["key"]: r for r in FACET_RUNS}
 
@@ -635,7 +639,7 @@ def _run_facets(job, doc, params: dict) -> None:
     for n, key in enumerate(runs, 1):
         run = FACET_RUN_BY_KEY[key]
         label = f"{run['label']} ({n}/{len(runs)})"
-        out = {"key": key, "label": run["label"], "state": "", "pages": "", "staged": 0, "failed_calls": 0, "note": ""}
+        out = {"key": key, "label": run["label"], "state": "", "pages": "", "staged": 0, "failed_calls": 0, "left": 0, "note": ""}
         results.append(out)
         preset = PromptPreset.objects.filter(mode="schema", name=run["preset"]).first()
         if preset is None:
@@ -659,15 +663,18 @@ def _run_facets(job, doc, params: dict) -> None:
             out.update(state="none", note=(suggestion.get("note") or "")[:300])
             continue
         out["pages"] = suggestion["pages"]
+        leave = sorted({t for other in runs if other != key for t in FACET_RUN_BY_KEY[other]["owns"]})
         sub = {**params, "mode": "schema", "presets": {"schema": preset.pk}, "pages": parse_pages(suggestion["pages"]),
-               "facet_runs": []}
+               "facet_runs": [], "leave_types": leave}
         try:
             result = _extract(job, doc, sub, label=label)
         except ExtractionError as exc:
             out.update(state="failed", note=str(exc)[:300])
             continue
-        out.update(state="done", staged=result["staged"], failed_calls=result["failed"],
-                   note=f"{result['skipped']} already reviewed" if result["skipped"] else "")
+        notes = [f"{result['skipped']} already reviewed" if result["skipped"] else "",
+                 f"{result['left']} left to {', '.join(leave)} run" if result["left"] else ""]
+        out.update(state="done", staged=result["staged"], failed_calls=result["failed"], left=result["left"],
+                   note="; ".join(n for n in notes if n))
 
     def short(r):
         return {"done": f"{r['staged']}" + (f" ({r['failed_calls']} failed calls)" if r["failed_calls"] else ""),
@@ -747,6 +754,8 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
         for t in CandidateTriple.objects.filter(document=doc).exclude(status=CandidateTriple.Status.PENDING)
     }
     done = failed = skipped = 0
+    left: set[tuple] = set()      # distinct triples left to another facet run
+    leave_types = set(params.get("leave_types") or ())   # owned by another facet run of the same job (P22c-0)
 
     def stage(raw, mode, window, i, preset, make_evidence, model=None):
         """Stage the raw triples found in one place (a text window or a figure)."""
@@ -761,6 +770,9 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model, part=part)
             key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
                              candidate.object_name, candidate.object_type)
+            if candidate.subject_type in leave_types or candidate.object_type in leave_types:
+                left.add(key)      # checked after staging: a part's limit becomes a Specification there
+                continue
             if key in reviewed:
                 skipped += 1
                 continue
@@ -854,7 +866,7 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     beat(total, total, f"{len(staged)} triples staged for review{note}")
     logger.info("extraction done doc=%s windows=%d/%d table_parts=%d triples=%d failed_calls=%d anchor=%s", doc.doc_key,
                 len(selected), all_windows, len(table_parts), len(staged), failed, params.get("anchor_id") or "-")
-    return {"staged": len(staged), "failed": failed, "skipped": skipped}
+    return {"staged": len(staged), "failed": failed, "skipped": skipped, "left": len(left)}
 
 
 def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:
