@@ -71,6 +71,9 @@ DEFAULT_CHUNKING = {"strategy": "fixed", "params": {"size": 800, "overlap": 100}
 MAX_NAME = 200
 EVIDENCE_CHARS = 1500
 EVIDENCE_TYPES = ("Document", "DocumentSection")
+# Links the Studio suggests and a person approves, never the model (P22c, schema v6): a parameter's PLC signal, a
+# terminal's wiring. They are not offered to the model, and a model's triple with one is staged with an issue.
+SUGGESTED_ONLY = ("MAPS_TO", "CARRIES")
 
 DEFAULT_PRESETS = {
     "schema": (
@@ -203,6 +206,47 @@ Rules:
 Document: {document}
 Section: {section}""",
     ),
+    "Controls & Setup (v6)": (
+        "schema",
+        """You extract how an industrial device is set up and connected, from its manual: its parameters, its terminals and
+its communication interfaces.
+
+Entity types (use exactly these names):
+{entity_types}
+
+Relationships (predicate: allowed subject type -> object type):
+{relationships}
+
+Properties an entity may have (only these names):
+{properties}
+
+Rules:
+- Only what the text states; never guess a value, a default or a range.
+- Parameters: only those the text tells you to set or check (commissioning, terminal functions, limits, ramps,
+  fieldbus, motor data, protection), or that an alarm or a procedure names. Not every parameter mentioned in a
+  function diagram.
+  - Each is ONE Parameter: <device> HAS_PARAMETER <parameter>, named as the text names it ("Maximum speed"), with
+    "code" exactly as written (p1082, r0021, 01.01) and the subtype Setting (can be changed) or Readout (display
+    only, r…). "default", "min", "max", "unit", "access", "data_set" when the text gives them.
+- Terminals: each is ONE IOPoint: <device> HAS_IO <terminal>, named "DI 0", "AI 0", "Relay output DO 0",
+  with "connector" (-X138), "terminal" (5), "signal_type" (24 V DC, 0-10 V, 0/4-20 mA, NO contact) and "direction".
+  The parameter that sets a terminal's function: <terminal> CONFIGURED_BY <parameter>.
+- Interfaces: <device> COMMUNICATES_VIA <interface> (PROFINET, PROFIBUS, USS, Modbus RTU, USB, operator panel), with
+  "protocol", "connector", "address_range", "telegram" when given.
+- A commissioning step that sets a parameter: <procedure> SETS <parameter> (the procedure as the text names it).
+- A table or list for several models or sizes: only what applies to the device this document describes.
+- Never create a Signal, an Alarm, a Specification (ratings are another run) or an OperatingLimit.
+- First a key "note": one sentence on what this text gives about the device's setup and connections, or that it gives
+  none.
+- Return ONLY compact JSON:
+  {"note": str, "triples": [{"subject": str, "subject_type": str, "subject_subtype": str, "subject_properties": {},
+                "predicate": str, "object": str, "object_type": str, "object_subtype": str,
+                "object_properties": {}, "confidence": number 0-1}]}
+  Return {"triples": []} if the text has nothing of this kind.
+
+Document: {document}
+Section: {section}""",
+    ),
 }
 # Never from the model: identity, provenance, and `status` (draft / approved is a person's decision).
 PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "created_by_triple", "status", "facets"}
@@ -217,6 +261,8 @@ FACET_RUNS = (
     {"key": "maintenance", "label": "Maintenance", "preset": "Maintenance (v3)", "needs": "", "owns": ()},
     {"key": "ratings", "label": "Ratings", "preset": "Specifications (v4)", "needs": "Specification",
      "owns": ("Specification",)},
+    {"key": "controls", "label": "Controls & Setup", "preset": "Controls & Setup (v6)", "needs": "Parameter",
+     "owns": ("Parameter", "IOPoint", "Interface")},
 )
 FACET_RUN_BY_KEY = {r["key"]: r for r in FACET_RUNS}
 
@@ -417,6 +463,8 @@ def extractable(schema: Schema) -> tuple[dict, dict]:
     types = {label: desc for label, desc in schema.entity_types.items() if label not in EVIDENCE_TYPES}
     rels = {}
     for rt in schema.relationship_types.values():
+        if rt.name in SUGGESTED_ONLY:
+            continue
         pairs = sorted((a, b) for a, b in rt.pairs if a in types and b in types)
         if pairs:
             rels[rt.name] = pairs
@@ -941,9 +989,11 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
                 schema.check_relationship(t["subject_type"], t["predicate"], t["object_type"])
             except Exception as exc:
                 issue = str(exc)[:255]
+            if t["predicate"] in SUGGESTED_ONLY:
+                issue = f"{t['predicate']} is suggested by the Studio and approved, not extracted"
             try:
-                sm = index.resolve(t["subject_type"], t["subject"], scope_key, part=part)
-                om = index.resolve(t["object_type"], t["object"], scope_key, part=part)
+                sm = index.resolve(t["subject_type"], t["subject"], scope_key, part=part, **_keyed(t, "subject", props, scope_key, part))
+                om = index.resolve(t["object_type"], t["object"], scope_key, part=part, **_keyed(t, "object", props, scope_key, part))
                 subject_id, subject_existing, object_id, object_existing = sm.id, sm.existing, om.id, om.existing
                 matches = {"subject_match": sm.kind, "subject_candidates": sm.candidates,
                            "object_match": om.kind, "object_candidates": om.candidates}
@@ -961,6 +1011,24 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
         schema_version=schema.version, **matches,
         subject_props=props.get("subject", {}), object_props=props.get("object", {}),
     )
+
+
+def _keyed(t: dict, end: str, props: dict, scope_key: str, part) -> dict:
+    """A parameter's id comes from its code, a terminal's from its connector and terminal (P22c): the same p1082 on
+    twenty pages is one node, whatever name each page gives it. Other types: by name, as before."""
+    from .identity import PART_LABELS
+    label, p = t[f"{end}_type"], props.get(end) or {}
+    if label == "Parameter" and p.get("code"):
+        key, tag = str(p["code"]).strip(), str(p["code"]).strip()
+    elif label == "IOPoint" and p.get("terminal"):
+        key, tag = f"{p.get('connector', '')} {p['terminal']}".strip(), None
+    else:
+        return {}
+    where = part.key if part is not None and label in PART_LABELS else scope_key
+    try:
+        return {"proposed": proposed_id(label, key, where), "tag": tag}
+    except ValueError:
+        return {}
 
 
 def _swap_ends(t: dict) -> dict:

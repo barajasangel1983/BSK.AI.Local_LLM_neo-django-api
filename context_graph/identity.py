@@ -84,9 +84,9 @@ class Match:
 
 
 # Facts that belong to a part (P21): their new ids carry the part, and they are matched within its family only.
-PART_LABELS = ("Alarm", "Procedure", "FailureMode", "Component", "Specification")
+PART_LABELS = ("Alarm", "Procedure", "FailureMode", "Component", "Specification", "Parameter", "IOPoint", "Interface")
 # Component -> fact links that make a part own a fact; a procedure is also owned through what it serves.
-OWNING = ("HAS_ALARM", "HAS_PROCEDURE", "HAS_FAILURE_MODE", "HAS_SPEC")
+OWNING = ("HAS_ALARM", "HAS_PROCEDURE", "HAS_FAILURE_MODE", "HAS_SPEC", "HAS_PARAMETER", "HAS_IO", "COMMUNICATES_VIA")
 
 
 @dataclass(frozen=True)
