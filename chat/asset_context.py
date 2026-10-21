@@ -294,6 +294,9 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
             text += f" ({kind})"
         if p.get("description") and str(p["description"]) != c["name"]:
             text += f": {p['description']}"
+        if p.get("configuration"):
+            basis = f" ({p['configuration_basis']})" if p.get("configuration_basis") else ""
+            text += f"; configuration{basis}: {p['configuration']}"
         if c["alarms"]:
             text += f"; alarms: {', '.join(alarm_names.get(a, a) for a in c['alarms'])}"
         lines.append(Line("COMPONENTS", text, node_id=c["id"]))

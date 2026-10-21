@@ -250,7 +250,8 @@ Section: {section}""",
     ),
 }
 # Never from the model: identity, provenance, and `status` (draft / approved is a person's decision).
-PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "created_by_triple", "status", "facets"}
+PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "created_by_triple", "status", "facets",
+                 "configuration", "configuration_basis"}   # an installed part's options come from the BOM, not a manual
 # Multi-facet run (P22c-0): one job per document goes through these in order. Each facet run picks its own pages
 # (Suggest pages with its prompt), extracts them with its prompt and stages the triples. A run is offered when its
 # prompt exists and the active schema has the type it needs. New facet prompts (Controls/Setup, Safety, …) are added
@@ -426,7 +427,7 @@ def select_windows(windows: list, params: dict, kept_pages: set[int] | None) -> 
 
 ANCHOR_TEMPLATE = """Context for this document:
 - It describes the part "{name}" of the asset "{asset}"{details}. When the text refers to this product in general (its product name or model, "the motor", "the drive", "the unit", "the device"), use exactly the entity name "{name}" with type Component.
-- The text may also cover other models, sizes or variants: extract only what applies to this part.
+- The text may also cover other models, sizes or variants: extract only what applies to this part.{configuration}
 - Existing entities of this asset. When the text clearly means one of them, use its exact name; otherwise name the entity as written in the text:
 {existing}"""
 
@@ -456,8 +457,9 @@ def anchor_context(asset_id: str, anchor_id: str) -> dict | None:
     procedures = [pr["name"] for pr in ctx["procedures"]]
     existing = "\n".join([f"  Alarms: {listed(alarms)}", f"  Signals: {listed([s['name'] for s in signals])}",
                           f"  Procedures: {listed(procedures)}"])
+    configuration = f"\n- This part's configuration: {p['configuration']}" if p.get("configuration") else ""
     text = ANCHOR_TEMPLATE.format(name=part["name"], asset=ctx["asset"]["name"], details=f" ({details})" if details else "",
-                                  existing=existing)
+                                  configuration=configuration, existing=existing)
     generic = {normalize(v) for v in (p.get("model"), p.get("part_number"),
                                       f"{p.get('manufacturer', '')} {p.get('model', '')}".strip()) if v}
     return {"id": anchor_id, "name": part["name"], "text": text, "generic": generic - {""}}

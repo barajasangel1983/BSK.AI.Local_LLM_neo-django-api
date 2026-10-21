@@ -110,6 +110,18 @@ class ExtractionScopeTests(LibraryTestCase):
         self.doc.refresh_from_db()
         self.assertIn("no text on the chosen pages in the kept languages", self.doc.graph_error)
 
+    def test_the_parts_configuration_is_in_the_anchor_block(self):
+        """The options of the installed part (BOM column Configuration) tell the model which variants apply."""
+        motor = CONTEXT["components"][0]["children"][0]
+        configured = {**motor, "properties": {**motor["properties"], "configuration": "IE3, PTC thermistors, no brake",
+                                              "configuration_basis": "assumed minimal, 2026-10-21"}}
+        context = {**CONTEXT, "components": [{**CONTEXT["components"][0], "children": [configured]}]}
+        with patch("context_graph.services.get_asset_context", return_value=context):
+            text = extraction.anchor_context(ASSET, MOTOR)["text"]
+        self.assertIn("extract only what applies to this part.\n- This part's configuration: IE3, PTC thermistors, no brake\n"
+                      "- Existing entities", text)
+        self.assertNotIn("This part's configuration", extraction.anchor_context(ASSET, MOTOR)["text"])
+
     def test_the_part_the_document_describes(self):
         self.extract(asset_id=ASSET, anchor_id=MOTOR, pages="1")
         system = self.prompts[0][0]["content"]

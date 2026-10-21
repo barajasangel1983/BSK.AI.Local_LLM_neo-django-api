@@ -39,6 +39,8 @@ entity_types:
       manual_url: "where the manufacturer's manual is (one or several, ' | ')"
       manual_title: "the manual's title"
       notes: "free remarks from the source"
+      configuration: "the options this installed part has (outputs, inputs, modules), when the part number does not say"
+      configuration_basis: "where the configuration comes from: chosen (a decision) or assumed (the minimum, to be confirmed), with the date"
   Signal:
     description: "Measured or computed variable (tag)."
     subtypes: [Temperature, Pressure, Flow, Speed, Torque, Power, Current, Voltage, Level, Moisture,

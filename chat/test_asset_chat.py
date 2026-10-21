@@ -113,6 +113,20 @@ class FactSheetTests(SimpleTestCase):
                       "(Instrument, Gefran, WE0, part WE0-6-M-B20D-1-4-D)\n", ctx.text + "\n")
         self.assertEqual(ctx.historian["out_of_range"], ["Die pressure: 104 bar (ABOVE normal range)"])
 
+    def test_a_parts_configuration_is_on_its_line(self):
+        """The BOM's Configuration column: the options of the installed part, with where they come from."""
+        die = CONTEXT["components"][0]
+        device = {**node("bsk:component:EXTR01/water-flowmeter", "Component", "Water injection flow meter",
+                         component_type="Instrument", manufacturer="Endress+Hauser", model="Promag H 300",
+                         configuration="I/O 1 4-20 mA HART only", configuration_basis="assumed minimal, 2026-10-21"),
+                  "parent": die["id"], "alarms": [], "children": [], "signals": []}
+        context = {**CONTEXT, "components": [{**die, "children": [device]}]}
+        with patch("context_graph.services.get_asset_context", return_value=context):
+            ctx = asset_context.build(ASSET, "water flow", 10000)
+        self.assertIn("- Water injection flow meter [bsk:component:EXTR01/water-flowmeter] "
+                      "(Instrument, Endress+Hauser, Promag H 300); "
+                      "configuration (assumed minimal, 2026-10-21): I/O 1 4-20 mA HART only\n", ctx.text + "\n")
+
     def test_the_normal_range_is_the_normal_limit_not_the_specification(self):
         """P14b: a signal can also have a specification limit; the fact sheet and the history use the normal one."""
         die = CONTEXT["components"][0]
