@@ -61,6 +61,10 @@ class TableReaderTests(SimpleTestCase):
 
     def test_text_without_tables_and_halves(self):
         self.assertEqual(tables.strip_tables("a\n| x | y |\nb"), "a\nb")
+        caption = "Table 11-13 Current reduction depending on the pulse frequency 1)"
+        self.assertEqual(tables.strip_tables(f"<!-- image -->\n{caption}\n| kW | 2 kHz |\n| 7.5 | 16.5 |\n", {caption}), "")
+        # Without table lines the window is left as written, caption and markers included.
+        self.assertEqual(tables.strip_tables(f"{caption}\n<!-- image -->", {caption}), f"{caption}\n<!-- image -->")
         text = "\n".join(f"Line {n} of a long window about bearings and grease." for n in range(20))
         first, second = split_text(text)
         self.assertEqual(first + "\n" + second, text)
@@ -149,6 +153,23 @@ class TablesPipelineTests(LibraryTestCase):
                          {"subtype": "Lubrication", "interval": "5 600 h", "amount": "70 g per bearing"})
         self.assertGreaterEqual(staged["Regreasing"].chunk_index, tables.TABLE_CHUNK_BASE)
         self.assertEqual(self.doc.graph_error, "")
+
+    def test_a_window_left_with_only_a_table_caption_is_not_read(self):
+        """G120C Table 11-13 (2026-10-21): the caption alone, its rows read apart, was given 8 invented values."""
+        caption = "Table 11-13 Current reduction depending on the pulse frequency 1)"
+        page = (f"## 11 Technical data\n\n<!-- image -->\n\n{caption}\n\n"
+                "| Rated power | 2 kHz | 4 kHz |\n|---|---|---|\n| 5.5 kW | 12.5 | 12.5 |\n| 7.5 kW | 16.5 | 16.5 |\n")
+        bullets = ("- Max. input: 36V at 3mA\n- Logic: min. high state 3V at 0.25mA, max. low state 2V\n\n"
+                   "| Input | Range |\n|---|---|\n| Digital | 0-36 V |\n")
+        self.mock_convert.return_value = {"status": "success", "errors": [],
+                                          "document": {"md_content": f"\n\n{PAGE_BREAK}\n\n".join([page, bullets])}}
+        self.doc, _ = library.add_document(SimpleUploadedFile("g120c.pdf", b"%PDF g120c"))
+        self.drain()
+        self.extract()
+        text_windows = [t for t in self.texts if "Read it row by row" not in t]
+        self.assertFalse(any("Current reduction" in t for t in text_windows))
+        self.assertTrue(any(t.startswith(caption) and "Row 2: Rated power = 7.5 kW" in t for t in self.texts))
+        self.assertTrue(any("Max. input: 36V at 3mA" in t for t in text_windows))      # short values are still read
 
     def test_off_reads_tables_inside_the_text_as_before(self):
         self.extract(tables_by_row=False)

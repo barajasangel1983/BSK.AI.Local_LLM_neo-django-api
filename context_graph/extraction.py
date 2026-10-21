@@ -782,12 +782,14 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
         from . import tables
         md = (parsed.get("document") or {}).get("md_content") or ""
         wanted = {p for a, b in params.get("pages") or [] for p in range(a, b + 1)}
+        captions = set()
         for n, table in enumerate(tables.find_tables(md)):
             if (wanted and table.page not in wanted) or (kept is not None and table.page not in kept):
                 continue
             table_parts += tables.windows(table, n)
+            captions.add(table.caption)
         if table_parts:     # the text windows without their table lines; a window left empty is not read
-            stripped = [(i, w, tables.strip_tables(w.text)) for i, w in selected]
+            stripped = [(i, w, tables.strip_tables(w.text, captions - {""})) for i, w in selected]
             selected = [(i, w if text == w.text else replace(w, text=text)) for i, w, text in stripped
                         if text == w.text or len(text.split()) >= 8]
     if all_windows and not selected and not table_parts:
