@@ -26,6 +26,7 @@ EMPTY = ("", "-", "–", "—")     # a cell with no value is left out of its ro
 CAPTION_RE = re.compile(r"^\s*(Table\s+[\w.\-]+.*)$", re.IGNORECASE)
 HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.*\S)\s*$")
 NUMBERED_RE = re.compile(r"^\d+(\.\d+)*\.?\s")
+MARKER_RE = re.compile(r"(<!--.*?-->\s*)+")      # "<!-- image -->" left by the parser
 RULE_RE = re.compile(r"^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
 
 
@@ -148,6 +149,12 @@ def windows(table: Table, number: int, max_rows: int = MAX_ROWS) -> list[tuple[i
     return out
 
 
-def strip_tables(text: str) -> str:
-    """A text window without its table lines (the tables are read row by row)."""
-    return "\n".join(line for line in text.splitlines() if not is_table_line(line))
+def strip_tables(text: str, captions: frozenset[str] | set[str] = frozenset()) -> str:
+    """A text window without its table lines (the tables are read row by row). When rows were removed, their
+    captions and image markers go too: each table part starts with its caption, and a window left with only
+    "Table 11-13 Current reduction depending on the pulse frequency" was given invented values (G120C, 2026-10-21)."""
+    lines = text.splitlines()
+    kept = [line for line in lines if not is_table_line(line)]
+    if len(kept) < len(lines):
+        kept = [line for line in kept if line.strip() not in captions and not MARKER_RE.fullmatch(line.strip())]
+    return "\n".join(kept)
