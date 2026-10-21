@@ -27,7 +27,7 @@ from django.utils import timezone
 from . import registry, repository
 from .driver import session
 from . import evidence, facets
-from .extraction import is_part_rating, part_scope_for, rating_props, scope_key_for
+from .extraction import SELF_LINK, is_part_rating, part_scope_for, rating_props, scope_key_for
 from .identity import EntityIndex, normalize, tag_key
 from .ids import is_valid_id, make_id
 from .models import CandidateTriple
@@ -327,6 +327,9 @@ def approve(triples: list[CandidateTriple]) -> dict:
             continue
         if t.mode == "schema" and unresolved(t):
             errors[t.pk] = unresolved(t)[:255]
+            continue
+        if t.subject_id and t.subject_id == t.object_id:
+            errors[t.pk] = SELF_LINK
             continue
         ready.append(t)
     if not ready:

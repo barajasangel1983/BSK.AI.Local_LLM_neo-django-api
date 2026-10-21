@@ -294,6 +294,9 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
             text += f" ({kind})"
         if p.get("description") and str(p["description"]) != c["name"]:
             text += f": {p['description']}"
+        family = (c.get("device_model") or {}).get("family")
+        if family:          # schema v7: the product family whose manual facts the part shares (P26a)
+            text += f"; family {family['name']}"
         if p.get("configuration"):
             basis = f" ({p['configuration_basis']})" if p.get("configuration_basis") else ""
             text += f"; configuration{basis}: {p['configuration']}"
