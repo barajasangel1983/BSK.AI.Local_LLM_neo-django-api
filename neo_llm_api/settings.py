@@ -107,6 +107,10 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        # The API, the library worker and the SPC/monitor timers write to this one file. A writer waits up to
+        # 30 s for the lock (Django's default is 5 s: a batch job failed on "database is locked", 2026-10-21),
+        # and a transaction takes the write lock when it begins, so the wait applies to it too.
+        'OPTIONS': {'timeout': 30, 'transaction_mode': 'IMMEDIATE'},
     },
 
      "historian": {
