@@ -134,6 +134,18 @@ class MultiFacetRunTests(LibraryTestCase):
         self.assertEqual(same["maintenance"]["state"], "skipped")
         self.assertEqual(other["maintenance"]["state"], "done")
 
+    def test_a_run_replaces_only_its_own_parts_pending_triples(self):
+        """One manual, two parts: the second part's run leaves the first part's pending triples (2026-10-21)."""
+        anchor = {"text": "Context for this document:\n- the part\n", "name": "Drive", "generic": set()}
+        with patch("context_graph.extraction.anchor_context", return_value=anchor):
+            cutter = self.run_all(asset_id="bsk:asset:EXTR01", anchor_id="bsk:component:EXTR01/cutter-drive")
+            feed = self.run_all(asset_id="bsk:asset:EXTR01", anchor_id="bsk:component:EXTR01/feed-drive")
+            pending = CandidateTriple.objects.filter(document=self.doc, status="pending")
+            self.assertEqual({j: pending.filter(job=j).count() for j in (cutter, feed)}, {cutter: 2, feed: 2})
+            again = self.run_all(asset_id="bsk:asset:EXTR01", anchor_id="bsk:component:EXTR01/feed-drive")
+            self.assertEqual({j: pending.filter(job=j).count() for j in (cutter, feed, again)},
+                             {cutter: 2, feed: 0, again: 2})            # the same part's run is still replaced
+
     def test_a_run_replaces_only_its_own_prompts_pending_triples(self):
         self.run_all()
         self.client.post("/api/graph/extract/", {"document_ids": [str(self.doc.id)], "facet_runs": ["ratings"]}, format="json")

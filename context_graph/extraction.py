@@ -938,10 +938,15 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
 
     with transaction.atomic():
         # A new run replaces the document's pending triples of the prompts it ran (P22c-0: per prompt, not per mode:
-        # a Ratings run no longer erases a Maintenance run's pending triples); reviewed ones are kept.
+        # a Ratings run no longer erases a Maintenance run's pending triples); reviewed ones are kept. With a part, only
+        # that part's runs are replaced, as the facet skip above (the G120C's feed drive run erased the cutter drive's
+        # pending ratings, 2026-10-21).
         ran = {p.name for p in presets.values()} | ({drawings.PROMPT_NAME} if drawing_figures else set())
-        CandidateTriple.objects.filter(document=doc, status=CandidateTriple.Status.PENDING, mode__in=list(presets),
-                                       preset_name__in=ran).delete()
+        replaced = CandidateTriple.objects.filter(document=doc, status=CandidateTriple.Status.PENDING,
+                                                  mode__in=list(presets), preset_name__in=ran)
+        if params.get("anchor_id"):
+            replaced = replaced.filter(job__params__anchor_id=params["anchor_id"])
+        replaced.delete()
         facets.stamp(staged.values(), registry.active_schema())
         triples = CandidateTriple.objects.bulk_create(staged.values())
         evidence.attach(triples, found)
