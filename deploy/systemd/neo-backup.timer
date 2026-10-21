@@ -1,0 +1,17 @@
+# Nightly backup of the Context Studio (P25a) at 03:00 UTC. See neo-backup.service.
+#
+# Install (both files):
+#   cp deploy/systemd/neo-backup.service deploy/systemd/neo-backup.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now neo-backup.timer
+# Status:  systemctl --user list-timers neo-backup.timer
+# Logs:    journalctl --user -u neo-backup -n 40
+# Stop:    systemctl --user disable --now neo-backup.timer
+[Unit]
+Description=Context Studio backup, nightly at 03:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

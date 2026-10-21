@@ -1,0 +1,20 @@
+# Nightly backup of the Context Studio (P25a): `manage.py backup` (SQLite, data/, EDGE data, Chroma, Neo4j dump)
+# into ~/backups/<UTC time>/, keeping the 7 newest. Neo4j is stopped for about a minute and Chroma for seconds;
+# the command refuses to run while a library job is queued or running (that night is skipped, see the journal).
+# Restore test of a run: manage.py backup --restore-test ~/backups/<run>
+#
+# Install (both files):
+#   cp deploy/systemd/neo-backup.service deploy/systemd/neo-backup.timer ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now neo-backup.timer
+# Status:  systemctl --user list-timers neo-backup.timer
+# Logs:    journalctl --user -u neo-backup -n 40
+# Stop:    systemctl --user disable --now neo-backup.timer
+[Unit]
+Description=Context Studio backup (one run)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/repos/BSK.AI.Local_LLM_neo-django-api
+ExecStart=%h/repos/BSK.AI.Local_LLM_neo-django-api/.venv/bin/python manage.py backup --keep 7
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=45min
