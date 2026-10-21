@@ -75,6 +75,13 @@ EVIDENCE_TYPES = ("Document", "DocumentSection")
 # Links the Studio suggests and a person approves, never the model (P22c, schema v6): a parameter's PLC signal, a
 # terminal's wiring. They are not offered to the model, and a model's triple with one is staged with an issue.
 SUGGESTED_ONLY = ("MAPS_TO", "CARRIES")
+# Product families and device models (schema v7, P26a) come from the BOM's model list, not from a manual's text,
+# until a run is anchored on a family (P26b): they are not offered to the model, and a model's triple with one is
+# staged with an issue.
+NOT_EXTRACTED = ("ProductFamily", "DeviceModel")
+# "Barrel zone 1 power controller HAS_COMPONENT Barrel zone 1 power controller" (2898, approved 2026-10-17): a part
+# that is its own sub-part left the component tree. Staged with this issue; never approved.
+SELF_LINK = "the link would point to itself (subject and object are the same entity)"
 
 DEFAULT_PRESETS = {
     "schema": (
@@ -473,7 +480,8 @@ def extractable(schema: Schema) -> tuple[dict, dict]:
     Document / DocumentSection are evidence structure, written automatically when
     a triple is approved — the model is not asked to extract them.
     """
-    types = {label: desc for label, desc in schema.entity_types.items() if label not in EVIDENCE_TYPES}
+    types = {label: desc for label, desc in schema.entity_types.items()
+             if label not in EVIDENCE_TYPES and label not in NOT_EXTRACTED}
     rels = {}
     for rt in schema.relationship_types.values():
         if rt.name in SUGGESTED_ONLY:
@@ -1047,12 +1055,16 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
                 issue = str(exc)[:255]
             if t["predicate"] in SUGGESTED_ONLY:
                 issue = f"{t['predicate']} is suggested by the Studio and approved, not extracted"
+            if {t["subject_type"], t["object_type"]} & set(NOT_EXTRACTED):
+                issue = "product families and device models come from the BOM's model list, not extracted"
             try:
                 sm = index.resolve(t["subject_type"], t["subject"], scope_key, part=part, **_keyed(t, "subject", props, scope_key, part))
                 om = index.resolve(t["object_type"], t["object"], scope_key, part=part, **_keyed(t, "object", props, scope_key, part))
                 subject_id, subject_existing, object_id, object_existing = sm.id, sm.existing, om.id, om.existing
                 matches = {"subject_match": sm.kind, "subject_candidates": sm.candidates,
                            "object_match": om.kind, "object_candidates": om.candidates}
+                if subject_id == object_id and not issue:
+                    issue = SELF_LINK
             except ValueError as exc:  # a name with no usable id characters
                 issue = str(exc)[:255]
     return CandidateTriple(

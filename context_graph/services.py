@@ -346,7 +346,7 @@ def get_asset_context(asset_id: str) -> dict:
 
         components = {
             row["c"]["id"]: {**repository.serialize_node(row["c"]), "parent": row["parent"],
-                             "signals": [], "alarms": [], "children": []}
+                             "signals": [], "alarms": [], "children": [], "device_model": None}
             for row in tx.run(
                 "MATCH (a:Entity {id: $id})-[:HAS_COMPONENT*]->(c:Component) "
                 "MATCH (p:Entity)-[:HAS_COMPONENT]->(c) "
@@ -354,7 +354,26 @@ def get_asset_context(asset_id: str) -> dict:
                 id=asset_id,
             )
         }
-        owner_ids = [asset_id, *components]
+        # The device model each part is, and its product family (schema v7, P26a). Manufacturer facts that hang on
+        # a model or a family belong to every installed part of it: `installed` maps them back to the parts.
+        installed: dict[str, list[str]] = {}
+        for row in tx.run(
+            "MATCH (c:Component)-[:INSTANCE_OF]->(m:DeviceModel) WHERE c.id IN $ids "
+            "OPTIONAL MATCH (m)-[:VARIANT_OF]->(f:ProductFamily) RETURN c.id AS c, m, f",
+            ids=list(components),
+        ):
+            family = repository.serialize_node(row["f"]) if row["f"] else None
+            components[row["c"]]["device_model"] = {**repository.serialize_node(row["m"]), "family": family}
+            for owner in (row["m"]["id"], family and family["id"]):
+                if owner:
+                    installed.setdefault(owner, []).append(row["c"])
+
+        def parts_of(owners: list[str]) -> list[str]:
+            """A model's or family's id becomes its installed parts; any other owner (a part, the asset) stays."""
+            return sorted({p for o in owners for p in installed.get(o, [o])})
+
+        fact_owners = [*components, *installed]
+        owner_ids = [asset_id, *fact_owners]
 
         signals_by_owner: dict[str, list] = {}
         for row in tx.run(
@@ -422,26 +441,26 @@ def get_asset_context(asset_id: str) -> dict:
         # The parts' own alarms, procedures and failure modes (schema v3; P16a, 2026-10-16): what the manuals
         # gave the graph hangs on the components, not on the asset.
         part_alarms = [
-            {**repository.serialize_node(row["al"]), "components": row["comps"],
+            {**repository.serialize_node(row["al"]), "components": parts_of(row["comps"]),
              "procedures": [repository.serialize_node(p) for p in row["procs"]]}
             for row in tx.run(
-                "MATCH (c:Component)-[:HAS_ALARM]->(al:Alarm) WHERE c.id IN $ids "
+                "MATCH (c:Entity)-[:HAS_ALARM]->(al:Alarm) WHERE c.id IN $ids "
                 "OPTIONAL MATCH (p:Procedure)-[:ADDRESSES]->(al) "
                 "RETURN al, collect(DISTINCT c.id) AS comps, collect(DISTINCT p) AS procs ORDER BY al.name",
-                ids=list(components),
+                ids=fact_owners,
             )
         ]
         part_procedures = [
-            {**repository.serialize_node(row["p"]), "components": row["comps"], "addresses": row["alarms"]}
+            {**repository.serialize_node(row["p"]), "components": parts_of(row["comps"]), "addresses": row["alarms"]}
             for row in tx.run(
-                "MATCH (c:Component)-[:HAS_PROCEDURE]->(p:Procedure) WHERE c.id IN $ids "
+                "MATCH (c:Entity)-[:HAS_PROCEDURE]->(p:Procedure) WHERE c.id IN $ids "
                 "OPTIONAL MATCH (p)-[:ADDRESSES]->(al:Alarm) "
                 "RETURN p, collect(DISTINCT c.id) AS comps, collect(DISTINCT al.id) AS alarms ORDER BY p.name",
-                ids=list(components),
+                ids=fact_owners,
             )
         ]
         failure_modes = [
-            {**repository.serialize_node(row["f"]), "components": row["comps"],
+            {**repository.serialize_node(row["f"]), "components": parts_of(row["comps"]),
              "fixes": [repository.serialize_node(p) for p in row["fixes"]], "indicated_by": row["indicators"]}
             for row in tx.run(
                 "MATCH (o:Entity)-[:HAS_FAILURE_MODE]->(f:FailureMode) WHERE o.id IN $owners "
@@ -455,16 +474,16 @@ def get_asset_context(asset_id: str) -> dict:
 
         # The parts' ratings (schema v4, P22a): datasheet values, apart from the signals' operating limits.
         specifications = [
-            {**repository.serialize_node(row["sp"]), "components": row["comps"]}
+            {**repository.serialize_node(row["sp"]), "components": parts_of(row["comps"])}
             for row in tx.run(
-                "MATCH (c:Component)-[:HAS_SPEC]->(sp:Specification) WHERE c.id IN $ids "
+                "MATCH (c:Entity)-[:HAS_SPEC]->(sp:Specification) WHERE c.id IN $ids "
                 "RETURN sp, collect(DISTINCT c.id) AS comps ORDER BY sp.name",
-                ids=list(components),
+                ids=fact_owners,
             )
         ]
 
         documents = [
-            {**repository.serialize_node(row["d"]), "describes": row["about"],
+            {**repository.serialize_node(row["d"]), "describes": parts_of(row["about"]),
              "sections": [repository.serialize_node(sec) for sec in row["sections"]]}
             for row in tx.run(
                 "MATCH (o:Entity)-[:DOCUMENTED_BY]->(d:Document) WHERE o.id IN $owners "

@@ -231,6 +231,8 @@ def _props(columns: list[str], spec: dict[str, tuple[str, ...]], exclude: tuple[
     return out
 
 
+GLOBAL_KEYED = ("ProductFamily", "DeviceModel")
+GLOBAL_TYPES = ("Asset", "Document", *GLOBAL_KEYED)
 COMPONENT_SYNONYMS = ("component", "equipment", "subsystem", "unit", "location", "area")
 ASSET = {"key": "asset", "type": "Asset", "scope": True}
 
@@ -346,11 +348,38 @@ def _limits(columns: list[str]) -> dict:
             "relationships": [{"from": "signal", "type": "HAS_LIMIT", "to": "limit"}]}
 
 
+def _device_models(columns: list[str]) -> dict:
+    """P26a: which device model each installed part is, and the model's product family (both global, schema v7)."""
+    component = _find(columns, "component", "item", "part", "installed part")
+    model_key = _find(columns, "model key", "device model key")
+    family_key = _find(columns, "family key", "product family key")
+    model_name = _find(columns, "model", "device model", exclude=(component, model_key, family_key))
+    family_name = _find(columns, "family", "product family", "series", exclude=(component, model_key, family_key, model_name))
+    model = {"key": "model", "type": "DeviceModel", "id_column": model_key, "name_column": model_name or model_key,
+             "fuzzy": False,
+             "properties": _props(columns, {"manufacturer": ("manufacturer", "vendor", "make"),
+                                            "designation": ("designation", "model designation"),
+                                            "order_code": ("order code", "product root", "part number")},
+                                  exclude=(component, model_key, family_key, model_name, family_name))}
+    entities = [dict(ASSET),
+                {"key": "component", "type": "Component", "id_column": component, "existing_only": True, "fuzzy": False},
+                model]
+    relationships = [{"from": "component", "type": "INSTANCE_OF", "to": "model"}]
+    if family_key:
+        entities.append({"key": "family", "type": "ProductFamily", "id_column": family_key,
+                         "name_column": family_name or family_key, "fuzzy": False,
+                         "properties": {"manufacturer": model["properties"]["manufacturer"]}
+                         if "manufacturer" in model["properties"] else {}})
+        relationships.append({"from": "model", "type": "VARIANT_OF", "to": "family"})
+    return {"entities": entities, "relationships": relationships}
+
+
 TEMPLATES = (
     ("tag_list", "Tag list", "Signals monitored by the asset or its components, with optional operating limits.", _tag_list),
     ("limits", "Limits", "Limits of existing signals by kind (normal, specification, alarm, trip); a differing value is changed on approval.", _limits),
     ("alarm_list", "Alarm list", "Alarms of the asset, optionally associated with a component.", _alarm_list),
     ("bom", "Bill of materials", "Components of the asset, nested by a parent column, with model, part number, manual and the signals each device measures.", _bom),
+    ("device_models", "Device models", "Which device model each installed part is, and the model's product family (schema v7; global ids such as siemens/sinamics-g120c).", _device_models),
 )
 
 
@@ -522,8 +551,11 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         try:
             parts = [clean_part(key)] + ([clean_part(spec["id_suffix"])] if spec.get("id_suffix") else [])
             parts += [clean_part(values[c].lower()) for c in suffix_columns if values.get(c)]
-            # Assets and documents are global (a library document is bsk:document:<doc_key>, as extraction writes it).
-            proposed = make_id(label, *parts) if label in ("Asset", "Document") else make_id(label, scope_key, *parts)
+            if label in GLOBAL_KEYED:   # "siemens/sinamics-g120c": manufacturer and series, under no asset
+                parts = [clean_part(p) for p in key.split("/") if p.strip()]
+            # Assets and documents are global (a library document is bsk:document:<doc_key>, as extraction writes it);
+            # so are product families and device models (v7): one G120C family for every machine.
+            proposed = make_id(label, *parts) if label in GLOBAL_TYPES else make_id(label, scope_key, *parts)
         except ValueError:
             result.row_errors.append({"row": number, "message": f"{spec['key']}: {key!r} can't be used as an id"})
             return None
@@ -533,7 +565,8 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         elif spec.get("name_column"):
             name = values.get(spec["name_column"], "")
         named = bool(name) and name != key
-        if spec.get("id_suffix") or suffix_columns:   # derived entities (e.g. a signal's limit): exact id only
+        if spec.get("id_suffix") or suffix_columns or label in GLOBAL_KEYED:
+            # derived entities (e.g. a signal's limit) and models: exact id only ("G120C 5.5 kW" is not "7.5 kW")
             match = Match(proposed, "id" if index.has(proposed) else "new")
         else:                       # the key column is an explicit tag; names / aliases, then possible matches
             match = index.resolve(label, name or key, scope_key, proposed=proposed, tag=key,
