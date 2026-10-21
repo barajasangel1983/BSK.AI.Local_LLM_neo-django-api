@@ -309,7 +309,9 @@ def _bom(columns: list[str]) -> dict:
                                                 "description": ("description", "desc"),
                                                 "manual_url": ("manual url", "manual link", "document url"),
                                                 "manual_title": ("manual title", "document title"),
-                                                "notes": ("notes", "note", "remarks", "comment")},
+                                                "notes": ("notes", "note", "remarks", "comment"),
+                                                "configuration": ("configuration",),
+                                                "configuration_basis": ("configuration basis",)},
                                       exclude=(parent, item, signal, slot))}
     entities, relationships = [dict(ASSET), component], []
     if parent:

@@ -231,6 +231,20 @@ class StructuredImportTests(ImportTestCase):
                          ("ACS880-07-0880A-3", "ABB", "ACS880-07, 400 V, heavy duty 400 kW"))
         self.assertEqual(vfd.subject_props["manual_url"].count(" | "), 1)   # two manuals, kept as written
 
+    def test_bom_reads_a_parts_configuration(self):
+        """Optional columns Configuration and Configuration Basis: the installed part's options and where they come from."""
+        csv = (b"Item,Description,Model,Part Number,Configuration,Configuration Basis\n"
+               b"water-flowmeter,Water flow meter,Promag H 300,5H3B,I/O 1 4-20 mA HART only,\"assumed minimal, 2026-10-21\"\n")
+        file_id = self.upload("bom_configuration.csv", csv)["data_file"]["id"]
+        mapping = self.suggested(file_id, "bom")
+        component = next(e for e in mapping["entities"] if e["key"] == "component")
+        self.assertEqual((component["id_column"], component["properties"]["configuration"],
+                          component["properties"]["configuration_basis"]), ("Item", "Configuration", "Configuration Basis"))
+        result = structured.build(DataFile.objects.get(pk=file_id), mapping, ASSET)
+        meter = next(t for t in result.triples if t.object_id.endswith("/water-flowmeter"))
+        self.assertEqual((meter.object_props["configuration"], meter.object_props["configuration_basis"]),
+                         ("I/O 1 4-20 mA HART only", "assumed minimal, 2026-10-21"))
+
     def test_split_must_be_a_short_separator(self):
         file_id = self.upload("extr01_bom_devices.csv")["data_file"]["id"]
         mapping = self.suggested(file_id, "bom")
