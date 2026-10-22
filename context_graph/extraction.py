@@ -75,10 +75,13 @@ EVIDENCE_TYPES = ("Document", "DocumentSection")
 # Links the Studio suggests and a person approves, never the model (P22c, schema v6): a parameter's PLC signal, a
 # terminal's wiring. They are not offered to the model, and a model's triple with one is staged with an issue.
 SUGGESTED_ONLY = ("MAPS_TO", "CARRIES")
-# Product families and device models (schema v7, P26a) come from the BOM's model list, not from a manual's text,
-# until a run is anchored on a family (P26b): they are not offered to the model, and a model's triple with one is
-# staged with an issue.
+# Product families and device models (schema v7, P26a) come from the BOM's model list, not from a manual's text: they
+# are not offered to the model, and a model's triple with one is staged with an issue, except the family or model the
+# run is anchored on (P26b; the model names it as a Component and it is mapped to the anchor when staged).
 NOT_EXTRACTED = ("ProductFamily", "DeviceModel")
+ANCHOR_LEVELS = ("part", "model", "family", "auto")
+# P26 D2: with "auto", a part's ratings are read for its model (the row of its size), everything else for its family.
+AUTO_LEVEL = {"ratings": "model"}
 # "Barrel zone 1 power controller HAS_COMPONENT Barrel zone 1 power controller" (2898, approved 2026-10-17): a part
 # that is its own sub-part left the component tree. Staged with this issue; never approved.
 SELF_LINK = "the link would point to itself (subject and object are the same entity)"
@@ -348,10 +351,15 @@ def validate_params(params: dict | None) -> dict:
     if asset_id and not is_valid_id(asset_id):
         raise ExtractionError(f"asset_id must be a canonical id (bsk:asset:...), got {asset_id!r}")
     anchor_id = params.get("anchor_id") or ""
+    anchor_level = params.get("anchor_level") or "part"
+    if anchor_level not in ANCHOR_LEVELS:
+        raise ExtractionError(f"anchor_level must be one of {', '.join(ANCHOR_LEVELS)}, got {anchor_level!r}")
     if anchor_id:
-        if not (is_valid_id(anchor_id) and anchor_id.startswith("bsk:component:")):
-            raise ExtractionError(f"anchor_id must be a component id (bsk:component:...), got {anchor_id!r}")
-        if not asset_id:
+        from .device_models import kind_of
+        if not (is_valid_id(anchor_id) and kind_of(anchor_id)):
+            raise ExtractionError("anchor_id must be an installed part, a device model or a product family "
+                                  f"(bsk:component: / bsk:device-model: / bsk:product-family:), got {anchor_id!r}")
+        if kind_of(anchor_id) == "part" and not asset_id:
             raise ExtractionError("choose the asset of the part the document describes")
     facet_runs = params.get("facet_runs") or []
     if facet_runs:
@@ -365,6 +373,10 @@ def validate_params(params: dict | None) -> dict:
                                   f"(available: {', '.join(available) or 'none'})")
         facet_runs = [k for k in available if k in wanted]       # always in the facets' order
         mode = "schema"
+    anchor_part, facet_anchors = "", {}
+    if anchor_id and anchor_level != "part":
+        anchor_part = params.get("anchor_part") or (anchor_id if anchor_id.startswith("bsk:component:") else "")
+        anchor_id, facet_anchors = _anchor_for_level(anchor_part or anchor_id, anchor_level, facet_runs, presets)
     return {
         "mode": mode,
         "chunking": {"strategy": chunking.get("strategy", "fixed"), "params": resolved},
@@ -377,6 +389,11 @@ def validate_params(params: dict | None) -> dict:
         "pages": parse_pages(params.get("pages")),
         "follow_languages": params.get("follow_languages", True) is not False,
         "anchor_id": anchor_id,
+        # P26b: the level the run was asked for, the installed part it was chosen from, and with "auto" and facet runs
+        # the anchor of each facet run (Ratings on the model, the rest on the family).
+        "anchor_level": anchor_level,
+        "anchor_part": anchor_part,
+        "facet_anchors": facet_anchors,
         "tables_by_row": params.get("tables_by_row", True) is not False,
         # P22c-0: the facet runs of a multi-facet job (each picks its own pages; `pages` is ignored), and whether a
         # facet with reviewed triples in this document is run again (default: skipped).
@@ -432,6 +449,57 @@ def select_windows(windows: list, params: dict, kept_pages: set[int] | None) -> 
     return out
 
 
+def _anchor_for_level(start: str, level: str, facet_runs: list, presets: dict) -> tuple[str, dict]:
+    """The anchor of a run asked for at `level` from `start` (an installed part, a model or a family), and with
+    "auto" and facet runs each facet run's anchor."""
+    from .device_models import levels, pick
+    try:
+        found = levels(start)
+    except (ValueError, GraphUnavailable) as exc:
+        raise ExtractionError(f"can't find the model or family of {start}: {exc}") from exc
+    try:
+        if level == "auto" and facet_runs:
+            anchors = {key: pick(found, AUTO_LEVEL.get(key, "family"))["id"] for key in facet_runs}
+            return start, anchors
+        if level == "auto":     # one prompt: the Ratings prompt reads the model, any other the family
+            ratings = FACET_RUN_BY_KEY["ratings"]["preset"]
+            level = "model" if PromptPreset.objects.filter(pk=presets.get("schema"), name=ratings).exists() else "family"
+        return pick(found, level)["id"], {}
+    except ValueError as exc:
+        raise ExtractionError(str(exc)) from exc
+
+
+def anchors_of(params: dict) -> list[str]:
+    """Every anchor a job's runs use (one, or one per facet run with "auto")."""
+    return list(dict.fromkeys([*(params.get("facet_anchors") or {}).values()] or
+                              ([params["anchor_id"]] if params.get("anchor_id") else [])))
+
+
+def reviewed_on_parts(doc, anchor_id: str) -> str:
+    """P26b D1: why a family or model run on `doc` is refused, or "". A manual already reviewed on the family's
+    installed parts would give every fact a second copy; those facts move to the family in P26c first."""
+    from django.db.models import Q
+
+    from .device_models import kind_of, levels
+    if not anchor_id or kind_of(anchor_id) == "part":
+        return ""
+    parts = {p["id"]: p["name"] for p in levels(anchor_id)["parts"]}
+    if not parts:
+        return ""
+    done = (CandidateTriple.objects.filter(document=doc).exclude(status=CandidateTriple.Status.PENDING)
+            .filter(Q(anchor_id__in=list(parts)) | Q(anchor_id="", subject_id__in=list(parts))
+                    | Q(anchor_id="", object_id__in=list(parts))))
+    counts: dict[str, int] = {}
+    for anchor, subject, obj in done.values_list("anchor_id", "subject_id", "object_id"):
+        part = anchor if anchor in parts else subject if subject in parts else obj
+        counts[part] = counts.get(part, 0) + 1
+    if not counts:
+        return ""
+    on = ", ".join(f"{parts[p]} ({n})" for p, n in sorted(counts.items(), key=lambda pn: parts[pn[0]]))
+    return (f"{doc.filename} was already reviewed on {on}: those facts move to the family in P26c; "
+            "until then run this manual on the part")
+
+
 ANCHOR_TEMPLATE = """Context for this document:
 - It describes the part "{name}" of the asset "{asset}"{details}. When the text refers to this product in general (its product name or model, "the motor", "the drive", "the unit", "the device"), use exactly the entity name "{name}" with type Component.
 - The text may also cover other models, sizes or variants: extract only what applies to this part.{configuration}
@@ -439,9 +507,68 @@ ANCHOR_TEMPLATE = """Context for this document:
 {existing}"""
 
 
+PRODUCT_TEMPLATE = """Context for this document:
+- It describes the {what} "{name}"{details}. When the text refers to this product in general (its series, model or product name, "the drive", "the unit", "the device"), use exactly the entity name "{name}" with type Component.
+- The text may also cover other {others}: extract only what applies to this {what}.{configuration}
+- Existing entities of this {what}. When the text clearly means one of them, use its exact name; otherwise name the entity as written in the text:
+{existing}"""
+
+
+def _listed(items) -> str:
+    return "; ".join(dict.fromkeys(items))[:3000] if items else "none"
+
+
+def product_context(anchor_id: str) -> dict:
+    """The prompt's context block for a run anchored on a product family or a device model (P26b): what it is, its
+    models or family, its existing facts by their exact names, and the names that mean it (its own, its models',
+    designations and order codes). Mentions of it are mapped to the anchor itself (type ProductFamily/DeviceModel)."""
+    from .device_models import kind_of, levels
+    from .identity import OWNING
+    found = levels(anchor_id)
+    kind = kind_of(anchor_id)
+    anchor = found[kind]
+    p = anchor["properties"]
+    maker = p.get("manufacturer") or ""
+    if kind == "family":
+        models = [m["name"] for m in found["models"]]
+        details = ", ".join(x for x in (maker, models and f"models: {'; '.join(models)}") if x)
+        named = [anchor, *found["models"]]
+    else:
+        details = ", ".join(x for x in (maker, p.get("designation") and f"designation {p['designation']}",
+                                        p.get("order_code") and f"order code {p['order_code']}",
+                                        found["family"] and f"of the family {found['family']['name']}") if x)
+        named = [anchor]
+    configurations = {(c["properties"].get("configuration") or "") for c in found["parts"]}
+    configuration = (f"\n- Its configuration on the installed parts: {configurations.pop()}"
+                     if kind == "model" and len(configurations) == 1 and "" not in configurations else "")
+    owners = [anchor_id, *([found["family"]["id"]] if kind == "model" and found["family"] else []),
+              *([m["id"] for m in found["models"]] if kind == "family" else [])]
+    with session() as s:
+        facts = s.run("MATCH (o:Entity)-[r]->(x:Entity) WHERE o.id IN $owners AND type(r) IN $owning "
+                      "RETURN DISTINCT labels(x) AS labels, x.name AS name, x.code AS code ORDER BY name",
+                      owners=owners, owning=list(OWNING)).data()
+    by = lambda label: [f"{f['code']} ({f['name']})" if f["code"] else f["name"]          # noqa: E731
+                        for f in facts if repository.node_label(f["labels"]) == label]
+    existing = "\n".join([f"  Alarms: {_listed(by('Alarm'))}", f"  Parameters: {_listed(by('Parameter'))}",
+                          f"  Procedures: {_listed(by('Procedure'))}"])
+    what = "product family" if kind == "family" else "device model"
+    text = PRODUCT_TEMPLATE.format(what=what, name=anchor["name"], details=f" ({details})" if details else "",
+                                   others="products" if kind == "family" else "models, sizes or variants",
+                                   configuration=configuration, existing=existing)
+    generic = set()
+    for n in named:
+        q = n["properties"]
+        generic |= {normalize(v) for v in (n["name"], q.get("designation"), q.get("order_code"),
+                                           f"{maker} {n['name']}", *(q.get("aliases") or [])) if v}
+    return {"id": anchor_id, "name": anchor["name"], "label": anchor["label"], "text": text, "generic": generic - {""}}
+
+
 def anchor_context(asset_id: str, anchor_id: str) -> dict | None:
-    """The prompt's context block for the part a document describes, and the names that mean that part."""
+    """The prompt's context block for the part a document describes, and the names that mean that part. A product
+    family or a device model has its own block (P26b)."""
     from . import services
+    if not anchor_id.startswith("bsk:component:"):
+        return product_context(anchor_id)
     ctx = services.get_asset_context(asset_id)
     components, signals = [], []
 
@@ -469,7 +596,17 @@ def anchor_context(asset_id: str, anchor_id: str) -> dict | None:
                                   configuration=configuration, existing=existing)
     generic = {normalize(v) for v in (p.get("model"), p.get("part_number"),
                                       f"{p.get('manufacturer', '')} {p.get('model', '')}".strip()) if v}
-    return {"id": anchor_id, "name": part["name"], "text": text, "generic": generic - {""}}
+    return {"id": anchor_id, "name": part["name"], "label": "Component", "text": text, "generic": generic - {""}}
+
+
+def map_anchor(t: dict, anchor: dict | None) -> dict:
+    """The product's own designations mean the anchor: a part, or the family or model itself (P26b)."""
+    if anchor:
+        for end in ("subject", "object"):
+            if (t[f"{end}_type"] in ("Component", anchor.get("label", "Component"))
+                    and normalize(t[end]) in anchor["generic"] | {normalize(anchor["name"])}):
+                t = {**t, end: anchor["name"], f"{end}_type": anchor.get("label", "Component"), f"{end}_anchor": True}
+    return t
 
 
 # --- prompt + LLM ------------------------------------------------------------
@@ -664,14 +801,21 @@ def triple_key(mode: str, subject_name: str, subject_type: str, predicate: str, 
 
 
 def scope_key_for(params: dict, doc) -> str:
-    """Key prefix for proposed ids: the asset scope (bsk:asset:EXTR01 -> EXTR01) or the document key."""
+    """Key prefix for proposed ids: the asset scope (bsk:asset:EXTR01 -> EXTR01) or the document key. A run on a
+    product family or a device model: its own key (global ids, P26b)."""
+    anchor = (params or {}).get("anchor_id") or ""
+    if anchor and not anchor.startswith("bsk:component:"):
+        return anchor.split(":", 2)[2]
     return params["asset_id"].split(":", 2)[2] if (params or {}).get("asset_id") else doc.doc_key
 
 
 def part_scope_for(params: dict, index: EntityIndex, scope_key: str):
     """The part a run's document describes, for part-scoped ids and matching (P21); None without one."""
     anchor = (params or {}).get("anchor_id")
-    return index.part_scope(anchor, scope_key) if anchor and settings.GRAPH_PART_SCOPED_IDS else None
+    if not anchor:
+        return None
+    # a family's or model's facts always get its ids; a part's only with part-scoped ids on
+    return index.part_scope(anchor, scope_key) if settings.GRAPH_PART_SCOPED_IDS or not anchor.startswith("bsk:component:") else None
 
 
 # --- the job -------------------------------------------------------------------
@@ -716,10 +860,11 @@ def _run_facets(job, doc, params: dict) -> None:
             continue
         # Reviewed in this document *for this part* (P22c-3a): one manual can describe two parts (the G120C: the feed
         # screw drive and the cutter drive); the second part's run is not skipped because of the first's review.
+        anchor = (params.get("facet_anchors") or {}).get(key) or params.get("anchor_id") or ""
         reviewed = CandidateTriple.objects.filter(document=doc, preset_name=preset.name).exclude(
             status=CandidateTriple.Status.PENDING)
-        if params.get("anchor_id"):
-            reviewed = reviewed.filter(job__params__anchor_id=params["anchor_id"])
+        if anchor:
+            reviewed = reviewed.filter(anchor_id=anchor)
         reviewed = reviewed.count()
         if reviewed and not params.get("rerun_reviewed"):
             out.update(state="skipped", note=f"{reviewed} triples already reviewed")
@@ -727,7 +872,7 @@ def _run_facets(job, doc, params: dict) -> None:
         library.heartbeat(job, 0, 0, f"{label}: choosing pages")
         try:
             suggestion = page_suggest.suggest(doc, preset=preset, asset_id=params["asset_id"],
-                                              anchor_id=params["anchor_id"],
+                                              anchor_id=anchor,
                                               follow_languages=params.get("follow_languages", True))
         except (ValueError, requests.RequestException) as exc:
             logger.warning("facet run %s: page choice failed doc=%s: %s", key, doc.doc_key, exc)
@@ -738,7 +883,8 @@ def _run_facets(job, doc, params: dict) -> None:
             continue
         out["pages"] = suggestion["pages"]
         leave = sorted({t for other in runs if other != key for t in FACET_RUN_BY_KEY[other]["owns"]})
-        sub = {**params, "mode": "schema", "presets": {"schema": preset.pk}, "pages": parse_pages(suggestion["pages"]),
+        sub = {**params, "anchor_id": anchor, "mode": "schema", "presets": {"schema": preset.pk},
+               "pages": parse_pages(suggestion["pages"]),
                "facet_runs": [], "leave_types": leave, "keep_links": list(run.get("keeps") or ())}
         if run.get("chunking") and not params.get("chunking_custom"):
             from ingestion.chunking import resolve_params
@@ -777,6 +923,9 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     def beat(done=None, total=None, message=None):
         library.heartbeat(job, done, total, f"{label}: {message}" if label and message else message)
 
+    refused = reviewed_on_parts(doc, params.get("anchor_id") or "")
+    if refused:
+        raise ExtractionError(refused)
     parsed = library.load_parsed(doc)
     windows = chunk_parsed(parsed, params["chunking"]["strategy"], params["chunking"]["params"])
     kept = None
@@ -845,11 +994,9 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
         for t in raw:
             if mode == "schema" and (t["subject_type"] in EVIDENCE_TYPES or t["object_type"] in EVIDENCE_TYPES):
                 continue  # evidence structure is written on approval, not extracted
-            if anchor:   # the product's own designations mean the anchor part
-                for end in ("subject", "object"):
-                    if t[f"{end}_type"] == "Component" and normalize(t[end]) in anchor["generic"]:
-                        t = {**t, end: anchor["name"]}
+            t = map_anchor(t, anchor)
             candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model, part=part)
+            candidate.anchor_id = params.get("anchor_id") or ""
             key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
                              candidate.object_name, candidate.object_type)
             if (candidate.subject_type in leave_types or candidate.object_type in leave_types
@@ -957,7 +1104,7 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
         replaced = CandidateTriple.objects.filter(document=doc, status=CandidateTriple.Status.PENDING,
                                                   mode__in=list(presets), preset_name__in=ran)
         if params.get("anchor_id"):
-            replaced = replaced.filter(job__params__anchor_id=params["anchor_id"])
+            replaced = replaced.filter(anchor_id=params["anchor_id"])
         replaced.delete()
         facets.stamp(staged.values(), registry.active_schema())
         triples = CandidateTriple.objects.bulk_create(staged.values())
@@ -998,11 +1145,12 @@ def rating_props(props: dict | None) -> dict:
 
 
 def is_part_rating(subject_type: str, predicate: str, object_type: str, schema: Schema) -> bool:
-    """A part's limit the schema refuses but can hold as a rating (Component -HAS_LIMIT-> OperatingLimit, v4)."""
-    return (subject_type == "Component" and predicate == "HAS_LIMIT" and object_type == "OperatingLimit"
+    """A part's limit the schema refuses but can hold as a rating (Component -HAS_LIMIT-> OperatingLimit, v4); a
+    family's or model's too (P26b)."""
+    return (subject_type in ("Component", *NOT_EXTRACTED) and predicate == "HAS_LIMIT" and object_type == "OperatingLimit"
             and "HAS_SPEC" in schema.relationship_types
-            and ("Component", "Specification") in schema.relationship_types["HAS_SPEC"].pairs
-            and ("Component", "OperatingLimit") not in schema.relationship_types["HAS_LIMIT"].pairs)
+            and (subject_type, "Specification") in schema.relationship_types["HAS_SPEC"].pairs
+            and (subject_type, "OperatingLimit") not in schema.relationship_types["HAS_LIMIT"].pairs)
 
 
 def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=None, part=None) -> CandidateTriple:
@@ -1055,8 +1203,7 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
                 issue = str(exc)[:255]
             if t["predicate"] in SUGGESTED_ONLY:
                 issue = f"{t['predicate']} is suggested by the Studio and approved, not extracted"
-            if {t["subject_type"], t["object_type"]} & set(NOT_EXTRACTED):
-                issue = "product families and device models come from the BOM's model list, not extracted"
+            not_extracted = [end for end in ("subject", "object") if t[f"{end}_type"] in NOT_EXTRACTED]
             try:
                 sm = index.resolve(t["subject_type"], t["subject"], scope_key, part=part, **_keyed(t, "subject", props, scope_key, part))
                 om = index.resolve(t["object_type"], t["object"], scope_key, part=part, **_keyed(t, "object", props, scope_key, part))
@@ -1065,6 +1212,9 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
                            "object_match": om.kind, "object_candidates": om.candidates}
                 if subject_id == object_id and not issue:
                     issue = SELF_LINK
+                ids = {"subject": subject_id, "object": object_id}
+                if any(ids[end] != (part.anchor_id if part is not None else None) for end in not_extracted):
+                    issue = "product families and device models come from the BOM's model list, not extracted"
             except ValueError as exc:  # a name with no usable id characters
                 issue = str(exc)[:255]
     return CandidateTriple(
@@ -1106,6 +1256,8 @@ def _keyed(t: dict, end: str, props: dict, scope_key: str, part) -> dict:
     twenty pages is one node, whatever name each page gives it. Other types: by name, as before."""
     from .identity import PART_LABELS
     label, p = t[f"{end}_type"], props.get(end) or {}
+    if t.get(f"{end}_anchor") and part is not None and label != "Component":
+        return {"proposed": part.anchor_id}      # the family or model the run is on (P26b)
     if label == "Parameter" and p.get("code"):
         key, tag = str(p["code"]).strip(), str(p["code"]).strip()
     elif label == "IOPoint" and p.get("terminal"):

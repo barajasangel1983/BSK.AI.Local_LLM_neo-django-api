@@ -235,6 +235,12 @@ class CandidateTriple(models.Model):
     applied_aliases = models.JSONField(default=dict, blank=True)  # {node id: [names added as aliases]}
     replaces = models.JSONField(default=dict, blank=True)         # {node id: {property: [graph value, new value]}}, staged (P14b)
     replaced_props = models.JSONField(default=dict, blank=True)   # {node id: {property: value before approval}}
+    # P26b: what the run was anchored on (an installed part, a device model or a product family), the reviewer's move
+    # to another level ("moved from <id>"), and the link's own properties (`instance`: the installed part a family's
+    # MAPS_TO / CARRIES / INDICATED_BY is about).
+    anchor_id = models.CharField(max_length=512, blank=True, default="", db_index=True)
+    moved_from = models.CharField(max_length=512, blank=True, default="")
+    rel_props = models.JSONField(default=dict, blank=True)
     # Every place this triple was found (all windows / rows); the evidence_* fields below keep the first one.
     evidence = models.ManyToManyField(Evidence, related_name="triples", blank=True)
     confidence = models.FloatField(null=True, blank=True)

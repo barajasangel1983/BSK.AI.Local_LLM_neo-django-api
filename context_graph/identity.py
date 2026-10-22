@@ -85,16 +85,21 @@ class Match:
 
 # Facts that belong to a part (P21): their new ids carry the part, and they are matched within its family only.
 PART_LABELS = ("Alarm", "Procedure", "FailureMode", "Component", "Specification", "Parameter", "IOPoint", "Interface")
-# Component -> fact links that make a part own a fact; a procedure is also owned through what it serves.
+# Component -> fact links that make a part own a fact; a procedure is also owned through what it serves. A product
+# family or a device model owns its facts through the same links (P26b).
+OWNERS = ("Component", "ProductFamily", "DeviceModel")
 OWNING = ("HAS_ALARM", "HAS_PROCEDURE", "HAS_FAILURE_MODE", "HAS_SPEC", "HAS_PARAMETER", "HAS_IO", "COMMUNICATES_VIA")
 
 
 @dataclass(frozen=True)
 class PartScope:
-    """The part a manual describes (extraction's anchor), for its new ids and its matching (P21)."""
+    """The part a manual describes (extraction's anchor), for its new ids and its matching (P21). Or the product
+    family or device model a run is anchored on (P26b): its key is the family's or model's own
+    ("siemens/sinamics-g120c"), and it sees the facts of the family and its models, not the machine's parts."""
     anchor_id: str
     key: str                     # id key of its new nodes: "EXTR01/cutter-motor"
-    family: frozenset[str]       # the part, its parent parts and its sub-parts
+    family: frozenset[str]       # the part, its parent parts and its sub-parts; a family and its models
+    level: str = "part"          # part | model | family
 
 
 @dataclass
@@ -106,6 +111,7 @@ class EntityIndex:
     owners: dict[str, set[str]] = field(default_factory=dict)
     parents: dict[str, str] = field(default_factory=dict)
     bom: set[str] = field(default_factory=set)
+    variant_of: dict[str, str] = field(default_factory=dict)   # device model -> its product family (P26b)
 
     @classmethod
     def load(cls) -> "EntityIndex":
@@ -116,21 +122,23 @@ class EntityIndex:
                     "MATCH (n:Entity) RETURN n.id AS id, n.name AS name, labels(n) AS labels, "
                     "coalesce(n.aliases, []) AS aliases, n.tag AS tag, n.code AS code").data()
                 links = s.run(
-                    "MATCH (c:Component)-[r]->(n:Entity) WHERE type(r) IN $owning RETURN c.id AS part, n.id AS id",
-                    owning=list(OWNING)).data()
+                    "MATCH (c:Entity)-[r]->(n:Entity) WHERE type(r) IN $owning AND any(l IN labels(c) WHERE l IN $owners) "
+                    "RETURN c.id AS part, n.id AS id", owning=list(OWNING), owners=list(OWNERS)).data()
                 serves = s.run(
                     "MATCH (p:Procedure)-[:ADDRESSES]->(x:Entity) RETURN p.id AS id, x.id AS served "
                     "UNION MATCH (x:FailureMode)-[:MITIGATED_BY]->(p:Procedure) RETURN p.id AS id, x.id AS served").data()
                 tree = s.run("MATCH (p:Component)-[:HAS_COMPONENT]->(c:Component) RETURN p.id AS parent, c.id AS id").data()
                 bom = s.run("MATCH (c:Component) WHERE c.source = 'structured' RETURN c.id AS id").data()
+                variants = s.run("MATCH (m:DeviceModel)-[:VARIANT_OF]->(f:ProductFamily) RETURN m.id AS id, f.id AS family").data()
         except GraphUnavailable:
             return index
         for link in links:
             index.owners.setdefault(link["id"], set()).add(link["part"])
         # A part-scoped id names its part (P21: bsk:io-point:EXTR01/feeder-screw-drive/DI-3): it is that part's even
         # when no link from the part reaches it (a terminal approved only through CONFIGURED_BY, 2026-10-18).
+        # A fact's id under a family's or model's key is theirs too (bsk:parameter:siemens/sinamics-g120c/p1082, P26b).
         part_by_key = {row["id"].split(":", 2)[2]: row["id"] for row in rows
-                       if repository.node_label(row["labels"]) == "Component"}
+                       if repository.node_label(row["labels"]) in OWNERS}
         for row in rows:
             key = row["id"].split(":", 2)[2] if row["id"].count(":") >= 2 else ""
             owner = part_by_key.get(key.rsplit("/", 1)[0]) if "/" in key else None
@@ -141,6 +149,7 @@ class EntityIndex:
                 index.owners.setdefault(row["id"], set()).update(index.owners[row["served"]])
         index.parents = {row["id"]: row["parent"] for row in tree}
         index.bom = {row["id"] for row in bom}
+        index.variant_of = {row["id"]: row["family"] for row in variants}
         for row in rows:
             index.add(row["id"], repository.node_label(row["labels"]), row["name"] or "", row["aliases"],
                       [t for t in (row["tag"], row["code"]) if t])
@@ -158,8 +167,15 @@ class EntityIndex:
         return next((n for nodes in self.by_label.values() for n in nodes if n.id == node_id), None)
 
     def part_scope(self, anchor_id: str, scope_key: str) -> PartScope:
-        """The scope of a run whose document describes `anchor_id` (a component id of the asset `scope_key`)."""
-        _, _, key = anchor_id.split(":", 2)
+        """The scope of a run whose document describes `anchor_id` (a component id of the asset `scope_key`), or of a
+        run anchored on a product family (it and its models) or a device model (it and its family)."""
+        _, slug, key = anchor_id.split(":", 2)
+        if slug == "product-family":
+            models = {m for m, f in self.variant_of.items() if f == anchor_id}
+            return PartScope(anchor_id, key, frozenset({anchor_id, *models}), "family")
+        if slug == "device-model":
+            family = {self.variant_of[anchor_id]} if anchor_id in self.variant_of else set()
+            return PartScope(anchor_id, key, frozenset({anchor_id, *family}), "model")
         part_key = key.split("/", 1)[1] if key.startswith(f"{scope_key}/") else key
         family = {anchor_id}
         up = self.parents.get(anchor_id)
@@ -181,8 +197,9 @@ class EntityIndex:
         """The nodes a name of this run may match: with a part, its family's and the unowned ones (P21)."""
         if part is None or label not in PART_LABELS:
             return nodes
-        if label == "Component":
-            return [n for n in nodes if n.id in part.family or n.id in self.bom]
+        if label == "Component":   # a family's or model's sub-parts are theirs; the machine's parts are not
+            return [n for n in nodes if n.id in part.family or (part.level == "part" and n.id in self.bom)
+                    or self.owners.get(n.id, set()) & part.family]
         return [n for n in nodes if not self.owners.get(n.id) or self.owners[n.id] & part.family]
 
     # --- resolution -------------------------------------------------------------

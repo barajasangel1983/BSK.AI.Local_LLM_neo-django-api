@@ -22,6 +22,8 @@ from __future__ import annotations
 import hashlib
 import re
 
+from django.db.models import Q
+
 from django.utils import timezone
 
 from . import registry, repository
@@ -34,7 +36,11 @@ from .models import CandidateTriple
 from .schema import SchemaError
 
 EDITABLE = ("subject_name", "subject_type", "subject_id", "predicate", "object_name", "object_type", "object_id",
-            "subject_match", "object_match")   # *_match: only "new" (accept a possible match as a new entity)
+            "subject_match", "object_match",   # *_match: only "new" (accept a possible match as a new entity)
+            "instance")                        # P26b: the installed part a family's machine link is about
+# Links from manufacturer knowledge to this machine (P26 D3): from a family's or model's fact they carry `instance`.
+MACHINE_LINKS = ("MAPS_TO", "CARRIES", "INDICATED_BY")
+PRODUCT_SLUGS = ("product-family", "device-model")
 EVIDENCE_RELS = ("DESCRIBES", "HAS_SECTION", "DOCUMENTED_BY")
 STAGED_SOURCES = ["text", "structured"]   # `source` of nodes/edges created by approved triples
 
@@ -58,6 +64,11 @@ def edit(triple: CandidateTriple, changes: dict) -> CandidateTriple:
         # A flip (the Flip button): each end keeps its own properties. Swapping only names and types left the
         # alarm's subtype on the procedure and the procedure's summary on the alarm (2026-10-16).
         triple.subject_props, triple.object_props = triple.object_props, triple.subject_props
+    if "instance" in changes:
+        instance = str(changes.pop("instance") or "").strip()
+        if instance and not (is_valid_id(instance) and instance.startswith("bsk:component:")):
+            raise TripleError("instance must be an installed part (bsk:component:...)")
+        triple.rel_props = {k: v for k, v in {**(triple.rel_props or {}), "instance": instance}.items() if v}
     for key, value in changes.items():
         if not key.endswith("_match"):
             setattr(triple, key, str(value or "").strip()[:512])
@@ -112,8 +123,9 @@ def _reresolve(t: CandidateTriple, changes: dict, index=None) -> None:
     if t.data_file_id:
         scope = t.data_file.asset_id.split(":", 2)[2] if t.data_file.asset_id else t.data_file.key
     else:
-        scope = scope_key_for(t.job.params if t.job else {}, t.document)
-        part = part_scope_for(t.job.params if t.job else {}, index, scope)          # P21: the run's part
+        params = run_params(t)
+        scope = scope_key_for(params, t.document)
+        part = part_scope_for(params, index, scope)          # P21: the run's part (P26b: or family / model)
     for end in ("subject", "object"):
         given = changes.get(f"{end}_id")
         if given:  # a reviewer chose the entity (e.g. one of the possible matches)
@@ -135,6 +147,91 @@ def _reresolve(t: CandidateTriple, changes: dict, index=None) -> None:
             setattr(t, f"{end}_existing", existing)
             setattr(t, f"{end}_match", kind)
             setattr(t, f"{end}_candidates", candidates)
+
+
+def run_params(t: CandidateTriple) -> dict:
+    """The job's params with the triple's own anchor: one "auto" job runs Ratings on the model and the rest on the
+    family (P26b)."""
+    params = dict(t.job.params) if t.job else {}
+    if t.anchor_id:
+        params["anchor_id"] = t.anchor_id
+    return params
+
+
+# --- moving to another level (P26b) ------------------------------------------------------------------------------
+
+def move_targets(anchor_id: str) -> dict:
+    """Where a run's triples can go: {family, models, parts} of its product, each [{id, name, label}]; `model`: the
+    anchor's own model (an installed part's, or the model itself)."""
+    from .device_models import levels
+    try:
+        found = levels(anchor_id)
+    except ValueError as exc:
+        raise TripleError(str(exc)) from exc
+    slim = lambda n: {"id": n["id"], "name": n["name"], "label": n["label"]}   # noqa: E731
+    return {"family": [slim(found["family"])] if found["family"] else [],
+            "models": [slim(m) for m in found["models"]], "parts": [slim(p) for p in found["parts"]],
+            "model": [slim(found["model"])] if found["model"] else []}
+
+
+def move(triple: CandidateTriple, to_id: str) -> list[CandidateTriple]:
+    """Move a pending (or rejected) triple to another level of its run's product: the end that is the product (or
+    one of its parts) becomes `to_id`; the other end, a fact, gets its id under the new owner and is matched there;
+    the run's other pending triples that name that fact follow (P26 D3). Returns every triple changed."""
+    from .extraction import _keyed
+    from .identity import PART_LABELS
+    if triple.status == CandidateTriple.Status.APPROVED:
+        raise TripleError("approved triples are moved with the other facts in P26c")
+    if triple.mode != "schema" or not triple.anchor_id:
+        raise TripleError("only triples of a run on a part, a model or a family can be moved")
+    targets = {n["id"]: n for group in move_targets(triple.anchor_id).values() for n in group}
+    if to_id not in targets:
+        raise TripleError("move to the run's product family, one of its models or one of its installed parts")
+    end = "subject" if triple.subject_id in targets else "object" if triple.object_id in targets else ""
+    if not end:
+        raise TripleError("neither end is the run's product or one of its installed parts")
+    before = getattr(triple, f"{end}_id")
+    if before == to_id:
+        return [triple]
+    target = targets[to_id]
+    for key, value in (("id", to_id), ("name", target["name"]), ("type", target["label"]), ("existing", True),
+                       ("match", "id"), ("candidates", [])):
+        setattr(triple, f"{end}_{key}", value)
+    other = "object" if end == "subject" else "subject"
+    old_fact, label = getattr(triple, f"{other}_id"), getattr(triple, f"{other}_type")
+    changed = [triple]
+    if label in PART_LABELS and old_fact not in targets:
+        index = EntityIndex.load()
+        scope_key = to_id.split(":", 2)[2] if not to_id.startswith("bsk:component:") else to_id.split(":", 2)[2].split("/")[0]
+        part = index.part_scope(to_id, scope_key)
+        props = getattr(triple, f"{other}_props") or {}
+        try:
+            m = index.resolve(label, getattr(triple, f"{other}_name"), scope_key, part=part,
+                              **_keyed({f"{other}_type": label}, other, {other: props}, scope_key, part))
+        except ValueError as exc:
+            raise TripleError(str(exc)) from exc
+        fact = {"id": m.id, "existing": m.existing, "match": m.kind, "candidates": m.candidates}
+        for key, value in fact.items():
+            setattr(triple, f"{other}_{key}", value)
+        if m.id != old_fact:
+            linked = (CandidateTriple.objects.filter(document=triple.document, anchor_id=triple.anchor_id,
+                                                     status=CandidateTriple.Status.PENDING)
+                      .exclude(pk=triple.pk).filter(Q(subject_id=old_fact) | Q(object_id=old_fact)))
+            for t in linked:
+                for e in ("subject", "object"):
+                    if getattr(t, f"{e}_id") == old_fact:
+                        for key, value in fact.items():
+                            setattr(t, f"{e}_{key}", value)
+                changed.append(t)
+    triple.moved_from = before
+    schema = registry.active_schema()
+    for t in changed:
+        t.issue = SELF_LINK if t.subject_id == t.object_id else _schema_issue(t)
+        t.edited = True
+    facets.stamp(changed, schema)
+    for t in changed:
+        t.save()
+    return changed
 
 
 def unresolved(t: CandidateTriple) -> str:
@@ -230,7 +327,7 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
         tx.run("MATCH (n:Entity {id: $id}) "
                "SET n.evidence_ids = [x IN coalesce(n.evidence_ids, []) WHERE NOT x IN $ev] + $ev", id=node_id, ev=ev)
     t.applied_props, t.applied_aliases, t.replaced_props = applied, aliased, replaced
-    _supports(tx, schema, t, t.subject_id, t.predicate, t.object_id, _provenance(t))
+    _supports(tx, schema, t, t.subject_id, t.predicate, t.object_id, {**_provenance(t), **(t.rel_props or {})})
     facets.refresh(tx, schema, [t.subject_id, t.object_id])   # P22b: the new link may add a facet
     if doc is None:
         return   # structured import: no document evidence nodes
@@ -250,6 +347,12 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
     for node_id, label in {(t.subject_id, t.subject_type), (t.object_id, t.object_type)}:
         if _allowed(schema, "DocumentSection", "DESCRIBES", label):
             _supports(tx, schema, t, section_id, "DESCRIBES", node_id, {"doc_key": doc.doc_key})
+    anchor = t.anchor_id or ""      # a run on a family or model: the manual documents it (P26b)
+    if anchor.split(":", 2)[1:2] and anchor.split(":", 2)[1] in PRODUCT_SLUGS:
+        label = schema.label_for_slug(anchor.split(":", 2)[1])
+        if _allowed(schema, label, "DOCUMENTED_BY", "Document") and tx.run(
+                "MATCH (n:Entity {id: $id}) RETURN n.id", id=anchor).single():
+            repository.upsert_relationship(tx, schema, anchor, "DOCUMENTED_BY", doc_id, {"source": "library"})
     if asset_scope and _allowed(schema, "Asset", "DOCUMENTED_BY", "Document"):
         if tx.run("MATCH (a:Asset {id: $id}) RETURN a.id", id=asset_scope).single():
             repository.upsert_relationship(tx, schema, asset_scope, "DOCUMENTED_BY", doc_id, {"source": "library"})
@@ -335,7 +438,16 @@ def approve(triples: list[CandidateTriple]) -> dict:
     if not ready:
         return {"approved": approved, "errors": errors, "layers": layers}
     with session() as s:
+        products = None
         for t in ready:
+            if t.mode == "schema" and _is_machine_link(t):
+                if products is None:   # the keys of every family and model, once
+                    products = {r["id"].split(":", 2)[2] for r in s.run(
+                        "MATCH (n) WHERE n:ProductFamily OR n:DeviceModel RETURN n.id AS id").data()}
+                missing = _missing_instance(t, products)
+                if missing:
+                    errors[t.pk] = missing
+                    continue
             asset_scope = (t.job.params.get("asset_id") if t.job else "") or None
             try:
                 if t.mode == "schema":
@@ -353,6 +465,20 @@ def approve(triples: list[CandidateTriple]) -> dict:
             approved.append(t.pk)
             layers[t.layer] += 1
     return {"approved": approved, "errors": errors, "layers": layers}
+
+
+def _is_machine_link(t: CandidateTriple) -> bool:
+    return t.predicate in MACHINE_LINKS and (t.predicate != "INDICATED_BY" or t.object_type == "Signal")
+
+
+def _missing_instance(t: CandidateTriple, products: set[str]) -> str:
+    """Why a machine link from a family's or model's fact can't be approved yet (no `instance`), or ""."""
+    _, slug, key = (t.subject_id.split(":", 2) + ["", ""])[:3]
+    owned = slug in PRODUCT_SLUGS or ("/" in key and key.rsplit("/", 1)[0] in products)
+    if owned and not (t.rel_props or {}).get("instance"):
+        return (f"{t.subject_name} belongs to a product family or model: choose the installed part this "
+                f"{t.predicate} is about (instance)")
+    return ""
 
 
 def reject(triples: list[CandidateTriple]) -> int:

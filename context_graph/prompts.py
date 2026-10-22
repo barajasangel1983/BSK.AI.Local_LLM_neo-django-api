@@ -202,6 +202,7 @@ def test_on_pages(doc, template: str, mode: str, pages: str, asset_id: str = "",
         for t in raw:
             if t["subject_type"] in extraction.EVIDENCE_TYPES or t["object_type"] in extraction.EVIDENCE_TYPES:
                 continue
+            t = extraction.map_anchor(t, anchor)
             c = extraction._candidate(t, "schema", schema, index, scope_key, doc, None, window, i, preset, part=part)
             from . import facets
             facets.stamp([c], schema)

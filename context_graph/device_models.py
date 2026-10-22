@@ -75,3 +75,64 @@ def summary(rows: list[dict]) -> str:
         for model, parts in sorted(families[fam].items()):
             lines.append(f"    - {model}: {', '.join(sorted(parts))}")
     return "\n".join(lines)
+
+
+# --- levels (P26b) -------------------------------------------------------------------------------------------------
+
+KINDS = {"component": "part", "device-model": "model", "product-family": "family"}
+LABELS = {"part": "Component", "model": "DeviceModel", "family": "ProductFamily"}
+
+
+def kind_of(node_id: str) -> str:
+    """"part", "model" or "family" for a component, device model or product family id; "" otherwise."""
+    parts = str(node_id or "").split(":", 2)
+    return KINDS.get(parts[1], "") if len(parts) == 3 else ""
+
+
+def levels(node_id: str) -> dict:
+    """The levels around an installed part, a model or a family: {part, model, family, models, parts}, each node
+    {id, name, label, properties} (None or [] where there is none). `models` are the family's (or the one model),
+    `parts` the installed parts of those models. Raises ValueError for an unknown node."""
+    from . import repository
+    from .driver import session
+
+    kind = kind_of(node_id)
+    if not kind:
+        raise ValueError(f"{node_id!r} is not a component, device model or product family id")
+
+    def node(n):
+        return repository.serialize_node(n) if n is not None else None
+
+    with session() as s:
+        row = s.run(f"MATCH (n:{LABELS[kind]} {{id: $id}}) "
+                    "OPTIONAL MATCH (n)-[:INSTANCE_OF]->(m:DeviceModel) "
+                    "WITH n, m, CASE WHEN m IS NULL THEN n ELSE m END AS v "
+                    "OPTIONAL MATCH (v)-[:VARIANT_OF]->(f:ProductFamily) "
+                    "RETURN n, m, f LIMIT 1", id=node_id).single()
+        if row is None:
+            raise ValueError(f"{node_id} is not in the graph")
+        n, m, f = row["n"], row["m"], row["f"]
+        part = n if kind == "part" else None
+        model = n if kind == "model" else m
+        family = n if kind == "family" else f
+        if family is not None:
+            models = [r["m"] for r in s.run("MATCH (m:DeviceModel)-[:VARIANT_OF]->(:ProductFamily {id: $id}) "
+                                            "RETURN m ORDER BY m.name", id=family["id"])]
+        else:
+            models = [model] if model is not None else []
+        parts = [r["c"] for r in s.run("MATCH (c:Component)-[:INSTANCE_OF]->(m:DeviceModel) WHERE m.id IN $ids "
+                                       "RETURN c ORDER BY c.name", ids=[x["id"] for x in models])]
+    return {"part": node(part), "model": node(model), "family": node(family),
+            "models": [node(x) for x in models], "parts": [node(x) for x in parts]}
+
+
+def pick(found: dict, want: str) -> dict:
+    """The node of level `want` ("part" | "model" | "family"), falling back to the next lower level that exists (a
+    model without a family is run on the model, a part without a model on the part), then to the higher ones (a
+    family's ratings, asked for its model, stay on the family)."""
+    order = ["family", "model", "part"]
+    i = order.index(want)
+    for level in order[i:] + order[:i][::-1]:
+        if found.get(level):
+            return found[level]
+    raise ValueError("no part, model or family to run on")
