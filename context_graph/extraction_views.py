@@ -155,6 +155,7 @@ def extract_config(request):
 
 
 @api_view(["POST"])
+@graph_errors
 def extract(request):
     ids = request.data.get("document_ids") or []
     if not isinstance(ids, list) or not ids:
@@ -164,7 +165,7 @@ def extract(request):
     if missing:
         return _error(f"unknown document(s): {', '.join(map(str, missing))}", status.HTTP_404_NOT_FOUND)
     params = {k: request.data.get(k) for k in ("mode", "chunking", "presets", "asset_id", "include_drawings", "pages", "anchor_id",
-                                               "facet_runs", "rerun_reviewed")
+                                               "anchor_level", "facet_runs", "rerun_reviewed")
               if request.data.get(k)}
     if "follow_languages" in request.data:      # false is meaningful: read every language
         params["follow_languages"] = request.data.get("follow_languages")
@@ -172,6 +173,10 @@ def extract(request):
         params["tables_by_row"] = request.data.get("tables_by_row")
     try:
         params = extraction.validate_params(params)   # validate once, before anything is queued
+        # P26b D1: a family or model run on a manual already reviewed on its installed parts waits for P26c
+        refused = [r for i in ids for a in extraction.anchors_of(params) if (r := extraction.reviewed_on_parts(docs[str(i)], a))]
+        if refused:
+            return _error(refused[0], status.HTTP_409_CONFLICT)
         jobs = [library.enqueue(docs[str(i)], Job.Kind.EXTRACT, params) for i in ids]
     except ValueError as exc:
         return _error(str(exc))
@@ -220,6 +225,8 @@ def triple_json(t: CandidateTriple) -> dict:
                    "properties": t.object_props or {}, "changes": (t.replaces or {}).get(t.object_id) or {}},
         "confidence": t.confidence, "issue": t.issue, "occurrences": t.occurrences, "edited": t.edited,
         "auto_fix": t.auto_fix, "facets": t.facets or [],
+        # P26b: the run's anchor (part, model or family), a reviewer's move, the link's `instance`
+        "anchor_id": t.anchor_id or None, "moved_from": t.moved_from or None, "link_properties": t.rel_props or {},
         # Every place the triple was found (P8a); `evidence` below is the first one (kept for older clients).
         "sources": [evidence_json(e) for e in t.evidence.all()],
         "evidence": {"chunk_index": t.chunk_index, "page_start": t.page_start, "page_end": t.page_end,
@@ -392,6 +399,37 @@ def triples_make_rating(request):
     if errors and not done:
         return _error(next(iter(errors.values())))
     return Response({"triples": done, "errors": errors})
+
+
+@api_view(["POST"])
+@graph_errors
+def triples_move(request):
+    """Move the selected pending triples to another level of their run's product (P26b): its family, one of its
+    models or one of its installed parts. The fact's other pending triples of the run follow it."""
+    selected = _selected(request)
+    if isinstance(selected, Response):
+        return selected
+    to = request.data.get("to") or ""
+    done, errors = {}, {}
+    for t in selected:
+        try:
+            for moved in triples.move(t, to):
+                done[moved.pk] = moved
+        except triples.TripleError as exc:
+            errors[str(t.pk)] = str(exc)
+    if errors and not done:
+        return _error(next(iter(errors.values())))
+    return Response({"triples": [triple_json(t) for t in done.values()], "errors": errors})
+
+
+@api_view(["GET"])
+@graph_errors
+def triples_move_targets(request):
+    """Where a run's triples can be moved: its product family, its models, the installed parts (P26b)."""
+    try:
+        return Response(triples.move_targets(request.query_params.get("anchor") or ""))
+    except triples.TripleError as exc:
+        return _error(str(exc))
 
 
 @api_view(["POST"])

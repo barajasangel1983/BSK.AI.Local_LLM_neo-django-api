@@ -90,7 +90,7 @@ class ExtractionScopeTests(LibraryTestCase):
         self.assertEqual(validate_params({"pages": "2,4"})["pages"], [[2, 2], [4, 4]])
         with self.assertRaisesMessage(ExtractionError, "choose the asset"):
             validate_params({"anchor_id": MOTOR})
-        with self.assertRaisesMessage(ExtractionError, "must be a component id"):
+        with self.assertRaisesMessage(ExtractionError, "must be an installed part, a device model or a product family"):
             validate_params({"anchor_id": ASSET, "asset_id": ASSET})
 
     def test_only_the_chosen_pages_and_the_kept_languages_are_read(self):

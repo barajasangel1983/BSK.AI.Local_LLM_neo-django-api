@@ -79,13 +79,27 @@ def assembly_signals(part_id: str) -> list[dict]:
 
 
 def device(part_id: str) -> dict:
+    """The part, its manuals and its model's and family's (P26b: `products`, the ids whose parameters it shares)."""
     with session() as s:
-        rec = s.run("MATCH (d:Component {id: $id}) OPTIONAL MATCH (d)-[:DOCUMENTED_BY]->(doc:Document) "
+        rec = s.run("MATCH (d:Component {id: $id}) "
+                    "OPTIONAL MATCH (d)-[:INSTANCE_OF]->(m:DeviceModel) OPTIONAL MATCH (m)-[:VARIANT_OF]->(f:ProductFamily) "
+                    "WITH d, [x IN [m, f] WHERE x IS NOT NULL] AS products "
+                    "OPTIONAL MATCH (o)-[:DOCUMENTED_BY]->(doc:Document) WHERE o = d OR o IN products "
                     "RETURN d.name AS name, d.model AS model, d.manufacturer AS maker, "
-                    "collect(DISTINCT doc.doc_key) AS doc_keys", id=part_id).single()
+                    "[x IN products | x.id] AS products, collect(DISTINCT doc.doc_key) AS doc_keys", id=part_id).single()
     if rec is None:
         raise ValueError(f"unknown part {part_id!r}")
     return dict(rec)
+
+
+def product_parameter(dev: dict, code: str) -> dict | None:
+    """The parameter with this code its model or family already holds (P26b), or None."""
+    if not dev.get("products"):
+        return None
+    with session() as s:
+        rec = s.run("MATCH (o:Entity)-[:HAS_PARAMETER]->(p:Parameter) WHERE o.id IN $ids AND p.code = $code "
+                    "RETURN p.id AS id, p.name AS name ORDER BY size(p.id) LIMIT 1", ids=dev["products"], code=code).single()
+    return dict(rec) if rec else None
 
 
 def _excerpts(signal: dict, doc_keys: list[str]) -> list:
@@ -159,11 +173,16 @@ def suggest(part_id: str, dry_run: bool = False) -> list[dict]:
         doc = Document.objects.filter(doc_key=chunk.asset_id).first() or Document.objects.filter(filename=chunk.source).first()
         window = SimpleNamespace(page_start=chunk.page_start, page_end=chunk.page_end, section_path=chunk.section_path,
                                  text=chunk.text)
-        has = extraction._candidate(
-            {"subject": dev["name"], "subject_type": "Component", "predicate": "HAS_PARAMETER", "object": r["name"],
-             "object_type": "Parameter", "object_subtype": "Readout",
-             "object_properties": {"code": r["code"], "unit": r["unit"], "access": "read"}, "confidence": 0.9},
-            "schema", schema, index, scope_key, doc, None, window, 0, preset, part=part)
+        shared = product_parameter(dev, r["code"])
+        if shared:      # the family's parameter: only this part's MAPS_TO, with the part as its instance (P26b)
+            has = SimpleNamespace(object_name=shared["name"], object_id=shared["id"], object_existing=True,
+                                  object_props={}, object_match="id", subject_id="", pk=None)
+        else:
+            has = extraction._candidate(
+                {"subject": dev["name"], "subject_type": "Component", "predicate": "HAS_PARAMETER", "object": r["name"],
+                 "object_type": "Parameter", "object_subtype": "Readout",
+                 "object_properties": {"code": r["code"], "unit": r["unit"], "access": "read"}, "confidence": 0.9},
+                "schema", schema, index, scope_key, doc, None, window, 0, preset, part=part)
         maps = CandidateTriple(
             document=doc, mode="schema", source="text", subject_name=has.object_name, subject_type="Parameter",
             subject_id=has.object_id, subject_existing=has.object_existing, subject_props=has.object_props,
@@ -172,11 +191,12 @@ def suggest(part_id: str, dry_run: bool = False) -> list[dict]:
             page_start=chunk.page_start, page_end=chunk.page_end, section_path=chunk.section_path,
             evidence_text=chunk.text[:extraction.EVIDENCE_CHARS], model=settings.DGX_CHAT_MODEL,
             preset_name=PROMPT_NAME, preset_version=PROMPT_VERSION, schema_version=schema.version,
-            auto_fix=f"suggested: {r['code']} shows {sig['name']} ({sig['unit']})")
+            auto_fix=f"suggested: {r['code']} shows {sig['name']} ({sig['unit']})",
+            rel_props={"instance": part_id} if shared else {}, anchor_id=part_id)
         if CandidateTriple.objects.filter(subject_id=maps.subject_id, predicate="MAPS_TO", object_id=sig["id"]).exists():
             r["state"], r["reason"] = "already", "already staged or reviewed"
             continue
-        if has.object_id != part_id and not CandidateTriple.objects.filter(
+        if not shared and has.object_id != part_id and not CandidateTriple.objects.filter(
                 subject_id=has.subject_id, predicate="HAS_PARAMETER", object_id=has.object_id).exists():
             facets.stamp([has], schema)
             has.save()
