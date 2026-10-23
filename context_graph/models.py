@@ -276,3 +276,43 @@ class CandidateTriple(models.Model):
 
     def __str__(self) -> str:
         return f"({self.subject_name})-[{self.predicate}]->({self.object_name}) [{self.status}]"
+
+
+class FactMoveBatch(models.Model):
+    """One apply of P26c "Move to families": a family's (or a family-less model's) manual facts moved off its installed
+    parts. `before` holds every node and link the apply touched, as they were, so `undo` can put them back."""
+
+    class Status(models.TextChoices):
+        APPLIED = "applied"
+        UNDONE = "undone"
+
+    target_id = models.CharField(max_length=512, db_index=True)        # the family (or model) the facts went to
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.APPLIED)
+    choices = models.JSONField(default=dict, blank=True)               # {conflict key: models | a | b | both}, stays
+    summary = models.JSONField(default=dict, blank=True)               # counts: moved, merged, conflicts, ...
+    before = models.JSONField(default=dict, blank=True)                # {nodes: [...], rels: [...], triples: [...]}
+    created_links = models.JSONField(default=list, blank=True)         # links the apply added outside the moved nodes
+    author = models.CharField(max_length=150, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    undone_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class FactMove(models.Model):
+    """One fact's move in a batch: where it was, where it went, and how (moved, merged into another, kept per model)."""
+
+    class Kind(models.TextChoices):
+        MOVE = "move"
+        MERGE = "merge"          # merged into `new_id` (the survivor); the node `old_id` no longer exists
+        MODEL = "model"          # a conflict kept on its own model
+        STAY = "stay"            # left on the installed part by the reviewer
+
+    batch = models.ForeignKey(FactMoveBatch, on_delete=models.CASCADE, related_name="moves")
+    kind = models.CharField(max_length=10, choices=Kind.choices)
+    label = models.CharField(max_length=40, blank=True, default="")
+    old_id = models.CharField(max_length=512, db_index=True)
+    new_id = models.CharField(max_length=512, blank=True, default="", db_index=True)
+    owner_before = models.CharField(max_length=512, blank=True, default="")
+    owner_after = models.CharField(max_length=512, blank=True, default="")

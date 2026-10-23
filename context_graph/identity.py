@@ -112,6 +112,7 @@ class EntityIndex:
     parents: dict[str, str] = field(default_factory=dict)
     bom: set[str] = field(default_factory=set)
     variant_of: dict[str, str] = field(default_factory=dict)   # device model -> its product family (P26b)
+    merged: dict[str, str] = field(default_factory=dict)       # an id moved or merged away (P26c) -> the node now
 
     @classmethod
     def load(cls) -> "EntityIndex":
@@ -120,7 +121,8 @@ class EntityIndex:
             with session() as s:
                 rows = s.run(
                     "MATCH (n:Entity) RETURN n.id AS id, n.name AS name, labels(n) AS labels, "
-                    "coalesce(n.aliases, []) AS aliases, n.tag AS tag, n.code AS code").data()
+                    "coalesce(n.aliases, []) AS aliases, n.tag AS tag, n.code AS code, "
+                    "coalesce(n.merged_ids, []) AS merged").data()
                 links = s.run(
                     "MATCH (c:Entity)-[r]->(n:Entity) WHERE type(r) IN $owning AND any(l IN labels(c) WHERE l IN $owners) "
                     "RETURN c.id AS part, n.id AS id", owning=list(OWNING), owners=list(OWNERS)).data()
@@ -150,6 +152,7 @@ class EntityIndex:
         index.parents = {row["id"]: row["parent"] for row in tree}
         index.bom = {row["id"] for row in bom}
         index.variant_of = {row["id"]: row["family"] for row in variants}
+        index.merged = {old: row["id"] for row in rows for old in row["merged"]}
         for row in rows:
             index.add(row["id"], repository.node_label(row["labels"]), row["name"] or "", row["aliases"],
                       [t for t in (row["tag"], row["code"]) if t])
@@ -215,10 +218,13 @@ class EntityIndex:
         scoped = part is not None and label in PART_LABELS
         new_id = proposed or proposed_id(label, name, part.key if scoped else scope_key)
 
-        # 1. explicit canonical id (the name *is* an id, or the proposed id already exists); any part
+        # 1. explicit canonical id (the name *is* an id, or the proposed id already exists); any part. An id a fact had
+        #    before it moved to its family (P26c) is that fact's.
         for candidate in (name.strip(), new_id):
             if is_valid_id(candidate) and any(n.id == candidate for n in everything):
                 return Match(candidate, "id")
+            if is_valid_id(candidate) and candidate in self.merged and any(n.id == self.merged[candidate] for n in everything):
+                return Match(self.merged[candidate], "id")
 
         # 2–3. engineering tags: same asset scope first, then any scope of the same type
         tags = [tag_key(t) for t in ([tag] if tag else []) + tags_in(name)]

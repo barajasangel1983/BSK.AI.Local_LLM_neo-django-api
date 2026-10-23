@@ -449,6 +449,8 @@ def approve(triples: list[CandidateTriple]) -> dict:
                     errors[t.pk] = missing
                     continue
             asset_scope = (t.job.params.get("asset_id") if t.job else "") or None
+            if t.mode == "schema":
+                _follow_moves(s, t)
             try:
                 if t.mode == "schema":
                     s.execute_write(_commit_curated, t, schema, asset_scope)
@@ -465,6 +467,23 @@ def approve(triples: list[CandidateTriple]) -> dict:
             approved.append(t.pk)
             layers[t.layer] += 1
     return {"approved": approved, "errors": errors, "layers": layers}
+
+
+def _follow_moves(s, t: CandidateTriple) -> None:
+    """A triple staged (or approved) before its fact moved to its family (P26c) names the fact's old id: it now
+    means the node that holds that id in `merged_ids`. The triple is saved with the current ids, and the approved
+    triple's record of what it added follows them (so a delete still undoes it)."""
+    from .fact_moves import current_id
+
+    now = {end: s.execute_read(current_id, getattr(t, f"{end}_id")) for end in ("subject", "object")}
+    moved = {getattr(t, f"{end}_id"): new for end, new in now.items() if new != getattr(t, f"{end}_id")}
+    if not moved:
+        return
+    t.subject_id, t.object_id = now["subject"], now["object"]
+    for field_name in ("applied_props", "applied_aliases", "replaced_props"):
+        value = getattr(t, field_name) or {}
+        setattr(t, field_name, {moved.get(k, k): v for k, v in value.items()})
+    t.save(update_fields=["subject_id", "object_id", "applied_props", "applied_aliases", "replaced_props", "updated_at"])
 
 
 def _is_machine_link(t: CandidateTriple) -> bool:
@@ -553,6 +572,8 @@ def delete(triples: list[CandidateTriple]) -> int:
     if committed:
         with session() as s:
             for t in committed:
+                if t.mode == "schema":
+                    _follow_moves(s, t)
                 s.execute_write(_uncommit, t)
     count = len(triples)
     evidence_ids = list(CandidateTriple.evidence.through.objects.filter(candidatetriple_id__in=[t.pk for t in triples])
