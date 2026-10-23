@@ -486,6 +486,13 @@ def reject(triples: list[CandidateTriple]) -> int:
     return CandidateTriple.objects.filter(pk__in=ids).update(status=CandidateTriple.Status.REJECTED, updated_at=timezone.now())
 
 
+def unreject(triples: list[CandidateTriple]) -> int:
+    """Rejected triples back to pending (P26b-1, "Back to pending"): edits, evidence, anchor and `moved_from` are kept.
+    Pending and approved ones are left as they are. A new run of the same facet and anchor replaces them again."""
+    ids = [t.pk for t in triples if t.status == CandidateTriple.Status.REJECTED]
+    return CandidateTriple.objects.filter(pk__in=ids).update(status=CandidateTriple.Status.PENDING, updated_at=timezone.now())
+
+
 def _uncommit(tx, t: CandidateTriple) -> None:
     """Remove what an approved triple wrote; clean up what it leaves orphaned."""
     if t.layer == CandidateTriple.Layer.LAB:
