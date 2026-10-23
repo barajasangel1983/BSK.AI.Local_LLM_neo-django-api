@@ -8,7 +8,7 @@
     POST   extract/                       Generate triples {document_ids, mode, chunking, presets, asset_id}
     GET    triples/?document=&data_file=&status=&mode=&issues=1&new=1&q=&offset=&limit=   (&fields=ids: matching ids only)
     PATCH  triples/<id>/                  edit a pending/rejected triple
-    POST   triples/approve/ | reject/ | delete/   {ids: [...]}
+    POST   triples/approve/ | reject/ | unreject/ | delete/   {ids: [...]}   (unreject: rejected back to pending)
     POST   triples/<id>/promote/          lab triple -> curated {subject_type, predicate, object_type, subject_id?, object_id?}
 """
 
@@ -365,6 +365,16 @@ def triples_reject(request):
     if isinstance(selected, Response):
         return selected
     return Response({"rejected": triples.reject(selected)})
+
+
+@api_view(["POST"])
+def triples_unreject(request):
+    """Rejected triples back to pending (P26b-1)."""
+    selected = _selected(request)
+    if isinstance(selected, Response):
+        return selected
+    pending = triples.unreject(selected)
+    return Response({"pending": pending, "skipped": len(selected) - pending})
 
 
 @api_view(["POST"])

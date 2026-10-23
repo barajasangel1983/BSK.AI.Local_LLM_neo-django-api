@@ -57,7 +57,7 @@ from django.utils import timezone
 
 from usage import recorder as usage
 
-from . import registry, repository
+from . import registry, repository, review_checks
 from .driver import GraphUnavailable, session
 from .ids import clean_part, is_valid_id, make_id
 from . import evidence, facets
@@ -837,6 +837,12 @@ def run_extract(job) -> None:
         _run_facets(job, doc, params)
     else:
         _extract(job, doc, params)
+    try:      # P26b-1: across the job's facet runs (the same name under two types, likely duplicates); never fails the job
+        flagged = review_checks.flag_job(job)
+        if flagged:
+            logger.info("review checks flagged %d triples doc=%s", flagged, doc.doc_key)
+    except Exception:
+        logger.exception("review checks failed doc=%s", doc.doc_key)
 
 
 def _run_facets(job, doc, params: dict) -> None:
@@ -1217,6 +1223,8 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
                     issue = "product families and device models come from the BOM's model list, not extracted"
             except ValueError as exc:  # a name with no usable id characters
                 issue = str(exc)[:255]
+        if not issue:     # P26b-1: what the QUINT4-PS review rejected by hand (a rating with no value, a "Row 3" name)
+            issue = review_checks.triple_issue(t["object_type"], t["object"], props.get("object") or {})
     return CandidateTriple(
         document=doc, job=job, mode=mode,
         subject_name=t["subject"], subject_type=t["subject_type"], subject_id=subject_id, subject_existing=subject_existing,
