@@ -133,6 +133,8 @@ def delete_all_entities(tx) -> int:
 
 def get_node(tx, node_id: str) -> dict:
     record = tx.run("MATCH (n:Entity {id: $id}) RETURN n", id=node_id).single()
+    if record is None:   # an id a fact had before it moved to its family (P26c, `merged_ids`)
+        record = tx.run("MATCH (n:Entity) WHERE $id IN n.merged_ids RETURN n LIMIT 1", id=node_id).single()
     if record is None:
         raise NodeNotFound(node_id)
     return serialize_node(record["n"])
