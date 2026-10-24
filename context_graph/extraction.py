@@ -161,6 +161,9 @@ Rules:
   Steps or instructions without a title of their own (a list under a heading) are the procedure named by the
   Section below, e.g. Section "Regreasing while the motor is running": <part> HAS_PROCEDURE
   "Regreasing while the motor is running", with the steps, short, in "summary".
+  - A Procedure is what someone does on the product where it is installed. Not one: what the manufacturer does
+    at the factory, and text that explains what a test or a feature is for. One task is one Procedure, even when
+    the text describes it twice.
 - A table of values for many sizes or variants (e.g. lubrication intervals and grease amounts by frame size
   and speed): find the row of the part this document describes. Its frame size is usually the number in its
   model designation (e.g. 355 in "M3BP 355MLA 4"). Its speed column follows from its poles and supply frequency:
@@ -172,7 +175,10 @@ Rules:
   If no row applies to the part, return nothing for the table.
 - INDICATED_BY only to an alarm or a signal listed as existing below, by its exact name, and only when the
   text clearly means it. Never create a new Signal or Alarm.
-- A sub-part (bearing, fan, shaft seal) only when the text names it as a part of this product.
+- A sub-part (bearing, fan, shaft seal, indicator LED) only when the text names it as a part built into this
+  product. Not sub-parts: accessories, mounting adapters, and protection the text recommends installing outside
+  it (fuses, circuit breakers), even when the text gives their makers or order numbers.
+- Name each item as the text names it, never after a figure's callout number ("LED 1", "item 3").
 - First a key "note": one or two sentences on which procedures (with any interval or amount) and which troubles
   this text gives about the part, or that it gives none. Then the triples.
 - Return ONLY compact JSON:
@@ -204,6 +210,26 @@ Rules:
   - A range: "min" and "max". A single value: "value". Always "unit" when the text gives one.
   - "condition": when it applies, if the text says (a pulse frequency, a version, "with display").
   - "basis": the table, its row and its column, or the section.
+  - Name it after its own row or line, with the row's label as the text writes it, never after a table's title.
+    Never "Row 3" or "Column 2" in a name.
+- A Specification needs a value, or a min/max, that the text states for it. An empty cell ("not required", "–",
+  "n/a", a symbol) or a condition alone (a voltage, a temperature) is not a value: skip the row. A yes or no and
+  a value in words are values: keep them ("yes", "No, external fuse required", "DIN rail", a list of approvals).
+- One Specification holds the values of one row or one statement. Never combine the values of different rows or
+  of different features into one. When one row gives a value for each of several conditions (input voltages,
+  temperatures, loads, columns such as "120 V AC" and "230 V AC"), each value is its own Specification with its
+  condition in "condition": keep them all.
+- A test condition (a frequency band, a test voltage) and a pass/fail criterion are the "condition" of the result
+  they belong to, never a Specification of their own. Each test level with its own result is its own
+  Specification, with its level in "condition".
+- A value or range the user can set (a setting, a configuration or signal option, a threshold, a factory setting)
+  is a parameter, not a rating: return nothing for it. What the device can do is still a rating, even when the
+  user picks within it (a selectable resolution of 12-16 bits, a supported range).
+- Variants: when the text gives values for several variants of the product (sizes, frame sizes, versions; not
+  operating conditions such as a voltage or a temperature), use only the variant
+  the context names; if the context names none, give each value with its variant in "condition".
+- One value per property: never list alternatives in one property. Values for different conditions are not
+  alternatives: each is its own Specification (above).
 - A table for many models, sizes or variants: only the row or column of the part this document describes
   (its model designation, power or order code). If none applies, return nothing for the table.
 - A rating of the part is never an OperatingLimit: those are the process's limits on a signal.
@@ -233,18 +259,55 @@ Properties an entity may have (only these names):
 
 Rules:
 - Only what the text states; never guess a value, a default or a range.
-- Parameters: only those the text tells you to set or check (commissioning, terminal functions, limits, ramps,
-  fieldbus, motor data, protection), or that an alarm or a procedure names. Not every parameter mentioned in a
-  function diagram.
-  - Each is ONE Parameter: <device> HAS_PARAMETER <parameter>, named as the text names it ("Maximum speed"), with
-    "code" exactly as written (p1082, r0021, 01.01) and the subtype Setting (can be changed) or Readout (display
-    only, r…). "default", "min", "max", "unit", "access", "data_set" when the text gives them.
-- Terminals: each is ONE IOPoint: <device> HAS_IO <terminal>, named "DI 0", "AI 0", "Relay output DO 0",
-  with "connector" (-X138), "terminal" (5), "signal_type" (24 V DC, 0-10 V, 0/4-20 mA, NO contact) and "direction".
-  The parameter that sets a terminal's function: <terminal> CONFIGURED_BY <parameter>.
-- Interfaces: <device> COMMUNICATES_VIA <interface> (PROFINET, PROFIBUS, USS, Modbus RTU, USB, operator panel), with
-  "protocol", "connector", "address_range", "telegram" when given.
+- A parameter is a fact here only when the text does one of these with it:
+  - tells the reader to set, enter, select, change or check it ("Set p1082 to …", "Set parameter 99.04", "Enter the
+    measuring range in the setup menu");
+  - lists it as a step or a row of commissioning (quick commissioning, basic settings);
+  - names it as the function of a terminal or an interface (an input's function, the fieldbus address);
+  - names it in an alarm, a fault or a procedure.
+  A parameter number that only appears as a label in a figure, a function diagram, a block diagram, or a list or
+  index of parameters is not a fact here: leave it out. A readout only when the text says to check it.
+  - A parameter the text tells you to set but names without its number ("set the controller parameters KP, TI and
+    Td", "select the application class") is still a fact: keep it, named as the text names it, with "code" empty
+    unless its number is written next to it in the same text. A number shown on an operator panel's display is its
+    code as written.
+  - Each is ONE Parameter: <device> HAS_PARAMETER <parameter>, named exactly as the text names it, in at most six
+    words ("Maximum speed", "Damping"), with "code" exactly as the manual writes it (p1082, 01.01, 2.03, a menu
+    path) and the subtype Setting (can be changed) or Readout (display only). Only the properties the text states: "default", "min", "max", "unit",
+    "access", "data_set". No descriptions.
+  - A Parameter is one named setting the text gives, never a category or a general phrase ("the signaling
+    parameters", "the settings").
+- Terminals: each is ONE IOPoint per signal channel of the device: a digital or analog input or output, a relay
+  output, a sensor input, a supply output or a supply input. <device> HAS_IO <terminal>, named as the manual names
+  that channel (for example "DI 0", "DI1", "Current output 1", "Relay 2"); when the text gives a short code and a
+  name together ("Rem, remote input"), use the name and put the code in "terminal". Its properties, one value each:
+  - "terminal": all its terminal numbers, with each contact's role in brackets when the text gives it
+    ("18 (NC), 19 (NO), 20 (COM)", "3 (+), 4 (−)");
+  - "connector": the terminal strip or connector the channel is on;
+  - "signal_type" (24 V DC, 0-10 V, 4-20 mA, relay contact) and "direction" when given.
+  Not an IOPoint, even when the text lists it with the terminals:
+  - one contact or pin of a channel (+ or −, NO, NC, COM): it goes in that channel's "terminal";
+  - a terminal strip or a connector as a whole (a name such as "terminal strip …", "connector …" or only a strip
+    designation): never return it as an IOPoint or a Component; put it in the "connector" of each channel on it;
+  - a bit of a control word or a status word, and a signal inside the device;
+  - an LED, a display or a switch on the device;
+  - a terminal named only by its kind ("a digital input", "an input for an external fault"), and a figure's
+    callout number.
+- <terminal> CONFIGURED_BY <parameter> only when the text says this parameter sets this terminal's function or
+  type. A parameter in a neighbouring row or line of a table is not that.
+- Variants: when the text shows terminals, connectors or values for several variants (sizes, frame sizes,
+  versions), use only those of the variant the context names. If the context names no variant, keep only what all
+  the variants share.
+- One value per property: when the text gives several, take the one for this device; never list alternatives in
+  one property.
+- Interfaces: <device> COMMUNICATES_VIA <interface>, ONE per communication protocol or port, named by the protocol as
+  the manual writes it (for example PROFINET, Modbus RTU, HART, EtherNet/IP, IO-Link, a service or operator panel
+  port), with "protocol", "connector", "address_range", "telegram" when given; data formats (telegrams, profiles,
+  register maps) are its properties. Configuration software and apps are not interfaces.
 - A commissioning step that sets a parameter: <procedure> SETS <parameter> (the procedure as the text names it).
+- Numbered presets of what the inputs and outputs do (macros, application presets, default settings): only the
+  parameter that selects them as ONE Parameter, with the presets in "default" or "min"/"max" as the text gives
+  them. Not each preset's terminal assignments: only one preset is active on a device.
 - A table or list for several models or sizes: only what applies to the device this document describes.
 - Never create a Signal, an Alarm, a Specification (ratings are another run) or an OperatingLimit.
 - First a key "note": one sentence on what this text gives about the device's setup and connections, or that it gives
@@ -751,17 +814,80 @@ def clean_properties(value) -> dict:
     return out
 
 
+# Free text, where each find can add its part (a procedure's steps over two windows, the tables a rating was read
+# from): joined, not voted on. Every other property (terminal, code, default, unit, subtype …) keeps one value.
+JOINED_PROPS = {"basis", "summary", "description", "cause", "causes", "consequence", "corrective_action", "effect", "notes"}
+
+
 def merge_properties(old: dict, new: dict) -> dict:
-    """Two finds of the same triple: lists are joined, a text found again is added once; nothing is dropped."""
+    """Two finds of the same triple: lists are joined, a property missing is added. A text property keeps its value
+    (P26b-2: joining gave "5; DI 0; 5; DI 0; F-DI 0"; `Votes` picks the most frequent at the end of a run), except
+    the JOINED_PROPS, where a text found again is added once. With GRAPH_SINGLE_VALUES off, every text is joined."""
     out = dict(old or {})
     for key, v in (new or {}).items():
         if key not in out:
             out[key] = v
         elif isinstance(out[key], list):
             out[key] = list(dict.fromkeys(out[key] + (v if isinstance(v, list) else [str(v)])))[:MAX_LIST]
-        elif isinstance(out[key], str) and isinstance(v, str) and v not in out[key]:
+        elif (key in JOINED_PROPS or not settings.GRAPH_SINGLE_VALUES) and isinstance(out[key], str) \
+                and isinstance(v, str) and v not in out[key]:
             out[key] = f"{out[key]}; {v}"[:MAX_PROPERTY]
     return out
+
+
+def _same(v) -> str:
+    return " ".join(str(v).split()).casefold()
+
+
+def differing(old: dict, new: dict) -> list[str]:
+    """The single-valued properties two finds give different values for (P26b-2), as review notes."""
+    if not settings.GRAPH_SINGLE_VALUES:
+        return []
+    return [disagreement(k, [(str(old[k]), 1), (str(v), 1)]) for k, v in (new or {}).items()
+            if k in (old or {}) and k not in JOINED_PROPS and not isinstance(v, list) and not isinstance(old[k], list)
+            and _same(old[k]) != _same(v)]
+
+
+def disagreement(prop: str, counts: list[tuple[str, int]]) -> str:
+    """The review's note for a property found with different values: "pages disagree on terminal: 5 (3×) | F-DI 0"."""
+    return f"pages disagree on {prop}: " + " | ".join(f"{v} ({n}×)" if n > 1 else v for v, n in counts)
+
+
+class Votes:
+    """P26b-2: the values each staged triple's single-valued properties were found with, so the run keeps the most
+    frequent (the first on a tie) and tells the reviewer about the others."""
+
+    def __init__(self):
+        self.counts: dict[tuple[int, str, str], dict[str, list]] = {}
+
+    def add(self, triple, end: str, props: dict | None) -> None:
+        for key, v in (props or {}).items():
+            if isinstance(v, list) or key in JOINED_PROPS:
+                continue
+            seen = self.counts.setdefault((id(triple), end, key), {})
+            entry = seen.setdefault(_same(v), [v, 0])
+            entry[1] += 1
+
+    def settle(self, triples) -> int:
+        """Each property to its most frequent value; the others in the triple's issue (one already there is kept)."""
+        changed = 0
+        for t in triples:
+            notes = []
+            for end in ("subject", "object"):
+                props = getattr(t, f"{end}_props") or {}
+                for key in list(props):
+                    seen = self.counts.get((id(t), end, key)) or {}
+                    if len(seen) < 2:
+                        continue
+                    ranked = sorted(seen.values(), key=lambda e: -e[1])        # stable: the first found wins a tie
+                    props[key] = ranked[0][0]
+                    notes.append(disagreement(key, [(str(v), n) for v, n in ranked]))
+                setattr(t, f"{end}_props", props)
+            if notes:
+                changed += 1
+                if not t.issue:
+                    t.issue = "; ".join(notes)[:255]
+        return changed
 
 
 def split_text(text: str) -> list[str]:
@@ -926,10 +1052,13 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     from ingestion.chunking import chunk_parsed
     from ingestion.models import Document
 
-    def beat(done=None, total=None, message=None):
-        library.heartbeat(job, done, total, f"{label}: {message}" if label and message else message)
+    dry = bool(params.get("dry_run"))      # P26b-2: the real path, nothing staged (manage.py extract_dry_run)
 
-    refused = reviewed_on_parts(doc, params.get("anchor_id") or "")
+    def beat(done=None, total=None, message=None):
+        if job is not None:
+            library.heartbeat(job, done, total, f"{label}: {message}" if label and message else message)
+
+    refused = "" if dry else reviewed_on_parts(doc, params.get("anchor_id") or "")
     if refused:
         raise ExtractionError(refused)
     parsed = library.load_parsed(doc)
@@ -971,7 +1100,7 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
         raise ExtractionError("the document produced no text windows")
 
     schema = registry.active_schema()
-    presets = {m: PromptPreset.objects.get(pk=pk) for m, pk in params["presets"].items()}
+    presets = params.get("preset_objects") or {m: PromptPreset.objects.get(pk=pk) for m, pk in params["presets"].items()}
     index = EntityIndex.load()
     scope_key = scope_key_for(params, doc)
     part = part_scope_for(params, index, scope_key)
@@ -985,12 +1114,14 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
 
     staged: dict[tuple, CandidateTriple] = {}
     found: dict[int, list[Evidence]] = {}   # id(triple) -> one Evidence per window it was found in
-    reviewed = {  # already approved/rejected in an earlier run: not staged again
+    votes, channels = Votes(), Channels()   # P26b-2: one value per property, one id per channel
+    reviewed = set() if dry else {  # already approved/rejected in an earlier run: not staged again
         triple_key(t.mode, t.subject_name, t.subject_type, t.predicate, t.object_name, t.object_type)
         for t in CandidateTriple.objects.filter(document=doc).exclude(status=CandidateTriple.Status.PENDING)
     }
     done = failed = skipped = 0
     left: set[tuple] = set()      # distinct triples left to another facet run
+    strips: set[str] = set()      # strips and connectors returned as IOPoints, dropped (P26b-2)
     leave_types = set(params.get("leave_types") or ())   # owned by another facet run of the same job (P22c-0)
     keep_links = set(params.get("keep_links") or ())     # a facet run stages only its own links (empty: all)
 
@@ -1003,6 +1134,10 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             t = map_anchor(t, anchor)
             candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model, part=part)
             candidate.anchor_id = params.get("anchor_id") or ""
+            if settings.GRAPH_SINGLE_VALUES and strip_as_channel(candidate):
+                strips.add(candidate.object_name if candidate.object_type == "IOPoint" else candidate.subject_name)
+                continue
+            channels.unify(candidate)
             key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
                              candidate.object_name, candidate.object_type)
             if (candidate.subject_type in leave_types or candidate.object_type in leave_types
@@ -1012,6 +1147,9 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             if key in reviewed:
                 skipped += 1
                 continue
+            if settings.GRAPH_SINGLE_VALUES:
+                votes.add(staged.get(key, candidate), "subject", candidate.subject_props)
+                votes.add(staged.get(key, candidate), "object", candidate.object_props)
             if key in staged:
                 if (t["confidence"] or 0) > (staged[key].confidence or 0):
                     staged[key].confidence = t["confidence"]
@@ -1101,6 +1239,10 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             drawings_note = "drawings were not read: the BSK PC was not reachable"
             logger.warning("drawing triples skipped doc=%s: %s", doc.doc_key, exc)
 
+    disagreed = votes.settle(staged.values())
+    if dry:
+        return {"staged": len(staged), "failed": failed, "skipped": skipped, "left": len(left), "disagreed": disagreed,
+                "strips_dropped": sorted(strips), "triples": list(staged.values()), "evidence": {k: len(v) for k, v in found.items()}}
     with transaction.atomic():
         # A new run replaces the document's pending triples of the prompts it ran (P22c-0: per prompt, not per mode:
         # a Ratings run no longer erases a Maintenance run's pending triples); reviewed ones are kept. With a part, only
@@ -1122,8 +1264,9 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     )
     note = f", {skipped} already reviewed" if skipped else ""
     beat(total, total, f"{len(staged)} triples staged for review{note}")
-    logger.info("extraction done doc=%s windows=%d/%d table_parts=%d triples=%d failed_calls=%d anchor=%s", doc.doc_key,
-                len(selected), all_windows, len(table_parts), len(staged), failed, params.get("anchor_id") or "-")
+    logger.info("extraction done doc=%s windows=%d/%d table_parts=%d triples=%d failed_calls=%d strips_dropped=%d anchor=%s",
+                doc.doc_key, len(selected), all_windows, len(table_parts), len(staged), failed, len(strips),
+                params.get("anchor_id") or "-")
     return {"staged": len(staged), "failed": failed, "skipped": skipped, "left": len(left)}
 
 
@@ -1257,6 +1400,57 @@ def normalize_code(code: str) -> tuple[str, str]:
         return code, ""
     letter, number, index, suffix = m.groups()
     return f"{letter.lower()}{int(number):04d}", (index or suffix or "").strip()
+
+
+_FIRST_TERMINAL = re.compile(r"^\s*(\d{1,4})(?!\s*[.,]\d)\b")
+
+
+def first_terminal(terminal) -> str:
+    """The first terminal number of a channel ("18, 19, 20" -> "18", "3 (AI 0+), 4 (AI 0-)" -> "3"); "" for none
+    ("DI 0", "L1")."""
+    first = re.split(r"[,;]", str(terminal or ""), maxsplit=1)[0]
+    m = _FIRST_TERMINAL.match(first)
+    return m.group(1) if m else ""
+
+
+# P26b-2: a strip or connector as a whole is not a channel. The G120C runs returned "Terminal strip -X136" as an
+# IOPoint even with a prompt rule against it; dropped at staging, counted in the result. Only a name that is the strip
+# word with at most a designation ("Terminal strip -X136", "Connector X1", "-X138"), never a channel named after it.
+_STRIP_NAME = re.compile(r"^\s*(?:(?:terminal\s+(?:strip|block)|connector|plug)s?\s*[:.]?\s*(?:-?[a-z]{0,3}\d+[a-z]?)?"
+                         r"|-?x\d+[a-z]?)\s*$", re.I)
+
+
+def strip_as_channel(c) -> bool:
+    return any(getattr(c, f"{end}_type") == "IOPoint" and _STRIP_NAME.match(getattr(c, f"{end}_name") or "")
+               for end in ("subject", "object"))
+
+
+class Channels:
+    """P26b-2: within one run, one channel is one IOPoint id. A channel staged first by its name (DI-0) and then with
+    its strip and terminal (X138-5), or the other way round, was two nodes on the G120C. Later finds take the id of
+    the first one with the same name, or with the same strip and first terminal number (the strip must agree: many
+    devices number each strip from 1)."""
+
+    def __init__(self):
+        self.by_name: dict[str, str] = {}
+        self.by_terminal: dict[tuple[str, str], str] = {}
+
+    def unify(self, c) -> None:
+        if not settings.GRAPH_SINGLE_VALUES:
+            return
+        for end in ("subject", "object"):
+            if getattr(c, f"{end}_type") != "IOPoint" or getattr(c, f"{end}_existing"):
+                continue
+            p = getattr(c, f"{end}_props") or {}
+            name = normalize(getattr(c, f"{end}_name"))
+            term = (_same(p.get("connector") or ""), first_terminal(p.get("terminal")))
+            known = self.by_name.get(name) or (self.by_terminal.get(term) if term[1] else None)
+            node_id = known or getattr(c, f"{end}_id")
+            if known and known != getattr(c, f"{end}_id"):
+                setattr(c, f"{end}_id", known)
+            self.by_name.setdefault(name, node_id)
+            if term[1]:
+                self.by_terminal.setdefault(term, node_id)
 
 
 def _keyed(t: dict, end: str, props: dict, scope_key: str, part) -> dict:
