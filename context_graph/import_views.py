@@ -46,6 +46,9 @@ def datafile_json(df: DataFile, counts: dict | None = None) -> dict:
         "asset_id": df.asset_id or None, "mapping": df.mapping or None,
         "uploaded_at": df.uploaded_at.isoformat(), "staged_at": df.staged_at.isoformat() if df.staged_at else None,
         "triples": counts,
+        "superseded_by": str(df.superseded_by_id) if df.superseded_by_id else None,       # P26f
+        "superseded_by_uploaded_at": df.superseded_by.uploaded_at.isoformat() if df.superseded_by_id else None,
+        "superseded_at": df.superseded_at.isoformat() if df.superseded_at else None,
     }
 
 
@@ -71,7 +74,14 @@ def datafiles(request):
                     .values("data_file_id", "status").annotate(n=Count("id"))):
             counts.setdefault(row["data_file_id"], {s: 0 for s in CandidateTriple.Status.values})[row["status"]] = row["n"]
         empty = {s: 0 for s in CandidateTriple.Status.values}
-        return Response({"data_files": [datafile_json(df, counts.get(df.id, empty)) for df in DataFile.objects.all()]})
+        files = list(DataFile.objects.select_related("superseded_by"))
+        # P26f: older versions of a file are hidden unless ?all=1; the list says how many, and how many still have
+        # pending triples, so nothing waiting for review is out of sight without a word.
+        older = [df for df in files if df.superseded_by_id]
+        shown = files if request.query_params.get("all") in ("1", "true") else [df for df in files if not df.superseded_by_id]
+        return Response({"data_files": [datafile_json(df, counts.get(df.id, empty)) for df in shown],
+                         "older_versions": {"count": len(older),
+                                            "with_pending": sum(1 for df in older if counts.get(df.id, empty)["pending"])}})
     files = request.FILES.getlist("files")
     if not files:
         return _error("no files uploaded (multipart field 'files')")

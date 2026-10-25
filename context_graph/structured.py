@@ -117,6 +117,13 @@ def add_data_file(uploaded) -> tuple[DataFile, bool]:
     return df, True
 
 
+def supersede(df: DataFile) -> int:
+    """The other files with the same filename and asset are older versions of `df`, the one staged last (P26f).
+    Nothing of theirs changes but the mark: their triples and evidence stay. Returns how many were marked."""
+    return (DataFile.objects.filter(filename=df.filename, asset_id=df.asset_id).exclude(pk=df.pk)
+            .exclude(superseded_by=df).update(superseded_by=df, superseded_at=df.staged_at or timezone.now()))
+
+
 def delete_data_file(df: DataFile) -> dict:
     """Remove the file; its approved triples are taken back out of the graph first."""
     from . import triples
@@ -788,6 +795,8 @@ def stage(df: DataFile, mapping: dict, asset_id: str) -> dict:
     evidence.attach(CandidateTriple.objects.bulk_create(fresh), result.evidence)
     evidence.drop_orphans(data_file=df)
     df.mapping, df.asset_id, df.staged_at = mapping, asset_id or "", timezone.now()
-    df.save(update_fields=["mapping", "asset_id", "staged_at"])
+    df.superseded_by, df.superseded_at = None, None
+    df.save(update_fields=["mapping", "asset_id", "staged_at", "superseded_by", "superseded_at"])
+    supersede(df)
     return {**result.stats(), "staged": len(fresh), "already_reviewed": len(result.triples) - len(fresh),
             "row_error_list": result.row_errors[:100]}
