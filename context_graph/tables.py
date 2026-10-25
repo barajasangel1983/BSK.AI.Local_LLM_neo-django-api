@@ -38,6 +38,9 @@ class Table:
     header: list[str]
     rows: list[list[str]]
     last_page: int = 0
+    char_start: int = -1            # P25b: where the table and each row sit in the parsed Markdown
+    char_end: int = -1
+    row_spans: list[tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -47,6 +50,10 @@ class TableWindow:
     page_end: int
     section_path: list[str] = field(default_factory=list)
     text: str = ""
+    char_start: int | None = None   # P25b: the part's rows in the parsed Markdown, and their numbers in the table
+    char_end: int | None = None
+    row_start: int | None = None
+    row_end: int | None = None
 
 
 def _cells(line: str) -> list[str]:
@@ -66,8 +73,14 @@ def find_tables(md: str) -> list[Table]:
     """Every Markdown table of a parsed document, with its page (1-based), caption and section."""
     tables: list[Table] = []
     section = ""
+    base = 0                        # real offset of the page in `md`
     for page_no, page in enumerate(md.split(PAGE_BREAK), start=1):
         lines = page.splitlines()
+        starts, pos = [], base
+        for line in page.splitlines(keepends=True):
+            starts.append(pos)
+            pos += len(line)
+        base += len(page) + len(PAGE_BREAK)
         i = 0
         recent: list[str] = []          # the last non-empty lines before a table: its caption is there
         while i < len(lines):
@@ -80,7 +93,7 @@ def find_tables(md: str) -> list[Table]:
                     recent = (recent + [line.strip()])[-4:]
                 i += 1
                 continue
-            block = []
+            block, first = [], i
             while i < len(lines) and is_table_line(lines[i]):
                 block.append(lines[i])
                 i += 1
@@ -88,6 +101,8 @@ def find_tables(md: str) -> list[Table]:
                 continue
             header = _cells(block[0])
             rows = [_cells(b) for b in block[1:] if not RULE_RE.match(b.strip())]
+            row_spans = [(starts[first + k], starts[first + k] + len(b)) for k, b in enumerate(block)
+                         if k and not RULE_RE.match(b.strip())]
             caption = next((m.group(1).strip() for m in map(CAPTION_RE.match, reversed(recent)) if m), "")
             previous = tables[-1] if tables else None
             if (not caption and previous and previous.header == header
@@ -96,7 +111,8 @@ def find_tables(md: str) -> list[Table]:
             else:
                 table_section = section
             tables.append(Table(page=page_no, caption=caption, section=table_section, header=header, rows=rows,
-                                last_page=page_no))
+                                last_page=page_no, char_start=starts[first],
+                                char_end=starts[i - 1] + len(lines[i - 1]), row_spans=row_spans))
             recent = []
     return tables
 
@@ -107,18 +123,18 @@ def _is_heading_row(row: list[str]) -> bool:
 
 def windows(table: Table, number: int, max_rows: int = MAX_ROWS) -> list[tuple[int, TableWindow]]:
     """(chunk index, window) for the parts of one table: rows with the same first cell stay together."""
-    groups: list[tuple[str, list[list[str]]]] = []      # (heading inside the table, rows)
+    groups: list[tuple[str, list[tuple[int, list[str]]]]] = []      # (heading inside the table, (row number, row))
     heading = ""
-    for row in table.rows:
+    for number_in_table, row in enumerate(table.rows):
         if _is_heading_row(row):
             heading = row[0]
             continue
-        same = groups and groups[-1][0] == heading and groups[-1][1] and (not row[0] or row[0] == groups[-1][1][-1][0])
+        same = groups and groups[-1][0] == heading and groups[-1][1] and (not row[0] or row[0] == groups[-1][1][-1][1][0])
         if same:
-            groups[-1][1].append(row)
+            groups[-1][1].append((number_in_table, row))
         else:
-            groups.append((heading, [row]))
-    parts: list[tuple[str, list[list[str]]]] = []
+            groups.append((heading, [(number_in_table, row)]))
+    parts: list[tuple[str, list[tuple[int, list[str]]]]] = []
     for heading, rows in groups:
         for start in range(0, len(rows), max_rows):        # one group longer than a part: cut it
             chunk = rows[start:start + max_rows]
@@ -128,7 +144,8 @@ def windows(table: Table, number: int, max_rows: int = MAX_ROWS) -> list[tuple[i
                 parts.append((heading, list(chunk)))
     out = []
     title = table.caption or "Table"
-    for n, (heading, rows) in enumerate(parts):
+    for n, (heading, numbered) in enumerate(parts):
+        rows = [r for _, r in numbered]
         lines = [f"{title}" + (f" (section: {table.section})" if table.section else "") + f", page {table.page}.",
                  "Read it row by row: each row is one fact; every value is given with its column."]
         if heading:
@@ -144,8 +161,12 @@ def windows(table: Table, number: int, max_rows: int = MAX_ROWS) -> list[tuple[i
         lines.append('Before "triples", add a key "note": in one or two sentences, which rows (and which columns) of this '
                      'part of the table apply, and why; or why none does.')
         section_path = [p for p in (table.section, table.caption) if p]
+        first, last = numbered[0][0], numbered[-1][0]
+        spans = table.row_spans if len(table.row_spans) == len(table.rows) else []
         out.append((TABLE_CHUNK_BASE + number * 1000 + n,
-                    TableWindow(page_start=table.page, page_end=table.page, section_path=section_path, text="\n".join(lines))))
+                    TableWindow(page_start=table.page, page_end=table.page, section_path=section_path, text="\n".join(lines),
+                                char_start=spans[first][0] if spans else None, char_end=spans[last][1] if spans else None,
+                                row_start=first + 1, row_end=last + 1)))
     return out
 
 

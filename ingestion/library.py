@@ -147,6 +147,18 @@ def load_parsed(doc: Document, with_figures: bool = True) -> dict:
     return parsed
 
 
+def text_snapshot(doc: Document, parsed: dict | None = None):
+    """The document's canonical text (the Markdown both pipelines chunk, figure descriptions in place) as an
+    immutable snapshot, saved the first time this version is seen (P25b). None when there is no text or spans are off."""
+    from . import spans
+
+    if not settings.EVIDENCE_SPANS or (parsed is None and not parsed_path(doc).exists()):
+        return None
+    parsed = parsed if parsed is not None else load_parsed(doc)
+    md = (parsed.get("document") or {}).get("md_content") or ""
+    return spans.Snapshot.save(doc_dir(doc) / "text", md) if md else None
+
+
 # --- jobs -------------------------------------------------------------------
 
 @transaction.atomic
@@ -454,6 +466,12 @@ def _run_parse_parts(job: Job, doc: Document, pages: int, size: int) -> None:
     heartbeat(job, pages, pages, f"parsed {pages} pages in {len(parts)} parts")
 
 
+def chunk_span(snap, chunk) -> dict:
+    """A chunk's span as Chroma metadata (no empty values: Chroma refuses them)."""
+    fields = snap.locate(chunk.text, chunk.page_start, chunk.page_end).fields(snap.hash)
+    return {k: v for k, v in fields.items() if v is not None}
+
+
 def run_embed(job: Job) -> None:
     doc = Document.objects.get(pk=job.document_id)
     strategy = job.params.get("strategy", DEFAULT_STRATEGY)
@@ -495,6 +513,7 @@ def run_embed(job: Job) -> None:
     place = chunk_metadata(doc)
 
     variant = variant_key(strategy, params)
+    snap = text_snapshot(doc, parsed)       # P25b: each chunk's place in the document's text
     metadatas = [
         {
             "source": doc.filename,
@@ -510,6 +529,7 @@ def run_embed(job: Job) -> None:
             **place,
             **({"language": page_lang[c.page_start - 1] or "neutral"}
                if page_lang and c.page_start and c.page_start <= len(page_lang) else {}),
+            **(chunk_span(snap, c) if snap is not None else {}),
         }
         for c in chunks
     ]

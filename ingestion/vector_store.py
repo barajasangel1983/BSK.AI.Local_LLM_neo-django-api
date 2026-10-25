@@ -115,6 +115,18 @@ class VectorStore:
             coll.update(ids=ids[start:start + step], metadatas=metas)
         return len(ids)
 
+    def document_chunks(self, asset_id: str) -> dict:
+        """One document's chunks: {ids, documents, metadatas} (no embeddings)."""
+        return self._get_collection().get(where={"asset_id": asset_id}, include=["documents", "metadatas"])
+
+    def update_chunk_metadata(self, ids: List[str], metadatas: List[Dict[str, Any]]) -> int:
+        """Replace the metadata of these chunks (P25b spans): ids and embeddings stay."""
+        coll = self._get_collection()
+        step = self.max_batch()
+        for start in range(0, len(ids), step):
+            coll.update(ids=ids[start:start + step], metadatas=metadatas[start:start + step])
+        return len(ids)
+
     def max_batch(self) -> int:
         """Records per Chroma call: the client's limit, capped at 2000 (1000 if it can't say)."""
         self._get_collection()
