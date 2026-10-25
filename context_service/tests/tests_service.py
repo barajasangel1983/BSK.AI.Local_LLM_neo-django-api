@@ -78,7 +78,7 @@ class ResolveTests(ContextTestCase):
 class PacketTests(ContextTestCase):
     def test_packet_has_facts_documents_state_and_provenance(self):
         p = service.assemble("Why is the die pressure high on EXTR01?")
-        self.assertEqual(p["packet_version"], "1")
+        self.assertEqual(p["packet_version"], "1.1")
         self.assertEqual(p["resolved_scope"]["asset"]["id"], ASSET)
         fact = next(f for f in p["graph_facts"] if f["entity_id"] == DIE_PRESSURE)
         self.assertTrue(fact["focus"])
@@ -297,7 +297,7 @@ class RestTests(ContextTestCase):
         self.assertEqual(r.data["focus"][0]["id"], DIE_PRESSURE)
         r = self.client.post("/api/context/assemble/", {"query": "die pressure", "asset_id": ASSET,
                                                         "include_documents": False, "budget_chars": 3000}, format="json")
-        self.assertEqual((r.status_code, r.data["packet_version"], r.data["document_evidence"]), (200, "1", []))
+        self.assertEqual((r.status_code, r.data["packet_version"], r.data["document_evidence"]), (200, "1.1", []))
         self.assertEqual(self.client.get(f"/api/context/state/{ASSET}/").data["current_state"]["machine_state"], "STOPPED")
         self.assertEqual(self.client.get(f"/api/context/entities/{ASSET}/").data["name"], "Extruder EXTR01")
         r = self.client.post("/api/context/search/", {"query": "die"}, format="json")

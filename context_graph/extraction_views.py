@@ -23,7 +23,7 @@ from ingestion import library
 from ingestion.library_views import job_json
 from ingestion.models import Document, Job
 
-from . import extraction, facets, registry, triples
+from . import extraction, facets, quotes, registry, triples
 from .evidence import evidence_json
 from .models import CandidateTriple, Evidence, PromptPreset
 from .views import _int, graph_errors
@@ -310,6 +310,15 @@ def evidence_detail(request, evidence_id):
     if e is None:
         return _error("evidence not found", status.HTTP_404_NOT_FOUND)
     return Response({**evidence_json(e), "triple_ids": list(e.triples.values_list("id", flat=True))})
+
+
+@api_view(["GET"])
+def evidence_text(request, evidence_id):
+    """GET /api/graph/evidence/<id>/text/ — the evidence's passage with its quote's place (P25e)."""
+    e = Evidence.objects.filter(pk=evidence_id).first()
+    if e is None:
+        return _error("evidence not found", status.HTTP_404_NOT_FOUND)
+    return Response({"id": e.pk, **quotes.passage(e)})
 
 
 @api_view(["PATCH"])

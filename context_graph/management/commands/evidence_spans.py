@@ -1,6 +1,6 @@
 """Spans for evidence and chunks written before P25b (P25c, 2026-10-25). Dry run unless --apply.
 
-    manage.py evidence_spans [--doc DOC_KEY] [--chroma] [--apply] [--out report.json]
+    manage.py evidence_spans [--doc DOC_KEY] [--chroma | --quotes] [--apply] [--out report.json]
 """
 
 from __future__ import annotations
@@ -19,13 +19,20 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--doc", help="one document (doc key)")
         parser.add_argument("--chroma", action="store_true", help="the Chroma chunks instead of the evidence")
+        parser.add_argument("--quotes", action="store_true", help="the supporting quotes (P25d) instead of the spans")
         parser.add_argument("--apply", action="store_true", help="write (default: report only)")
         parser.add_argument("--out", help="write the full report as JSON")
 
     def handle(self, *args, **opts):
         docs = Document.objects.filter(doc_key=opts["doc"]) if opts["doc"] else Document.objects.order_by("doc_key")
         verb = "written" if opts["apply"] else "dry run"
-        if opts["chroma"]:
+        if opts["quotes"]:
+            report = evidence_spans.backfill_quotes(docs, apply=opts["apply"])
+            for kind, counts in sorted(report["by_type"].items(), key=lambda kv: -sum(kv[1].values())):
+                self.stdout.write(f"{kind}: {counts}")
+            self.stdout.write(f"quotes ({verb}): {dict(report['counts'])}; shared rows skipped {report['shared_skipped']}")
+            report = {**report, "counts": dict(report["counts"])}
+        elif opts["chroma"]:
             result = evidence_spans.backfill_chunks(docs, apply=opts["apply"])
             for key, counts in result.items():
                 if counts:

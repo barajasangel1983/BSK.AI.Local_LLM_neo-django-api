@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import quotes
 from .models import CandidateTriple, Evidence
 
 EXCERPT_CHARS = 1500
@@ -16,6 +17,7 @@ def evidence_json(e: Evidence) -> dict:
         "row": e.row_number, "region": e.region or None, "figure_id": e.figure_id or None,
         "chunk_index": e.chunk_index, "extractor": e.extractor, "model": e.model, "prompt": e.prompt,
         "schema_version": e.schema_version, "excerpt": e.excerpt, "confidence": e.confidence,
+        "span_status": e.span_status, "quote_status": e.quote_status, "quote": quotes.quote_text(e),
         "created_at": e.created_at.isoformat(),
     }
 

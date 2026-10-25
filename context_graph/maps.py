@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 from django.conf import settings
 
-from . import extraction, facets, registry
+from . import extraction, facets, quotes, registry
 from .driver import session
 from .identity import EntityIndex
 from .models import CandidateTriple, Evidence
@@ -214,7 +214,11 @@ def _evidence(t: CandidateTriple, doc, chunk, r: dict) -> None:
     excerpt = (r.get("quote") or chunk.text)[:1500]
     snap = library.text_snapshot(doc)       # P25b: the quote's (or chunk's) place in the document's text
     span = snap.locate(excerpt, chunk.page_start, chunk.page_end).fields(snap.hash) if snap is not None else {}
-    t.evidence.add(Evidence.objects.create(
+    e = Evidence(
         source_kind="text", document=doc, page_start=chunk.page_start, page_end=chunk.page_end,
         section_path=chunk.section_path or [], extractor="suggest-maps", model=settings.DGX_CHAT_MODEL,
-        prompt=f"{PROMPT_NAME} v{PROMPT_VERSION}", excerpt=excerpt, confidence=0.9, **span))
+        prompt=f"{PROMPT_NAME} v{PROMPT_VERSION}", excerpt=excerpt, confidence=0.9, **span)
+    if snap is not None:            # P25d
+        quotes.apply(e, t.object_name, t.object_props, snap.text)
+    e.save()
+    t.evidence.add(e)

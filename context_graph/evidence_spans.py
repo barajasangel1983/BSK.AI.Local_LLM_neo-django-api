@@ -149,6 +149,46 @@ def backfill_chunks(docs, apply: bool = False) -> dict[str, Counter]:
     return out
 
 
+def backfill_quotes(docs, apply: bool = False) -> dict:
+    """P25d: the quote of each evidence row with a span and no quote yet, for the one triple it supports (a row shared
+    by several triples is left). With `apply`, written; a quote already set is never overwritten."""
+    from django.db.models import Count
+
+    from . import quotes
+
+    counts: Counter = Counter()
+    by_type: dict[str, Counter] = defaultdict(Counter)
+    not_exact: list[dict] = []
+    shared = 0
+    for doc in docs:
+        rows = list(Evidence.objects.filter(document=doc, quote_status="", char_start__isnull=False)
+                    .annotate(n=Count("triples")).prefetch_related("triples"))
+        texts: dict[str, str] = {}
+        done = []
+        for e in rows:
+            if e.n != 1:
+                shared += e.n > 1
+                continue
+            t = e.triples.all()[0]
+            if e.text_hash not in texts:
+                texts[e.text_hash] = quotes.snapshot_text(doc, e.text_hash)
+            found = quotes.fields(e, t.object_name, t.object_props, texts[e.text_hash])
+            if not found:
+                continue
+            counts[found["quote_status"]] += 1
+            by_type[t.object_type][found["quote_status"]] += 1
+            if found["quote_status"] != quotes.EXACT:
+                not_exact.append({"evidence": e.pk, "triple": t.pk, "status": found["quote_status"],
+                                  "document": doc.doc_key, "type": t.object_type, "name": t.object_name})
+            for k, v in found.items():
+                setattr(e, k, v)
+            done.append(e)
+        if apply and done:
+            Evidence.objects.bulk_update(done, ["quote_status", "quote_start", "quote_end"], batch_size=500)
+    return {"counts": counts, "by_type": {k: dict(v) for k, v in by_type.items()}, "not_exact": not_exact,
+            "shared_skipped": shared}
+
+
 def summary(reports: list[DocReport]) -> Counter:
     total: Counter = Counter()
     for r in reports:
