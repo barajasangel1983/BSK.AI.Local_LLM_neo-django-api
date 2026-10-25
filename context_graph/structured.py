@@ -48,8 +48,9 @@ from django.utils import timezone
 
 from . import registry
 from .extraction import normalize
-from .identity import EntityIndex, Match
+from .identity import SINGLE_LINKS, EntityIndex, Match
 from .units import normalize_unit
+from .device_models import slug
 from .ids import clean_part, is_valid_id, make_id
 from . import evidence, facets
 from .driver import GraphUnavailable, session
@@ -323,7 +324,32 @@ def _bom(columns: list[str]) -> dict:
     if signal:   # the device that measures a signal (P14c); the BOM never adds a signal
         entities.append({"key": "signal", "type": "Signal", "id_column": signal, "existing_only": True, "split": ";"})
         relationships.append({"from": "component", "type": "MONITORED_BY", "to": "signal"})
+    _bom_models(columns, component, entities, relationships, exclude=(parent, item, name, signal, slot))
     return {"entities": entities, "relationships": relationships}
+
+
+def _bom_models(columns: list[str], component: dict, entities: list, relationships: list, exclude: tuple) -> None:
+    """P26d: the device model (Manufacturer + Model, the columns a BOM already has) and, with a Family column, its
+    product family, so a machine's parts link to them in the same import. Ids: the Model Key / Family Key column, or
+    manufacturer/name slugged; an existing node is matched by id, then by manufacturer and exact name (D1). The model's
+    `variant` (frame size, size class) is changed on approval when it differs (D2)."""
+    props = component["properties"]
+    maker, model = props.get("manufacturer"), props.get("model")
+    if not (maker and model):
+        return
+    model_key = _find(columns, "model key", "device model key")
+    family_key = _find(columns, "family key", "product family key")
+    family = _find(columns, "family", "product family", exclude=(*exclude, model, model_key, family_key))
+    variant = _find(columns, "variant", "frame size", "size class", exclude=(*exclude, model, model_key, family_key, family))
+    entities.append({"key": "model", "type": "DeviceModel", "id_column": model_key, "key_columns": [maker, model],
+                     "name_column": model, "fuzzy": False, "replace_props": ["variant"], "secondary": True,
+                     "properties": {"manufacturer": maker, **({"variant": variant} if variant else {})}})
+    relationships.append({"from": "component", "type": "INSTANCE_OF", "to": "model"})
+    if family or family_key:
+        entities.append({"key": "family", "type": "ProductFamily", "id_column": family_key,
+                         "key_columns": [maker, family] if family else [], "name_column": family or family_key,
+                         "fuzzy": False, "secondary": True, "properties": {"manufacturer": maker}})
+        relationships.append({"from": "model", "type": "VARIANT_OF", "to": "family"})
 
 
 def _limits(columns: list[str]) -> dict:
@@ -386,6 +412,8 @@ TEMPLATES = (
 def _mapped_columns(mapping: dict) -> set[str]:
     used = set()
     for e in mapping["entities"]:
+        if e.get("secondary"):     # P26d: a BOM's model and family don't make it look like a Device models file
+            continue
         used.update(c for c in (e.get("id_column"), e.get("name_column")) if c)
         used.update(c for c in (e.get("properties") or {}).values() if c)
         used.update(c for c in e.get("id_suffix_columns") or [] if c)
@@ -399,7 +427,8 @@ def suggestions(columns: list[str]) -> list[dict]:
         mapping = build_mapping(columns)
         out.append({"key": key, "label": label, "description": description, "mapping": mapping,
                     "matched_columns": len(_mapped_columns(mapping)),
-                    "complete": all(e.get("scope") or e.get("id_column") for e in mapping["entities"])})
+                    "complete": all(e.get("scope") or e.get("id_column") or e.get("key_columns")
+                                    for e in mapping["entities"])})
     order = {key: i for i, (key, *_) in enumerate(TEMPLATES)}
     return sorted(out, key=lambda s: (not s["complete"], -s["matched_columns"], order[s["key"]]))
 
@@ -434,9 +463,11 @@ def validate_mapping(mapping, schema: Schema, columns: list[str], asset_id: str)
             if not asset_id:
                 errors.append(f"{key}: select an asset (the mapping uses the selected asset)")
             continue
-        if not e.get("id_column"):
+        if not e.get("id_column") and not e.get("key_columns"):
             errors.append(f"{key}: choose the key column")
         column(key, "key", e.get("id_column"))
+        for c in e.get("key_columns") or []:
+            column(key, "key part", c)
         column(key, "name", e.get("name_column"))
         for placeholder in re.findall(r"\{([^{}]+)\}", e.get("name_template") or ""):
             column(key, "name template", placeholder)
@@ -500,6 +531,7 @@ class End:
     match: str = ""
     candidates: list = field(default_factory=list)
     replace: bool = False   # a differing value is changed on approval (Limits template)
+    replace_props: tuple = ()   # only these properties are (P26d: a device model's variant)
 
 
 @dataclass
@@ -533,6 +565,7 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
     staged: dict[tuple, CandidateTriple] = {}
     ends: dict[str, End] = {}   # one End per id across the file (names/properties are merged)
     current = _GraphProps()
+    products = _products() if any(e.get("type") in GLOBAL_KEYED for e in mapping["entities"]) else {}
 
     def refuse(number: int, message: str) -> None:
         result.row_errors.append({"row": number, "message": message})
@@ -540,7 +573,10 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
     def entity(spec: dict, values: dict, number: int) -> End | None:
         if spec.get("scope"):
             return End(asset_id, "Asset", scope_name, index.has(asset_id), {}, True, "id" if index.has(asset_id) else "new")
-        key = values.get(spec["id_column"], "")
+        key = values.get(spec.get("id_column") or "", "")
+        if not key and spec.get("key_columns"):     # P26d: manufacturer/model when the file gives no key
+            parts = [values.get(c, "").strip() for c in spec["key_columns"]]
+            key = "/".join(slug(p) for p in parts) if all(parts) else ""
         if not key or (spec.get("skip_if_empty") and not any(values.get(c) for c in spec["skip_if_empty"])):
             return None
         label = spec["type"]
@@ -568,6 +604,11 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         if spec.get("id_suffix") or suffix_columns or label in GLOBAL_KEYED:
             # derived entities (e.g. a signal's limit) and models: exact id only ("G120C 5.5 kW" is not "7.5 kW")
             match = Match(proposed, "id" if index.has(proposed) else "new")
+            if label in GLOBAL_KEYED and not match.existing:   # P26d: then the same manufacturer and exact name
+                maker = values.get((spec.get("properties") or {}).get("manufacturer") or "", "")
+                same = products.get((label, normalize(maker), normalize(name or key)))
+                if same:
+                    match = Match(same, "id")
         else:                       # the key column is an explicit tag; names / aliases, then possible matches
             match = index.resolve(label, name or key, scope_key, proposed=proposed, tag=key,
                                   fuzzy=spec.get("fuzzy", True) is not False)
@@ -588,7 +629,7 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
                 refuse(number, f"{spec['key']}: kind {props['kind']!r} is not one of {', '.join(LIMIT_KINDS)}")
                 return None
         return End(match.id, label, (name or key)[:255], match.existing, props, named, match.kind, match.candidates,
-                   replace=bool(spec.get("replace")))
+                   replace=bool(spec.get("replace")), replace_props=tuple(spec.get("replace_props") or ()))
 
     def cells(spec: dict, values: dict) -> list[dict]:
         """The row once, or once per part of a split key cell."""
@@ -655,6 +696,11 @@ def build(df: DataFile, mapping: dict, asset_id: str, index: EntityIndex | None 
         t.subject_match, t.subject_candidates = a.match, a.candidates
         t.object_match, t.object_candidates = b.match, b.candidates
         t.replaces = {e.id: c for e in (a, b) if (c := _changes(e, current))}
+        if t.predicate in SINGLE_LINKS and a.existing:   # P26d (D3): a part's model, a model's family is one link
+            old = _single_links(a.id, t.predicate) - {b.id}
+            if old:
+                t.replaces.setdefault(a.id, {})[t.predicate] = [", ".join(sorted(old)), b.id]
+                t.issue = (f"replaces {t.predicate} -> {', '.join(sorted(old))}: approving removes that link")[:255]
         used.update((a.id, b.id))
     result.triples = list(staged.values())
     result.existing_entities = sum(1 for i in used if ends[i].existing)
@@ -684,11 +730,42 @@ def _same(a, b) -> bool:
 
 
 def _changes(end: End, current: _GraphProps) -> dict:
-    """{property: [graph value, file value]} for an existing entity whose values the file changes on approval."""
-    if not (end.replace and end.existing):
+    """{property: [graph value, file value]} for an existing entity whose values the file changes on approval. With
+    `replace_props`, only those, and a value the node doesn't have yet is staged as a change too (shown, then added)."""
+    if not end.existing:
         return {}
     graph = current.get(end.id)
+    if end.replace_props:
+        return {k: [graph.get(k), v] for k, v in end.props.items()
+                if k in end.replace_props and not _same(graph.get(k), v)}
+    if not end.replace:
+        return {}
     return {k: [graph[k], v] for k, v in end.props.items() if k in graph and not _same(graph[k], v)}
+
+
+def _products() -> dict:
+    """(label, manufacturer, name) -> id of the existing product families and device models, normalized (P26d)."""
+    try:
+        with session() as s:
+            rows = s.run("MATCH (n:Entity) WHERE n:DeviceModel OR n:ProductFamily RETURN n.id AS id, labels(n) AS labels, "
+                         "n.name AS name, n.manufacturer AS maker, coalesce(n.aliases, []) AS aliases").data()
+    except GraphUnavailable:
+        return {}
+    out = {}
+    for r in rows:
+        label = "DeviceModel" if "DeviceModel" in r["labels"] else "ProductFamily"
+        for name in (r["name"], *r["aliases"]):
+            out.setdefault((label, normalize(r["maker"] or ""), normalize(name or "")), r["id"])
+    return out
+
+
+def _single_links(node_id: str, rel_type: str) -> set[str]:
+    try:
+        with session() as s:
+            return {r["id"] for r in s.run(f"MATCH (:Entity {{id: $id}})-[:{rel_type}]->(m:Entity) RETURN m.id AS id",
+                                           id=node_id).data()}
+    except GraphUnavailable:
+        return set()
 
 
 def check(df: DataFile, mapping, asset_id: str) -> list[str]:

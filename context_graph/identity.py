@@ -88,6 +88,7 @@ PART_LABELS = ("Alarm", "Procedure", "FailureMode", "Component", "Specification"
 # Component -> fact links that make a part own a fact; a procedure is also owned through what it serves. A product
 # family or a device model owns its facts through the same links (P26b).
 OWNERS = ("Component", "ProductFamily", "DeviceModel")
+SINGLE_LINKS = ("INSTANCE_OF", "VARIANT_OF")   # an installed part has one model, a model one family (P26d)
 OWNING = ("HAS_ALARM", "HAS_PROCEDURE", "HAS_FAILURE_MODE", "HAS_SPEC", "HAS_PARAMETER", "HAS_IO", "COMMUNICATES_VIA")
 
 
