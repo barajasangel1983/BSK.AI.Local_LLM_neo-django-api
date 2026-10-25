@@ -398,6 +398,10 @@ GRAPH_EXTRACT_TIMEOUT = float(os.getenv("GRAPH_EXTRACT_TIMEOUT", "120"))       #
 GRAPH_EXTRACT_MAX_TOKENS = int(os.getenv("GRAPH_EXTRACT_MAX_TOKENS", "2000"))  # output budget per window
 # Windows sent to the DGX at once in an extraction run (vLLM batches them); 1 = one after another, as before.
 GRAPH_EXTRACT_PARALLEL = int(os.getenv("GRAPH_EXTRACT_PARALLEL", "1"))
+# P26b-2: a property found with different values on several pages keeps the most frequent one (the others are the
+# triple's issue), instead of joining them with "; "; and one channel (IOPoint) is one id within a run. "0" gives
+# the old behaviour (the dry run's baseline).
+GRAPH_SINGLE_VALUES = os.getenv("GRAPH_SINGLE_VALUES", "1") != "0"
 # P21: a run with a part chosen ("This document describes") gives its new alarms, procedures, failure modes and
 # sub-parts ids under that part, and matches names within the part's family only.
 GRAPH_PART_SCOPED_IDS = os.getenv("GRAPH_PART_SCOPED_IDS", "true").lower() == "true"

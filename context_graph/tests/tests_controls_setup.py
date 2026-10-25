@@ -65,7 +65,8 @@ class SchemaV6Tests(SimpleTestCase):
     def test_the_prompt_and_its_pages(self):
         mode, template = extraction.EXTRA_PRESETS["Controls & Setup (v6)"]
         self.assertEqual(mode, "schema")
-        for phrase in ("HAS_PARAMETER", "CONFIGURED_BY", "Not every parameter mentioned in a\n  function diagram",
+        for phrase in ("HAS_PARAMETER", "CONFIGURED_BY", "a function diagram, a block diagram",
+                       "never return it as an IOPoint",       # P26b-2: a strip is not a channel
                        "Never create a Signal, an Alarm, a Specification"):
             self.assertIn(phrase, template)
         self.assertIn("terminal strips", page_suggest.WHERE_BY_PRESET["Controls & Setup (v6)"])

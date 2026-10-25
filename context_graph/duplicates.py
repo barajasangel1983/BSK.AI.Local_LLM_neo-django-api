@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from django.db import transaction
 
-from .extraction import merge_properties
+from .extraction import differing, merge_properties
 from .identity import normalize
 from .models import CandidateTriple
 
@@ -200,6 +200,9 @@ def merge(triples, type_: str, names: list[str], into: str) -> dict:
         keep = seen[key]
         keep.occurrences = (keep.occurrences or 1) + (t.occurrences or 1)
         keep.confidence = max(keep.confidence or 0, t.confidence or 0) or keep.confidence
+        notes = differing(keep.subject_props, t.subject_props) + differing(keep.object_props, t.object_props)
+        if notes and not keep.issue:      # P26b-2: the kept triple's value stays; the reviewer sees the other
+            keep.issue = "; ".join(notes)[:255]
         keep.subject_props = merge_properties(keep.subject_props, t.subject_props)
         keep.object_props = merge_properties(keep.object_props, t.object_props)
         keep.evidence.add(*t.evidence.all())
