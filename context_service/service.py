@@ -34,7 +34,12 @@ logger = logging.getLogger("chat")
 
 PACKET_VERSION = "1"
 MIN_BUDGET, MAX_BUDGET = 2000, 60000
-FOCUS_LABELS = ("Component", "Signal", "Alarm", "Procedure", "FailureMode", "Specification")   # FailureMode: P16a; Specification: P22a
+FOCUS_LABELS = ("Component", "Signal", "Alarm", "Procedure", "FailureMode", "Specification",   # FailureMode: P16a; Specification: P22a
+                "Parameter", "IOPoint")                                                         # P26e
+# A rating, parameter or terminal is a focus by its name only with 3+ words or a code ("p1082", "F07801"): "Output"
+# and "Measuring range" are on many parts and stay ranking words (P26e).
+NAMED_BY_WORDS = ("Specification", "Parameter", "IOPoint")
+_CODE = re.compile(r"[A-Za-z]{0,3}\d[\w.\[\]-]*")
 ANSWER_PROMPT = (
     "You are the assistant of the BSKLAB plant. Answer the question from the CONTEXT below.\n"
     "- Graph facts are authoritative; cite them as [G]. Cite document excerpts as [1], [2], … by their number.\n"
@@ -50,6 +55,10 @@ class ContextError(ValueError):
 
 def _norm(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(text).lower()))
+
+
+def _focus_key(label: str, key: str) -> bool:
+    return label not in NAMED_BY_WORDS or len(_norm(key).split()) >= 3 or bool(_CODE.fullmatch(key.strip()))
 
 
 def _mentions(question_norm: str, key: str) -> bool:
@@ -69,7 +78,7 @@ def _asset_keys(asset: dict) -> list[str]:
     return [asset["name"], asset["id"].split(":", 2)[2]]
 
 
-def resolve(text: str, asset_id: str | None = None) -> dict:
+def resolve(text: str, asset_id: str | None = None, ctx: dict | None = None) -> dict:
     """What a question is about: {asset, focus, ambiguous}.
 
     - `asset`: the given one, or the only asset named in the text (by name or key, e.g. "EXTR01").
@@ -94,12 +103,33 @@ def resolve(text: str, asset_id: str | None = None) -> dict:
         return out
 
     hits: dict[str, list[dict]] = {}      # matched phrase -> entities
-    for entity in asset_context.entities(out["asset"]["id"]):
+    groups: dict[str, list[dict]] = {}    # a model's or family's name -> its installed parts (P26e)
+    known = asset_context.entities(out["asset"]["id"], ctx if asset_id == out["asset"]["id"] else None)
+    for entity in known:
         if entity["label"] not in FOCUS_LABELS:
             continue
-        matched = max((k for k in entity["keys"] if _mentions(question, k)), key=len, default=None)
+        keys = [k for k in entity["keys"] if _focus_key(entity["label"], k)]
+        matched = max((k for k in keys if _mentions(question, k)), key=len, default=None)
         if matched:
             hits.setdefault(_norm(matched), []).append(entity)
+        for k in entity.get("group_keys") or ():
+            if _mentions(question, k):
+                groups.setdefault(_norm(k), []).append(entity)
+    if not any(e["label"] == "Component" for es in hits.values() for e in es):
+        # A part named with all the words of its name but one ("24 V power supply" for "24 V DC power supply"): names
+        # of 3+ words, and the missing word is not a number ("zone 2" is not "zone 1").
+        words = set(question.split())
+        for entity in known:
+            name = _norm(entity["name"]).split()
+            missing = [w for w in name if w not in words]
+            if entity["label"] == "Component" and len(name) >= 3 and len(missing) == 1 and not re.search(r"\d", missing[0]):
+                hits.setdefault(_norm(entity["name"]), []).append(entity)
+    # A rating's, parameter's or terminal's name inside a named part's name, or around it, is that part ("+24 V OUT" goes
+    # by "24 V power supply" too, but the question named the 24 V DC power supply, also called "power supply"; P26e).
+    named_parts = [set(p.split()) for p, es in hits.items() if any(e["label"] == "Component" for e in es)]
+    for phrase in [p for p, es in hits.items() if all(e["label"] in NAMED_BY_WORDS for e in es)]:
+        if any(set(phrase.split()) <= words or words <= set(phrase.split()) for words in named_parts):
+            del hits[phrase]
     # A longer phrase wins over a shorter one inside it ("die head temperature" over "die head").
     phrases = sorted(hits, key=len, reverse=True)
     kept = [p for i, p in enumerate(phrases) if not any(p in longer and p != longer for longer in phrases[:i])]
@@ -111,6 +141,14 @@ def resolve(text: str, asset_id: str | None = None) -> dict:
         else:
             out["ambiguous"].append({"phrase": phrase, "candidates": [{"id": e["id"], "label": e["label"], "name": e["name"]}
                                                                     for e in entities]})
+    focused = {f["id"] for f in out["focus"]}
+    for phrase, parts in groups.items():      # every part of that model or family, not a question which one
+        if any(phrase in p for p in hits):
+            continue
+        for e in parts:
+            if e["id"] not in focused:
+                focused.add(e["id"])
+                out["focus"].append({"id": e["id"], "label": e["label"], "name": e["name"], "match": phrase})
     return out
 
 
@@ -476,8 +514,14 @@ def assemble(query: str, asset_id: str | None = None, include_documents: bool = 
             timings[name] = round((time.monotonic() - t) * 1000)
 
     scope = {"asset": None, "focus": [], "ambiguous": []}
+    graph_ctx = None        # the asset's graph context, read once for both resolving and the facts (P26e)
+    if asset_id:
+        try:
+            graph_ctx = timed("graph_read", lambda: services.get_asset_context(asset_id))
+        except (GraphUnavailable, NodeNotFound):
+            graph_ctx = None
     try:
-        scope = timed("resolve", lambda: resolve(query, asset_id))
+        scope = timed("resolve", lambda: resolve(query, asset_id, graph_ctx))
     except GraphUnavailable as exc:
         warnings.append("graph unavailable")
         logger.warning("context: graph unavailable during resolve: %s", exc)
@@ -488,7 +532,8 @@ def assemble(query: str, asset_id: str | None = None, include_documents: bool = 
         facts_budget = int(budget * (0.6 if include_documents else 1.0))
         try:
             ctx = timed("graph", lambda: asset_context.build(asset["id"], query, facts_budget,
-                                                               {f["id"] for f in scope["focus"]}))
+                                                               {f["id"] for f in scope["focus"]},
+                                                               graph_ctx if asset["id"] == asset_id else None))
         except GraphUnavailable as exc:
             warnings.append("graph unavailable")
             logger.warning("context: graph unavailable asset=%s: %s", asset["id"], exc)

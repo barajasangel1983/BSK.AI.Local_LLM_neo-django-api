@@ -34,7 +34,9 @@ logger = logging.getLogger("chat")
 # so the pointer is kept as a name and read from whichever historian is served.
 HISTORIAN_PREFIX = "plc_1_historian.extruder_samples."
 STOPWORDS = {"the", "a", "an", "of", "on", "in", "is", "are", "what", "which", "how", "do", "does", "to", "for",
-             "and", "or", "it", "its", "with", "should", "i", "my", "this", "that", "be", "can", "there", "any", "now"}
+             "and", "or", "it", "its", "with", "should", "i", "my", "this", "that", "be", "can", "there", "any", "now",
+             "by", "at", "as", "from", "made", "they", "them", "their", "each", "was", "were", "has", "have", "we", "you",
+             "me", "all", "about", "why", "when", "where", "who"}     # the second line: P26e
 
 
 class AssetScopeError(ValueError):
@@ -48,6 +50,9 @@ class Line:
     pinned: bool = False   # always included
     node_id: str = ""      # the entity the fact is about (for its source label, P8c)
     related: tuple[str, ...] = ()   # entities kept with it when it is in focus (an alarm's procedure; P16a)
+    parts: tuple[str, ...] = ()     # the installed parts the fact belongs to: a part in focus brings it (P26e)
+    level: str = ""                 # part | model | family: where the fact comes from (P26e)
+    owner: str = ""                 # the model's or family's id when level is model / family
 
 
 @dataclass
@@ -208,15 +213,22 @@ def _limit_text(limit: dict | None, unit: str) -> str:
 
 
 def _tokens(text: str) -> set[str]:
-    return {t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in STOPWORDS and len(t) > 1}
+    """Question and fact words, a plural as its singular ("motors" finds "Motor", P26e)."""
+    return {_singular(t) for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in STOPWORDS and len(t) > 1}
 
 
-def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] | None = None) -> AssetContext:
+def _singular(word: str) -> str:
+    return word[:-1] if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")) else word
+
+
+def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] | None = None,
+          ctx: dict | None = None) -> AssetContext:
     """Fact sheet for `asset_id` within `budget_chars` (raises GraphUnavailable / AssetScopeError).
 
-    `focus_ids`: entities the question is about; their facts are kept first when the sheet is cut."""
+    `focus_ids`: entities the question is about; their facts are kept first when the sheet is cut.
+    `ctx`: the asset's graph context when the caller has read it already (one read per packet, P26e)."""
     try:
-        ctx = services.get_asset_context(asset_id)
+        ctx = ctx or services.get_asset_context(asset_id)
     except NodeNotFound:
         raise AssetScopeError(f"unknown asset {asset_id!r}")
     asset = ctx["asset"]
@@ -387,7 +399,7 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
         doc_keys=sorted({d["properties"]["doc_key"] for d in ctx["documents"] if d["properties"].get("doc_key")}),
         items=[{"text": ln.text.strip(), "section": ln.section.lower(), "entity_id": ln.node_id,
                 "source": labels.get(ln.node_id, historian["source"] if historian and ln.text.startswith("Historian") else ""),
-                "focus": ln.node_id in focus_ids} for ln in cited],
+                "focus": ln.node_id in focus_ids, "level": ln.level, "owner": ln.owner} for ln in cited],
         values=values,
         pages=fact_pages(lines, question, focus_ids, node_props, settings.CHAT_FACT_PAGES),
         parts=[{"id": c["id"], "name": c["name"], "parent": c.get("parent") or "",
@@ -398,6 +410,7 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
 
 
 SUMMARY_CHARS = 500     # a procedure's summary on its fact line (P16a)
+PART_BONUS = 1.5        # a matching fact of a part the question names (P26e)
 
 
 def _amounts(p: dict) -> str:
@@ -410,6 +423,17 @@ def _cut(text, limit: int = SUMMARY_CHARS) -> str:
     return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
 
 
+def _level(owners, products: dict) -> tuple[str, str, str]:
+    """(level, owner id, the text added to the line) of a fact from its owners: a family's or a model's facts say so
+    ("SINAMICS G120C family manual"), a part's own say nothing (P26e)."""
+    for want in ("family", "model"):
+        for o in owners or ():
+            if (products.get(o) or {}).get("level") == want:
+                name = products[o]["name"]
+                return want, o, f" ({name} family manual)" if want == "family" else f" ({name} model data)"
+    return ("part", "", "") if owners else ("", "", "")
+
+
 def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set) -> tuple[list[Line], dict]:
     """Fact lines for the parts' alarms, procedures and failure modes (P16a, 2026-10-16), and their properties.
 
@@ -418,15 +442,17 @@ def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set
     parts = lambda ids: ", ".join(names.get(c, c) for c in ids)
     alarm_name = {a["id"]: a["properties"].get("code") or a["name"]
                   for a in [*ctx["alarms"], *ctx.get("part_alarms", [])]}
-    procedures: dict[str, dict] = {}       # id -> {node, components, addresses}
+    products = ctx.get("products") or {}
+    procedures: dict[str, dict] = {}       # id -> {node, components, addresses, owners}
 
-    def add_procedure(node, components=(), addresses=()):
-        entry = procedures.setdefault(node["id"], {"node": node, "components": [], "addresses": []})
+    def add_procedure(node, components=(), addresses=(), owners=()):
+        entry = procedures.setdefault(node["id"], {"node": node, "components": [], "addresses": [], "owners": []})
         entry["components"] += [c for c in components if c not in entry["components"]]
         entry["addresses"] += [a for a in addresses if a not in entry["addresses"]]
+        entry["owners"] += [o for o in owners if o not in entry["owners"]]
 
     for pr in ctx.get("part_procedures", []):
-        add_procedure(pr, pr["components"], pr["addresses"])
+        add_procedure(pr, pr["components"], pr["addresses"], pr.get("owners") or ())
     for a in ctx.get("part_alarms", []):
         for pr in a["procedures"]:
             add_procedure(pr, a["components"], [a["id"]])
@@ -450,7 +476,9 @@ def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set
             text += f": {_cut(p['description'])}"
         if a["procedures"]:
             text += f"; procedure: {', '.join(pr['name'] for pr in a['procedures'])}"
-        lines.append(Line("PART_ALARMS", text, node_id=a["id"], related=tuple(pr["id"] for pr in a["procedures"])))
+        level, owner, said = _level(a.get("owners"), products)
+        lines.append(Line("PART_ALARMS", text + said, node_id=a["id"], related=tuple(pr["id"] for pr in a["procedures"]),
+                          parts=tuple(a["components"]), level=level, owner=owner))
         props[a["id"]] = p
 
     for pid, entry in procedures.items():
@@ -469,7 +497,9 @@ def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set
             text += f": {_cut(p['summary'])}"
         if entry["addresses"]:
             text += f"; addresses: {', '.join(alarm_name.get(a, a) for a in entry['addresses'])}"
-        lines.append(Line("PART_PROCEDURES", text, node_id=pid, related=tuple(entry["addresses"])))
+        level, owner, said = _level(entry["owners"], products)
+        lines.append(Line("PART_PROCEDURES", text + said, node_id=pid, related=tuple(entry["addresses"]),
+                          parts=tuple(entry["components"]), level=level, owner=owner))
         props[pid] = p
 
     for f in ctx.get("failure_modes", []):
@@ -482,8 +512,10 @@ def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set
             text += f"; indicated by: {', '.join(alarm_name.get(x, names.get(x, x)) for x in f['indicated_by'])}"
         if f["fixes"]:
             text += f"; fix: {', '.join(pr['name'] for pr in f['fixes'])}"
-        lines.append(Line("FAILURE_MODES", text, node_id=f["id"],
-                          related=tuple(pr["id"] for pr in f["fixes"]) + tuple(f["indicated_by"])))
+        level, owner, said = _level(f.get("owners"), products)
+        lines.append(Line("FAILURE_MODES", text + said, node_id=f["id"],
+                          related=tuple(pr["id"] for pr in f["fixes"]) + tuple(f["indicated_by"]),
+                          parts=tuple(f["components"]), level=level, owner=owner))
         props[f["id"]] = p
 
     for sp in ctx.get("specifications", []):
@@ -494,9 +526,47 @@ def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set
         extra = [m for m in (p.get("condition"), p.get("subtype")) if m]
         if extra:
             text += f" ({', '.join(str(m) for m in extra)})"
-        lines.append(Line("SPECIFICATIONS", text, node_id=sp["id"]))
+        level, owner, said = _level(sp.get("owners"), products)
+        lines.append(Line("SPECIFICATIONS", text + said, node_id=sp["id"], parts=tuple(sp["components"]),
+                          level=level, owner=owner))
         props[sp["id"]] = p
+
+    # Parameters, terminals and interfaces (P26e): ranked like the other facts, never pinned.
+    for x in ctx.get("parameters", []):
+        p = x["properties"]
+        code = str(p.get("code") or "")
+        text = (f"- {code} {x['name']}" if code and not x["name"].startswith(code) else f"- {x['name']}")
+        text += f" of {parts(x['components'])}"
+        detail = [d for d in (p.get("subtype"), p.get("default") not in (None, "") and f"default {p['default']}",
+                              _range(p), p.get("unit") and f"unit {p['unit']}") if d]
+        if detail:
+            text += f": {', '.join(str(d) for d in detail)}"
+        level, owner, said = _level(x.get("owners"), products)
+        lines.append(Line("PARAMETERS", text + said, node_id=x["id"], parts=tuple(x["components"]), level=level, owner=owner))
+        props[x["id"]] = p
+    for x in ctx.get("io_points", []):
+        p = x["properties"]
+        detail = [d for d in (p.get("subtype"), p.get("terminal") and f"terminal {p['terminal']}",
+                              p.get("connector") and f"connector {p['connector']}", p.get("signal_type")) if d]
+        text = f"- {x['name']} of {parts(x['components'])}" + (f": {', '.join(str(d) for d in detail)}" if detail else "")
+        level, owner, said = _level(x.get("owners"), products)
+        lines.append(Line("TERMINALS", text + said, node_id=x["id"], parts=tuple(x["components"]), level=level, owner=owner))
+        props[x["id"]] = p
+    for x in ctx.get("interfaces", []):
+        p = x["properties"]
+        detail = [f"{k.replace('_', ' ')} {p[k]}" for k in ("protocol", "connector", "address_range", "telegram") if p.get(k)]
+        text = f"- {x['name']} of {parts(x['components'])}" + (f": {', '.join(detail)}" if detail else "")
+        level, owner, said = _level(x.get("owners"), products)
+        lines.append(Line("INTERFACES", text + said, node_id=x["id"], parts=tuple(x["components"]), level=level, owner=owner))
+        props[x["id"]] = p
     return lines, props
+
+
+def _range(p: dict) -> str:
+    low, high = p.get("min"), p.get("max")
+    if low not in (None, "") and high not in (None, ""):
+        return f"range {low} to {high}"
+    return f"min {low}" if low not in (None, "") else (f"max {high}" if high not in (None, "") else "")
 
 
 def _rating(p: dict) -> str:
@@ -512,21 +582,27 @@ def _rating(p: dict) -> str:
     return f"{value}{unit}" if value not in (None, "") else ""
 
 
-def entities(asset_id: str) -> list[dict]:
+def entities(asset_id: str, ctx: dict | None = None) -> list[dict]:
     """The asset's components, signals, alarms and procedures with the names they go by:
     [{id, label, name, keys}] — used to find what a question is about."""
-    ctx = services.get_asset_context(asset_id)
+    ctx = ctx or services.get_asset_context(asset_id)
     out: list[dict] = []
 
-    def add(node, label):
+    def add(node, label, group_keys=()):
         p = node.get("properties") or {}
         keys = [node["name"], *(p.get("aliases") or []), p.get("code"), p.get("tag"),
                 node["id"].rsplit("/", 1)[-1].replace("_", " ").replace("-", " ")]
-        out.append({"id": node["id"], "label": label, "name": node["name"], "keys": [str(k) for k in keys if k]})
+        out.append({"id": node["id"], "label": label, "name": node["name"], "keys": [str(k) for k in keys if k],
+                    "group_keys": [str(k) for k in group_keys if k]})
 
     def walk(components):
         for c in components:
-            add(c, "Component")
+            # A part is also named by its model and family ("QUINT4-PS", "SINAMICS G120C"): such a name means every
+            # part of that model or family, so it focuses them all instead of asking which (P26e).
+            model = c.get("device_model") or {}
+            family = model.get("family") or {}
+            add(c, "Component", group_keys=(model.get("name"), (model.get("properties") or {}).get("designation"),
+                                            family.get("name")))
             for sig in c["signals"]:
                 add(sig, "Signal")
             walk(c["children"])
@@ -545,6 +621,8 @@ def entities(asset_id: str) -> list[dict]:
     part_nodes += [(f, "FailureMode") for f in ctx.get("failure_modes", [])]
     part_nodes += [(pr, "Procedure") for f in ctx.get("failure_modes", []) for pr in f["fixes"]]
     part_nodes += [(sp, "Specification") for sp in ctx.get("specifications", [])]
+    part_nodes += [(x, "Parameter") for x in ctx.get("parameters", [])]
+    part_nodes += [(x, "IOPoint") for x in ctx.get("io_points", [])]
     for node, label in part_nodes:
         if node["id"] not in seen:
             seen.add(node["id"])
@@ -557,6 +635,7 @@ SECTION_TITLES = {
     "ALARMS": "Alarms", "PROCEDURES": "Procedures", "CONNECTIONS": "Connections", "DOCUMENTS": "Documents",
     "PART_ALARMS": "Alarms on parts", "PART_PROCEDURES": "Procedures on parts", "FAILURE_MODES": "Failure modes",
     "SPECIFICATIONS": "Ratings of parts (datasheet values, not process limits)",
+    "PARAMETERS": "Parameters of parts", "TERMINALS": "Terminals of parts", "INTERFACES": "Communication interfaces of parts",
 }
 
 
@@ -596,10 +675,20 @@ def _ranked(lines: list[Line], question: str, focus_ids: set[str] | None = None)
     words = [q & _tokens(ln.text) for ln in lines]
     df = Counter(w for ws in words for w in ws)
     weight = [sum(math.log(1 + len(lines) / df[w]) for w in ws) for ws in words]
-    scored = sorted(
-        (i for i, ln in enumerate(lines) if not ln.pinned),
-        key=lambda i: (lines[i].node_id not in focus_ids, -weight[i], i),
-    )
+    # A part in focus brings its own facts (its model's and family's too, P26e): those sharing a question word count
+    # half again as much, and the rest of the part's come after every matching fact. A bonus, not a tier of their own:
+    # a fact about another part the question names can still score higher (the drive's fan procedure, eval H22).
+    mine = [bool(focus_ids.intersection(ln.parts)) for ln in lines]
+    score = [w * PART_BONUS if m else w for w, m in zip(weight, mine)]
+
+    def tier(i):
+        if lines[i].node_id in focus_ids:
+            return 0
+        if weight[i] > 0:
+            return 1
+        return 2 if mine[i] else 3
+
+    scored = sorted((i for i, ln in enumerate(lines) if not ln.pinned), key=lambda i: (tier(i), -score[i], i))
     return [(i, lines[i].node_id in focus_ids or weight[i] > 0) for i in scored]
 
 
