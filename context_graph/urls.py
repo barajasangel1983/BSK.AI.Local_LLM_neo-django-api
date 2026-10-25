@@ -58,6 +58,7 @@ urlpatterns = [
     path("triples/merge/", extraction_views.triples_merge, name="graph-triples-merge"),
     path("triples/<int:triple_id>/", extraction_views.triple_detail, name="graph-triple"),
     path("evidence/<int:evidence_id>/", extraction_views.evidence_detail, name="graph-evidence"),
+    path("evidence/<int:evidence_id>/text/", extraction_views.evidence_text, name="graph-evidence-text"),
     path("triples/<int:triple_id>/promote/", extraction_views.triple_promote, name="graph-triple-promote"),
     # Structured data import (GraphLab Import): CSV / Excel -> column mapping -> staged triples
     path("datafiles/", import_views.datafiles, name="graph-datafiles"),

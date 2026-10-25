@@ -32,7 +32,7 @@ from context_graph.repository import NodeNotFound
 
 logger = logging.getLogger("chat")
 
-PACKET_VERSION = "1"
+PACKET_VERSION = "1.1"         # 1.1 (P25e): span fields on document_evidence, quote on fact sources
 MIN_BUDGET, MAX_BUDGET = 2000, 60000
 FOCUS_LABELS = ("Component", "Signal", "Alarm", "Procedure", "FailureMode", "Specification",   # FailureMode: P16a; Specification: P22a
                 "Parameter", "IOPoint")                                                         # P26e
@@ -339,6 +339,20 @@ def search_documents(query: str, asset_id: str | None = None, top_k: int | None 
             "queries": queries, "closest": closest, "results": merged[:top_k + len(queries) - 1]}
 
 
+def _quote_sources(facts: list[dict]) -> None:
+    """P25e: a fact's source gains its first evidence's place and supporting quote (JSON only, not context_text)."""
+    from context_graph import quotes
+    from context_graph.models import Evidence
+
+    ids = {f.get("evidence_id") for f in facts} - {None}
+    found = {e.pk: e for e in Evidence.objects.filter(pk__in=ids)} if ids else {}
+    for f in facts:
+        e = found.get(f.pop("evidence_id", None))
+        if e is not None:
+            f["source"].update({"evidence_id": e.pk, "page": e.page_start, "span_status": e.span_status,
+                                "quote_status": e.quote_status, "quote": quotes.quote_text(e)})
+
+
 def _squeeze(text: str) -> str:
     """Tables parsed from PDFs are padded with runs of spaces, dots and dashes: they carry nothing
     and would use most of a small model's context."""
@@ -350,7 +364,7 @@ def _squeeze(text: str) -> str:
 def _excerpt(chunk, scope: str) -> dict:
     return {"document": chunk.source, "doc_key": chunk.asset_id, "page": chunk.page_start, "page_end": chunk.page_end,
             "section_path": chunk.section_path, "kind": "figure" if chunk.content_type == "figure" else "text",
-            "text": _squeeze(chunk.text), "score": chunk.score, "scope": scope}
+            "text": _squeeze(chunk.text), "score": chunk.score, "scope": scope, **getattr(chunk, "span", {})}
 
 
 # --- read-only views for clients (BSKLAB EDGE's RAG and Graph tabs) ---------------------
@@ -541,6 +555,7 @@ def assemble(query: str, asset_id: str | None = None, include_documents: bool = 
         warnings.append("no asset in scope: documents only")
 
     facts = [{"id": f"f{i + 1}", **item, "source": {"label": item["source"]}} for i, item in enumerate(ctx.items)] if ctx else []
+    _quote_sources(facts)
     used = len(ctx.text) if ctx else 0
 
     documents: list[dict] = []

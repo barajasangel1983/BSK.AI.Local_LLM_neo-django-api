@@ -60,7 +60,7 @@ from usage import recorder as usage
 from . import registry, repository, review_checks
 from .driver import GraphUnavailable, session
 from .ids import clean_part, is_valid_id, make_id
-from . import evidence, facets
+from . import evidence, facets, quotes
 from .identity import EntityIndex, normalize, proposed_id  # noqa: F401 (re-exported)
 from .models import CandidateTriple, Evidence, PromptPreset
 from .schema import Schema
@@ -1288,6 +1288,10 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             replaced = replaced.filter(anchor_id=params["anchor_id"])
         replaced.delete()
         facets.stamp(staged.values(), registry.active_schema())
+        if snap is not None:        # P25d: each place's quote, for the triple's final name and values
+            for t in staged.values():
+                for e in found.get(id(t), []):
+                    quotes.apply(e, t.object_name, t.object_props, snap.text)
         triples = CandidateTriple.objects.bulk_create(staged.values())
         evidence.attach(triples, found)
         evidence.drop_orphans(document=doc)

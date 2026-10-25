@@ -28,6 +28,9 @@ from ingestion.embedder import Embedder
 logger = logging.getLogger("chat")
 
 
+SPAN_KEYS = ("text_hash", "char_start", "char_end", "span_status")
+
+
 @dataclass
 class V2Chunk:
     id: str
@@ -40,6 +43,7 @@ class V2Chunk:
     content_type: str = ""
     vector_score: float = 0.0
     rerank_score: float | None = None
+    span: dict = field(default_factory=dict)     # P25b: text_hash, char_start, char_end, span_status in the document's text
 
     @property
     def score(self) -> float:
@@ -182,6 +186,7 @@ def _chunk(chunk_id, text, meta, vector_score: float = 0.0) -> V2Chunk:
         page_end=meta.get("page_end"),
         content_type=str(meta.get("content_type", "")),
         vector_score=vector_score,
+        span={k: meta[k] for k in SPAN_KEYS if meta.get(k) is not None},
     )
 
 

@@ -9,9 +9,12 @@ from unittest.mock import patch
 import yaml
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, override_settings
+from rest_framework.test import APIClient
 
 from context_graph import evidence_spans, extraction, registry, tables
+from context_graph.evidence import evidence_json
 from context_graph.models import Evidence
+from context_service import service
 from ingestion import library
 from ingestion.chunker import PAGE_BREAK
 from ingestion.tests.tests_library import LibraryTestCase
@@ -97,6 +100,39 @@ class ExtractionSpanTests(LibraryTestCase):
         Evidence.objects.filter(document=self.doc).update(span_status="partial")     # a span already set stays
         evidence_spans.backfill([self.doc], apply=True)
         self.assertFalse(Evidence.objects.filter(document=self.doc).exclude(span_status="partial").exists())
+
+
+@override_settings(GRAPH_ENABLED=False)
+class QuoteTests(ExtractionSpanTests):
+    """P25d/P25e: a run writes each place's quote; the backfill never overwrites one; the screens and the packet get
+    the quote."""
+
+    def test_a_run_writes_quotes_and_the_screens_get_them(self):
+        self.run_extract()
+        rows = [e for e in Evidence.objects.filter(document=self.doc) if e.chunk_index < tables.TABLE_CHUNK_BASE]
+        exact = [e for e in rows if e.quote_status == "exact"]
+        self.assertTrue(exact)
+        self.assertTrue(all("DI 0," in MD[e.quote_start:e.quote_end] for e in exact))
+        self.assertTrue(all(e.quote_start is None for e in rows if e.quote_status != "exact"))
+        e = exact[0]
+        body = APIClient().get(f"/api/graph/evidence/{e.pk}/text/").json()
+        self.assertEqual((body["kind"], body["quote_status"]), ("span", "exact"))
+        self.assertIn("DI 0,", body["text"][body["quote"]["start"]:body["quote"]["end"]])
+        self.assertIn("DI 0", evidence_json(e)["quote"])
+        facts = [{"evidence_id": e.pk, "source": {"label": "motor.pdf p.1"}}]
+        service._quote_sources(facts)
+        self.assertEqual((facts[0]["source"]["quote_status"], "evidence_id" in facts[0]), ("exact", False))
+
+    def test_the_quote_backfill_never_overwrites(self):
+        self.run_extract()
+        Evidence.objects.filter(document=self.doc).update(quote_status="", quote_start=None, quote_end=None)
+        report = evidence_spans.backfill_quotes([self.doc])                     # dry run
+        self.assertTrue(report["counts"]["exact"])
+        self.assertFalse(Evidence.objects.filter(document=self.doc).exclude(quote_status="").exists())
+        evidence_spans.backfill_quotes([self.doc], apply=True)
+        self.assertEqual(Evidence.objects.filter(document=self.doc, quote_status="exact").count(), report["counts"]["exact"])
+        Evidence.objects.filter(document=self.doc).update(quote_status="ambiguous")
+        self.assertFalse(evidence_spans.backfill_quotes([self.doc], apply=True)["counts"])
 
 
 class RepeatedUnitTests(SimpleTestCase):
