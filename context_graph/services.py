@@ -441,7 +441,7 @@ def get_asset_context(asset_id: str) -> dict:
         # The parts' own alarms, procedures and failure modes (schema v3; P16a, 2026-10-16): what the manuals
         # gave the graph hangs on the components, not on the asset.
         part_alarms = [
-            {**repository.serialize_node(row["al"]), "components": parts_of(row["comps"]),
+            {**repository.serialize_node(row["al"]), "components": parts_of(row["comps"]), "owners": row["comps"],
              "procedures": [repository.serialize_node(p) for p in row["procs"]]}
             for row in tx.run(
                 "MATCH (c:Entity)-[:HAS_ALARM]->(al:Alarm) WHERE c.id IN $ids "
@@ -451,7 +451,8 @@ def get_asset_context(asset_id: str) -> dict:
             )
         ]
         part_procedures = [
-            {**repository.serialize_node(row["p"]), "components": parts_of(row["comps"]), "addresses": row["alarms"]}
+            {**repository.serialize_node(row["p"]), "components": parts_of(row["comps"]), "owners": row["comps"],
+             "addresses": row["alarms"]}
             for row in tx.run(
                 "MATCH (c:Entity)-[:HAS_PROCEDURE]->(p:Procedure) WHERE c.id IN $ids "
                 "OPTIONAL MATCH (p)-[:ADDRESSES]->(al:Alarm) "
@@ -460,7 +461,7 @@ def get_asset_context(asset_id: str) -> dict:
             )
         ]
         failure_modes = [
-            {**repository.serialize_node(row["f"]), "components": parts_of(row["comps"]),
+            {**repository.serialize_node(row["f"]), "components": parts_of(row["comps"]), "owners": row["comps"],
              "fixes": [repository.serialize_node(p) for p in row["fixes"]], "indicated_by": row["indicators"]}
             for row in tx.run(
                 "MATCH (o:Entity)-[:HAS_FAILURE_MODE]->(f:FailureMode) WHERE o.id IN $owners "
@@ -474,13 +475,31 @@ def get_asset_context(asset_id: str) -> dict:
 
         # The parts' ratings (schema v4, P22a): datasheet values, apart from the signals' operating limits.
         specifications = [
-            {**repository.serialize_node(row["sp"]), "components": parts_of(row["comps"])}
+            {**repository.serialize_node(row["sp"]), "components": parts_of(row["comps"]), "owners": row["comps"]}
             for row in tx.run(
                 "MATCH (c:Entity)-[:HAS_SPEC]->(sp:Specification) WHERE c.id IN $ids "
                 "RETURN sp, collect(DISTINCT c.id) AS comps ORDER BY sp.name",
                 ids=fact_owners,
             )
         ]
+
+        # The parts' parameters, terminals and interfaces (P26e): a question about a part's setting or wiring needs
+        # them, and since P26c most of them sit on the family.
+        def owned(rel: str, label: str) -> list[dict]:
+            return [{**repository.serialize_node(row["x"]), "components": parts_of(row["comps"]), "owners": row["comps"]}
+                    for row in tx.run(f"MATCH (c:Entity)-[:{rel}]->(x:{label}) WHERE c.id IN $ids "
+                                      "RETURN x, collect(DISTINCT c.id) AS comps ORDER BY x.name", ids=fact_owners)]
+        parameters = owned("HAS_PARAMETER", "Parameter")
+        io_points = owned("HAS_IO", "IOPoint")
+        interfaces = owned("COMMUNICATES_VIA", "Interface")
+        # Which owners are a device model or a product family, so a fact can say where it comes from (P26e)
+        products = {}
+        for comp in components.values():
+            model = comp["device_model"]
+            if model:
+                products[model["id"]] = {"level": "model", "name": model["name"]}
+                if model["family"]:
+                    products[model["family"]["id"]] = {"level": "family", "name": model["family"]["name"]}
 
         documents = [
             {**repository.serialize_node(row["d"]), "describes": parts_of(row["about"]),
@@ -506,6 +525,10 @@ def get_asset_context(asset_id: str) -> dict:
             "part_procedures": part_procedures,
             "failure_modes": failure_modes,
             "specifications": specifications,
+            "parameters": parameters,
+            "io_points": io_points,
+            "interfaces": interfaces,
+            "products": products,
             "counts": {
                 "components": len(components),
                 "signals": sum(len(v) for v in signals_by_owner.values()),
@@ -516,6 +539,9 @@ def get_asset_context(asset_id: str) -> dict:
                 "part_procedures": len(part_procedures),
                 "failure_modes": len(failure_modes),
                 "specifications": len(specifications),
+                "parameters": len(parameters),
+                "io_points": len(io_points),
+                "interfaces": len(interfaces),
             },
         }
 
