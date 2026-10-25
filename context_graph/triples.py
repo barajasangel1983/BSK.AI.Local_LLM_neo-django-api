@@ -30,7 +30,7 @@ from . import registry, repository
 from .driver import session
 from . import evidence, facets
 from .extraction import SELF_LINK, is_part_rating, part_scope_for, rating_props, scope_key_for
-from .identity import EntityIndex, normalize, tag_key
+from .identity import SINGLE_LINKS, EntityIndex, normalize, tag_key
 from .ids import is_valid_id, make_id
 from .models import CandidateTriple
 from .schema import SchemaError
@@ -326,6 +326,15 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
                 aliased.setdefault(node_id, []).append(claimed)
         tx.run("MATCH (n:Entity {id: $id}) "
                "SET n.evidence_ids = [x IN coalesce(n.evidence_ids, []) WHERE NOT x IN $ev] + $ev", id=node_id, ev=ev)
+    # P26d (D3): the BOM gave a part another model (or a model another family): the old link goes, kept for an undo
+    if t.predicate in SINGLE_LINKS and t.predicate in ((t.replaces or {}).get(t.subject_id) or {}):
+        old = tx.run(f"MATCH (:Entity {{id: $a}})-[r:{t.predicate}]->(b:Entity) WHERE b.id <> $b "
+                     "RETURN b.id AS to, properties(r) AS props", a=t.subject_id, b=t.object_id).data()
+        if old:
+            tx.run(f"MATCH (:Entity {{id: $a}})-[r:{t.predicate}]->(b:Entity) WHERE b.id <> $b DELETE r",
+                   a=t.subject_id, b=t.object_id)
+            replaced["_links"] = [{"from": t.subject_id, "type": t.predicate, "to": o["to"], **_plain_props(o["props"])}
+                                  for o in old]
     t.applied_props, t.applied_aliases, t.replaced_props = applied, aliased, replaced
     _supports(tx, schema, t, t.subject_id, t.predicate, t.object_id, {**_provenance(t), **(t.rel_props or {})})
     facets.refresh(tx, schema, [t.subject_id, t.object_id])   # P22b: the new link may add a facet
@@ -356,6 +365,17 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
     if asset_scope and _allowed(schema, "Asset", "DOCUMENTED_BY", "Document"):
         if tx.run("MATCH (a:Asset {id: $id}) RETURN a.id", id=asset_scope).single():
             repository.upsert_relationship(tx, schema, asset_scope, "DOCUMENTED_BY", doc_id, {"source": "library"})
+
+
+def _plain_props(props: dict) -> dict:
+    """A link's properties for a JSON field: Neo4j dates as ISO text, named in `dates` so an undo restores them."""
+    plain, dates = {}, []
+    for k, v in props.items():
+        if hasattr(v, "iso_format"):
+            plain[k], dates = v.iso_format(), dates + [k]
+        else:
+            plain[k] = v
+    return {"props": plain, "dates": dates}
 
 
 def _evidence_ids(t: CandidateTriple) -> list[int]:
@@ -539,7 +559,13 @@ def _uncommit(tx, t: CandidateTriple) -> None:
     )
     # Values this triple replaced go back; properties it added to entities that already existed go.
     for node_id, old in (t.replaced_props or {}).items():
-        tx.run("MATCH (n:Entity {id: $id}) SET n += $old", id=node_id, old=old)
+        if node_id != "_links":
+            tx.run("MATCH (n:Entity {id: $id}) SET n += $old", id=node_id, old=old)
+    for link in (t.replaced_props or {}).get("_links") or []:     # a part's model or a model's family (P26d)
+        if link["type"] in SINGLE_LINKS:
+            tx.run(f"MATCH (a:Entity {{id: $a}}), (b:Entity {{id: $b}}) MERGE (a)-[r:{link['type']}]->(b) SET r += $props "
+                   "WITH r UNWIND $dates AS k SET r[k] = datetime(r[k])",
+                   a=link["from"], b=link["to"], props=link["props"], dates=link.get("dates") or [])
     for node_id, names in (t.applied_props or {}).items():
         tx.run("MATCH (n:Entity {id: $id}) SET n += $unset", id=node_id, unset={name: None for name in names})
     # Text-created entities with no remaining (non-evidence) relationships.

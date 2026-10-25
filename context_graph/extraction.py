@@ -581,6 +581,20 @@ def _listed(items) -> str:
     return "; ".join(dict.fromkeys(items))[:3000] if items else "none"
 
 
+def _variant_line(kind: str, anchor_props: dict, models: list[dict]) -> str:
+    """P26d (D3 of P26b-2): the variant of the product in use (frame size, size class), from the device models'
+    `variant`, so the prompts' variant rule can keep that variant's values and leave the others'."""
+    if kind == "model":
+        variant = str(anchor_props.get("variant") or "").strip()
+        return f"\n- Its variant: {variant}" if variant else ""
+    variants = {m["name"]: str(m["properties"].get("variant") or "").strip() for m in models}
+    if not any(variants.values()):
+        return ""
+    if len(set(variants.values())) == 1:
+        return f"\n- The variant of its models in use: {next(iter(variants.values()))}"
+    return "\n- The variants of its models in use: " + "; ".join(f"{n}: {v or 'not given'}" for n, v in variants.items())
+
+
 def product_context(anchor_id: str) -> dict:
     """The prompt's context block for a run anchored on a product family or a device model (P26b): what it is, its
     models or family, its existing facts by their exact names, and the names that mean it (its own, its models',
@@ -604,6 +618,7 @@ def product_context(anchor_id: str) -> dict:
     configurations = {(c["properties"].get("configuration") or "") for c in found["parts"]}
     configuration = (f"\n- Its configuration on the installed parts: {configurations.pop()}"
                      if kind == "model" and len(configurations) == 1 and "" not in configurations else "")
+    configuration += _variant_line(kind, p, found["models"])
     owners = [anchor_id, *([found["family"]["id"]] if kind == "model" and found["family"] else []),
               *([m["id"] for m in found["models"]] if kind == "family" else [])]
     with session() as s:
