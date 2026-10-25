@@ -440,13 +440,37 @@ def _commit_lab(tx, t: CandidateTriple) -> None:
            props={**_provenance(t), "predicate": t.predicate, "evidence_ids": _evidence_ids(t)})
 
 
+# Safety facts (P22d, decision 1 and P25 D4): one reviewer, stricter rules.
+SAFETY_ALONE = "Safety facts are approved one at a time: open it, read its quote, then approve it on its own"
+SAFETY_QUOTE = "Safety fact without an exact quote in its source: reject it or run the document again"
+
+
+def is_safety(t: CandidateTriple) -> bool:
+    return "Safety" in (t.facets or [])
+
+
+def safety_blocker(t: CandidateTriple, alone: bool) -> str:
+    """Why this Safety triple can't be approved now ("" when it can, or when it isn't a Safety triple)."""
+    if not is_safety(t):
+        return ""
+    if not alone:
+        return SAFETY_ALONE
+    if t.document_id and not any(e.quote_status == "exact" for e in t.evidence.all()):
+        return SAFETY_QUOTE
+    return ""
+
+
 def approve(triples: list[CandidateTriple]) -> dict:
     """Commit pending/rejected triples. Returns {approved: [ids], errors: {id: message}, layers: {curated, lab}}."""
     schema = registry.active_schema()
     approved, errors, layers = [], {}, {"curated": 0, "lab": 0}
     ready = []
+    alone = sum(t.status != CandidateTriple.Status.APPROVED for t in triples) == 1
     for t in triples:   # checks that need no graph connection first
         if t.status == CandidateTriple.Status.APPROVED:
+            continue
+        if safety_blocker(t, alone):
+            errors[t.pk] = safety_blocker(t, alone)
             continue
         if t.mode == "schema" and unresolved(t):
             errors[t.pk] = unresolved(t)[:255]

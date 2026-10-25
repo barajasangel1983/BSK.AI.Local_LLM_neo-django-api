@@ -111,7 +111,7 @@ def evidence_for(doc, figure: dict, schema, triple: dict, snap=None) -> Evidence
     window = window_for(figure)
     # P25b: the figure's description in the document's text, when it has been described (Describe figures)
     span = snap.locate(window.text, figure["page"], figure["page"]).fields(snap.hash) if snap is not None else {}
-    return Evidence(
+    e = Evidence(
         source_kind=Evidence.Kind.VISION, document=doc,
         page_start=figure["page"], page_end=figure["page"], section_path=window.section_path,
         region={"page": figure["page"], **(figure.get("bbox") or {})}, figure_id=str(figure["index"]),
@@ -119,3 +119,5 @@ def evidence_for(doc, figure: dict, schema, triple: dict, snap=None) -> Evidence
         model=settings.VLM_MODEL, prompt=f"{PROMPT_NAME} v{PROMPT_VERSION}", schema_version=schema.version,
         excerpt=window.text[:1500], confidence=triple.get("confidence"), **span,
     )
+    e.model_quote = triple.get("quote") or ""
+    return e

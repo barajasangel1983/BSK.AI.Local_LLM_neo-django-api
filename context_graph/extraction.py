@@ -321,6 +321,64 @@ Rules:
 Document: {document}
 Section: {section}""",
     ),
+    "Safety (v2)": (
+        "schema",
+        """You extract the safety knowledge of an industrial device from its manual: the dangers it names, what protects
+against them, and the safety functions the device provides.
+
+Entity types (use exactly these names):
+{entity_types}
+
+Relationships (predicate: allowed subject type -> object type):
+{relationships}
+
+Properties an entity may have (only these names):
+{properties}
+
+Rules:
+- Only what the text states; never add a danger, a measure or a level that is not written there.
+- Every triple has "quote": the one sentence of the text it comes from, copied exactly as written (same words, same
+  numbers, same order; no ellipsis, no summary). If no single sentence of the text states it, leave the triple out.
+- Hazards: <device> HAS_HAZARD <hazard>, ONE per danger the text names, named by what the danger is and where it
+  comes from (for example "Electric shock from the DC link capacitors", "Hot surface of the heat sink", "Crushing by
+  the rotating shaft"), never by its signal word ("Warning" is not a name). Properties:
+  - "severity": the signal word of the warning this danger is in, exactly as printed (DANGER, WARNING, CAUTION,
+    NOTICE, or its translation). The signal word usually stands alone on a line or a heading above the warning's
+    text, not in the sentence you quote: take it from there. Empty only when the danger is not under a signal word;
+  - "consequence": what can happen, in the text's words ("death or serious injury", "damage to the device");
+  - a subtype for its kind (Electrical, Mechanical, Thermal, …).
+  The same danger repeated in several boxes is ONE hazard.
+- Measures: <hazard> PROTECTED_BY <measure>, each measure as the text gives it, named in at most eight words:
+  - a waiting time with its "value" and "unit" ("Wait 5 minutes after switching off": value 5, unit min);
+    "value" is only ever a number the text gives; a measure without a number has no "value";
+  - protective equipment by item ("Safety glasses", "Insulating gloves");
+  - lockout, a guard, a warning label, a check before work ("Check that no voltage is present");
+  - "Only qualified personnel" is a measure (subtype Qualification).
+  A measure that a procedure of this text needs: <procedure> REQUIRES <measure>, the procedure named as the text
+  names it.
+- Safety functions: <device> PROVIDES <function>, only functions the device itself provides (Safe Torque Off, Safe
+  Stop 1, Safely-Limited Speed …), named as the text names them, with "standard", "level" and "response_time" when
+  given. "level": every safety integrity level, performance level or category the text states for this function
+  or for its use and wiring ("SIL 2", "PL d", "Category 3"), as written and with its standard in "standard".
+  <function> HAS_IO <terminal> for its safety inputs and <function> CONFIGURED_BY <parameter> for the parameters the
+  text says set it, each named as the text writes it.
+  A standard the device only "complies with" is not a function.
+- Not a fact here: an instruction that only sends the reader to other documents, instructions or rules without
+  saying what to do ("observe the safety instructions", "read the manual", "follow the manufacturer's information");
+  the explanation of what the signal words mean; liability and warranty text; a hazard of another product or option.
+- Variants and tables for several models: only what applies to the device this document describes.
+- Never create a Specification, a Parameter on its own, a Procedure on its own, an Alarm or a FailureMode: those
+  are other runs. A procedure appears only as the subject of REQUIRES.
+- First a key "note": one sentence on which safety facts this text gives, or that it gives none.
+- Return ONLY compact JSON:
+  {"note": str, "triples": [{"subject": str, "subject_type": str, "subject_subtype": str, "subject_properties": {},
+                "predicate": str, "object": str, "object_type": str, "object_subtype": str,
+                "object_properties": {}, "quote": str, "confidence": number 0-1}]}
+  Return {"triples": []} if the text has nothing of this kind.
+
+Document: {document}
+Section: {section}""",
+    ),
 }
 # Never from the model: identity, provenance, and `status` (draft / approved is a person's decision).
 PROPERTY_SKIP = {"id", "name", "subtype", "source", "aliases", "evidence_ids", "created_by_triple", "status", "facets",
@@ -341,6 +399,10 @@ FACET_RUNS = (
      "owns": ("Parameter", "IOPoint", "Interface"), "chunking": {"strategy": "fixed", "params": {"size": 400, "overlap": 50}},
      # only its own links: on the G120C it also staged 30 fieldbus error codes as alarms (2026-10-18)
      "keeps": ("HAS_PARAMETER", "HAS_IO", "COMMUNICATES_VIA", "CONFIGURED_BY", "SETS")},
+    # P22d: the dangers, measures and safety functions; a Safety fact is approved one at a time with an exact quote
+    {"key": "safety", "label": "Safety", "preset": "Safety (v2)", "needs": "Hazard",
+     "owns": ("Hazard", "SafetyMeasure", "SafetyFunction"),
+     "keeps": ("HAS_HAZARD", "PROTECTED_BY", "REQUIRES", "PROVIDES", "HAS_IO", "CONFIGURED_BY")},
 )
 FACET_RUN_BY_KEY = {r["key"]: r for r in FACET_RUNS}
 
@@ -355,6 +417,7 @@ def facet_runs_available(schema: Schema | None = None) -> list[dict]:
 
 
 MAX_PROPERTY = 1000
+MAX_QUOTE = 1000        # the sentence a triple comes from (P22d: the Safety prompt returns it; checked word for word)
 MAX_LIST = 40
 
 
@@ -802,8 +865,9 @@ def parse_triples(content: str) -> list[dict]:
             confidence = None
         subtypes = {k: str(t.get(k) or "").strip()[:MAX_NAME] for k in ("subject_subtype", "object_subtype") if t.get(k)}
         props = {k: clean_properties(t.get(k)) for k in ("subject_properties", "object_properties")}
+        quote = {"quote": str(t["quote"]).strip()[:MAX_QUOTE]} if isinstance(t.get("quote"), str) and t["quote"].strip() else {}
         out.append({**{k: v[:MAX_NAME] for k, v in fields.items()}, **subtypes, **{k: v for k, v in props.items() if v},
-                    "confidence": confidence})
+                    "confidence": confidence, **quote})
     return out
 
 
@@ -1032,7 +1096,8 @@ def _run_facets(job, doc, params: dict) -> None:
         leave = sorted({t for other in runs if other != key for t in FACET_RUN_BY_KEY[other]["owns"]})
         sub = {**params, "anchor_id": anchor, "mode": "schema", "presets": {"schema": preset.pk},
                "pages": parse_pages(suggestion["pages"]),
-               "facet_runs": [], "leave_types": leave, "keep_links": list(run.get("keeps") or ())}
+               "facet_runs": [], "leave_types": leave, "keep_links": list(run.get("keeps") or ()),
+               "own_types": list(run.get("owns") or ())}
         if run.get("chunking") and not params.get("chunking_custom"):
             from ingestion.chunking import resolve_params
             sub["chunking"] = {"strategy": run["chunking"]["strategy"],
@@ -1084,7 +1149,8 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
         kept = languages.kept_pages((parsed.get("document") or {}).get("md_content") or "", doc.languages)
     all_windows = len(windows)
     selected = select_windows(windows, params, kept)
-    snap = None if dry else library.text_snapshot(doc, parsed)     # P25b: spans of the windows in the text
+    # P25b: spans of the windows in the text (a dry run keeps its snapshot in memory: quotes are reported, P22d)
+    snap = _memory_snapshot(parsed) if dry else library.text_snapshot(doc, parsed)
     originals = {i: w.text for i, w in selected}                    # a window's text before its tables are read apart
     table_parts: list[tuple[int, object]] = []
     if params.get("tables_by_row", True):
@@ -1132,6 +1198,7 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     staged: dict[tuple, CandidateTriple] = {}
     found: dict[int, list[Evidence]] = {}   # id(triple) -> one Evidence per window it was found in
     votes, channels = Votes(), Channels()   # P26b-2: one value per property, one id per channel
+    short_names = abbreviations((parsed.get("document") or {}).get("md_content") or "")   # P22d: STO = Safe Torque Off
     reviewed = set() if dry else {  # already approved/rejected in an earlier run: not staged again
         triple_key(t.mode, t.subject_name, t.subject_type, t.predicate, t.object_name, t.object_type)
         for t in CandidateTriple.objects.filter(document=doc).exclude(status=CandidateTriple.Status.PENDING)
@@ -1141,6 +1208,7 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     strips: set[str] = set()      # strips and connectors returned as IOPoints, dropped (P26b-2)
     leave_types = set(params.get("leave_types") or ())   # owned by another facet run of the same job (P22c-0)
     keep_links = set(params.get("keep_links") or ())     # a facet run stages only its own links (empty: all)
+    own_types = set(params.get("own_types") or ())       # its own facts keep their links to others' (P22d: STO -> DI)
 
     def stage(raw, mode, window, i, preset, make_evidence, model=None):
         """Stage the raw triples found in one place (a text window or a figure)."""
@@ -1149,6 +1217,9 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             if mode == "schema" and (t["subject_type"] in EVIDENCE_TYPES or t["object_type"] in EVIDENCE_TYPES):
                 continue  # evidence structure is written on approval, not extracted
             t = map_anchor(t, anchor)
+            for end in ("subject", "object"):
+                if t[f"{end}_type"] in ABBREVIATED_TYPES and normalize(t[end]) in short_names:
+                    t = {**t, end: short_names[normalize(t[end])]}
             candidate = _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, model=model, part=part)
             candidate.anchor_id = params.get("anchor_id") or ""
             if settings.GRAPH_SINGLE_VALUES and strip_as_channel(candidate):
@@ -1157,8 +1228,9 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             channels.unify(candidate)
             key = triple_key(mode, candidate.subject_name, candidate.subject_type, candidate.predicate,
                              candidate.object_name, candidate.object_type)
-            if (candidate.subject_type in leave_types or candidate.object_type in leave_types
-                    or (keep_links and candidate.predicate not in keep_links)):
+            left_type = candidate.subject_type in leave_types or (candidate.object_type in leave_types
+                                                                     and candidate.subject_type not in own_types)
+            if left_type or (keep_links and candidate.predicate not in keep_links):
                 left.add(key)      # checked after staging: a part's limit becomes a Specification there
                 continue
             if key in reviewed:
@@ -1273,9 +1345,23 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             logger.warning("drawing triples skipped doc=%s: %s", doc.doc_key, exc)
 
     disagreed = votes.settle(staged.values())
+    if snap is not None:        # P25d: each place's quote, for the triple's final name and values
+        for t in staged.values():
+            for e in found.get(id(t), []):
+                quotes.apply(e, t.object_name, t.object_props, snap.text, getattr(e, "model_quote", ""))
+                # A hazard's severity from its notice's signal word, when the model left it out (P22d)
+                if t.object_type == "Hazard" and not t.object_props.get("severity") and e.quote_status == quotes.EXACT:
+                    word = quotes.signal_word(snap.text, e.quote_start)
+                    if word:
+                        t.object_props = {**t.object_props, "severity": word}
     if dry:
         return {"staged": len(staged), "failed": failed, "skipped": skipped, "left": len(left), "disagreed": disagreed,
-                "strips_dropped": sorted(strips), "triples": list(staged.values()), "evidence": {k: len(v) for k, v in found.items()}}
+                "strips_dropped": sorted(strips), "triples": list(staged.values()), "evidence": {k: len(v) for k, v in found.items()},
+                "quotes": [{"type": t.object_type, "name": t.object_name, "predicate": t.predicate,
+                            "subject": t.subject_name, "props": t.object_props,
+                            "places": [{"status": e.quote_status, "model_quote": getattr(e, "model_quote", ""),
+                                        "page": e.page_start} for e in found.get(id(t), [])]}
+                           for t in staged.values()]}
     with transaction.atomic():
         # A new run replaces the document's pending triples of the prompts it ran (P22c-0: per prompt, not per mode:
         # a Ratings run no longer erases a Maintenance run's pending triples); reviewed ones are kept. With a part, only
@@ -1288,10 +1374,6 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
             replaced = replaced.filter(anchor_id=params["anchor_id"])
         replaced.delete()
         facets.stamp(staged.values(), registry.active_schema())
-        if snap is not None:        # P25d: each place's quote, for the triple's final name and values
-            for t in staged.values():
-                for e in found.get(id(t), []):
-                    quotes.apply(e, t.object_name, t.object_props, snap.text)
         triples = CandidateTriple.objects.bulk_create(staged.values())
         evidence.attach(triples, found)
         evidence.drop_orphans(document=doc)
@@ -1307,14 +1389,24 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     return {"staged": len(staged), "failed": failed, "skipped": skipped, "left": len(left)}
 
 
+def _memory_snapshot(parsed: dict):
+    """The text's snapshot without saving it (a dry run)."""
+    from ingestion import spans
+
+    md = (parsed.get("document") or {}).get("md_content") or ""
+    return spans.Snapshot(md) if md and settings.EVIDENCE_SPANS else None
+
+
 def _evidence(doc, window, i, preset, schema, t, params, span: dict | None = None) -> Evidence:
-    return Evidence(
+    e = Evidence(
         source_kind=Evidence.Kind.TEXT, document=doc,
         page_start=window.page_start, page_end=window.page_end, section_path=window.section_path,
         chunk_index=i, window=params.get("chunking") or {}, extractor="llm-text",
         model=settings.DGX_CHAT_MODEL, prompt=f"{preset.name} v{preset.version}", schema_version=schema.version,
         excerpt=window.text[:EVIDENCE_CHARS], confidence=t.get("confidence"), **(span or {}),
     )
+    e.model_quote = t.get("quote") or ""     # P22d: the sentence the model says it comes from (not saved; checked)
+    return e
 
 
 # A limit's properties as a rating's (P22a): the values are kept, under the Specification's names.
@@ -1346,6 +1438,15 @@ def without_repeated_unit(p: dict) -> dict:
             if _PLAIN_VALUE.match(rest):
                 out[key] = rest
     return out
+
+
+def without_wordy_value(p: dict) -> dict:
+    """A safety measure's value is a number or a range: a sentence given as its value ("remove this before turning the
+    rotor over", P22d dry run) leaves, with its unit."""
+    v = p.get("value")
+    if v is None or isinstance(v, (int, float)) or _PLAIN_VALUE.match(str(v)):
+        return p
+    return {k: x for k, x in p.items() if k not in ("value", "unit")}
 
 
 def is_part_rating(subject_type: str, predicate: str, object_type: str, schema: Schema) -> bool:
@@ -1395,6 +1496,8 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
             p = props.get(end) or {}
             if t[f"{end}_type"] == "Specification":
                 p.update(without_repeated_unit(p))
+            if t[f"{end}_type"] == "SafetyMeasure" and p:
+                props[end] = without_wordy_value(p)
             if t[f"{end}_type"] == "Parameter" and p.get("code"):
                 code, position = normalize_code(str(p["code"]))
                 p["code"] = code
@@ -1480,6 +1583,32 @@ _STRIP_NAME = re.compile(r"^\s*(?:(?:terminal\s+(?:strip|block)|connector|plug)s
 def strip_as_channel(c) -> bool:
     return any(getattr(c, f"{end}_type") == "IOPoint" and _STRIP_NAME.match(getattr(c, f"{end}_name") or "")
                for end in ("subject", "object"))
+
+
+# A name the text writes with its abbreviation, "Safe Torque Off (STO)": the G120C's Safety run staged it as that,
+# "Safe Torque Off" and "STO", three nodes (P22d dry run, 2026-10-25). Only for these types: elsewhere a bracket can be
+# a code or a variant.
+ABBREVIATED_TYPES = ("SafetyFunction",)
+_ABBREVIATION = re.compile(r"((?:[A-Za-z][\w-]*\s+){0,5}[A-Za-z][\w-]*)\s*\(([A-Z]{2,6})\)")
+
+
+def abbreviations(text: str) -> dict[str, str]:
+    """normalize(long), normalize(short) and normalize(both) -> "Long (SHORT)", for each name the text writes followed
+    by its initials in brackets ("Safely-Limited Speed (SLS)"). A short form the text gives two meanings is left out."""
+    out: dict[str, str] = {}
+    clashes: set[str] = set()
+    for m in _ABBREVIATION.finditer(text or ""):
+        words, short = m.group(1).split(), m.group(2)
+        for k in range(1, len(words) + 1):
+            long = " ".join(words[-k:])
+            if "".join(w[0] for w in re.split(r"[\s-]+", long) if w).upper() == short:
+                full = f"{long} ({short})"
+                if out.get(normalize(short), full) != full:
+                    clashes.add(normalize(short))
+                for name in (long, short, full):
+                    out.setdefault(normalize(name), full)
+                break
+    return {k: v for k, v in out.items() if k not in clashes}
 
 
 class Channels:
