@@ -39,7 +39,7 @@ class PromptVersionTests(LibraryTestCase):
                                 {"template": template, "note": note, "author": "Angel"}, format="json")
 
     def test_listed_by_facet_with_their_built_in_first_version(self):
-        self.assertEqual([f["key"] for f in self.listed["facets"]], ["maintenance", "ratings", "controls"])
+        self.assertEqual([f["key"] for f in self.listed["facets"]], ["maintenance", "ratings", "controls", "safety"])
         self.assertEqual([p["facet"]["label"] for p in self.listed["prompts"]][:3], ["Maintenance", "Ratings", "Controls & Setup"])
         self.assertEqual(self.by_name["Default schema-guided"]["facet"]["key"], "other")
         d = self.detail(CONTROLS)

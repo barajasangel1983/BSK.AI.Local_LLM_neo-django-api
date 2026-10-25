@@ -34,7 +34,7 @@ Entity types: {types}
 The user message is the document's outline: one line per page with its headings and table captions, then its first words; "Pages 24-26" is a page with the pages after it that have no heading (they continue it).
 Pick the pages that hold facts about the subject for that goal. Such facts are usually in: {where}.
 Manuals are usually written for a whole product family or series: what applies to the family applies to the subject (a series' fault list is the subject's fault list). Leave out only what is about other models, sizes or options.
-Leave out pages that do not hold such facts: covers, contents, declarations, general safety notes, transport and storage, pages only about other models or options, long reference lists of settings or parameters (a list of fault, warning or alarm messages is not one: keep it), figures without text. Keep a table's continuation pages with it.
+Leave out pages that do not hold such facts: {leave_out}. Keep a table's continuation pages with it.
 Answer in JSON: {{"note": "one sentence", "sections": [{{"pages": "18-21", "title": "7 Maintenance", "why": "short reason"}}]}}
 If no page applies, answer {{"note": "why", "sections": []}}."""
 
@@ -48,11 +48,25 @@ WHERE_BY_PRESET = {
                             "frequency); measuring range, accuracy, repeatability, response time; ambient, storage and operating "
                             "conditions; dimensions and weights; tables of ratings for several models or sizes (keep them: "
                             "the subject's row is chosen later)"),
+    "Safety (v2)": ("safety instructions and safety notes; warnings, cautions and dangers (DANGER, WARNING, CAUTION, NOTICE "
+                    "boxes) in any chapter; residual risks; protective equipment, lockout and waiting times; qualified "
+                    "personnel; safety functions (Safe Torque Off, STO, SS1, SLS, safety integrated) with their standard "
+                    "and level; the safety steps of installation, commissioning, maintenance and disposal"),
     "Controls & Setup (v6)": ("commissioning and quick commissioning (the steps and the parameters they set); terminal "
                               "strips, inputs and outputs and their wiring; the default settings (macros) of the "
                               "interfaces; fieldbus and communication (PROFINET, PROFIBUS, USS, Modbus, addresses, "
                               "telegrams); the 'basic settings' paragraph of a function. Not the full description of a "
                               "function nor its function diagrams, not parameter lists or indexes, not troubleshooting"),
+}
+
+
+LEAVE_OUT = ("covers, contents, declarations, general safety notes, transport and storage, pages only about other models "
+             "or options, long reference lists of settings or parameters (a list of fault, warning or alarm messages is not "
+             "one: keep it), figures without text")
+# The Safety run reads exactly what the others leave out (P22d).
+LEAVE_OUT_BY_PRESET = {
+    "Safety (v2)": ("covers, contents, declarations of conformity, transport and storage without a hazard, pages only about "
+                    "other models or options, parameter lists, figures without text"),
 }
 
 
@@ -140,7 +154,9 @@ def suggest(doc, *, preset: PromptPreset | None = None, asset_id: str = "", anch
         subject = f'the product that the document "{doc.filename}" describes'
     entity_types, _ = extraction.extractable(registry.active_schema())
     where = WHERE_BY_PRESET.get(preset.name, WHERE) if preset else WHERE
-    system = SYSTEM.format(subject=subject, goal=goal_of(preset), types=", ".join(entity_types), where=where)
+    leave_out = LEAVE_OUT_BY_PRESET.get(preset.name, LEAVE_OUT) if preset else LEAVE_OUT
+    system = SYSTEM.format(subject=subject, goal=goal_of(preset), types=", ".join(entity_types), where=where,
+                           leave_out=leave_out)
 
     entry_of = {p: (a, b) for a, b, _ in lines for p in range(a, b + 1)}
     chosen: set[int] = set()

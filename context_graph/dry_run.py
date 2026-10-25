@@ -25,6 +25,7 @@ _CONTACT = re.compile(r"\b(nc|no|com|pos|neg)\s*$|[+-]\s*$", re.I)
 
 def preset_for(facet: str, template: str | None = None) -> PromptPreset:
     run = extraction.FACET_RUN_BY_KEY[facet]
+    extraction.ensure_default_presets()      # a new built-in version, as the Studio's facet runs do
     live = PromptPreset.objects.get(mode="schema", name=run["preset"])
     if template is None:
         return live

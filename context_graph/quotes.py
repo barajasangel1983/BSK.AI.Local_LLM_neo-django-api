@@ -111,18 +111,60 @@ def find(text: str, name: str, props: dict | None) -> tuple[str, int | None, int
     return EXACT, top[0][0], top[0][1]
 
 
-def fields(evidence, name: str, props: dict | None, snapshot_text: str) -> dict:
-    """The quote fields of one evidence row: searched within its span; none without a span."""
+def find_sentence(text: str, sentence: str) -> tuple[str, int | None, int | None]:
+    """(status, start, end) of a sentence the model says a fact comes from (P22d, D5), word for word in `text`:
+    whitespace and the parser's page and image markers aside, and "&gt;" where the model wrote ">"."""
+    view = spans._View(text, spans._markup)
+    for candidate in (sentence, html.escape(sentence, quote=False)):
+        needle = spans.normalize(spans._markup(candidate))
+        if not needle:
+            break
+        hits = view.find_all(needle, 0, len(view.norm))
+        if len(hits) == 1:
+            return (EXACT, *view.real(hits[0], hits[0] + len(needle)))
+        if hits:
+            return AMBIGUOUS, None, None
+    return NOT_FOUND, None, None
+
+
+def fields(evidence, name: str, props: dict | None, snapshot_text: str, sentence: str = "") -> dict:
+    """The quote fields of one evidence row: searched within its span; none without a span. With the model's
+    `sentence`, that sentence is looked for word for word instead of matching the fact's name and values."""
     if evidence.char_start is None or evidence.char_end is None or not snapshot_text:
         return {}
-    status, start, end = find(snapshot_text[evidence.char_start:evidence.char_end], name, props)
+    span = snapshot_text[evidence.char_start:evidence.char_end]
+    status, start, end = find_sentence(span, sentence) if sentence.strip() else find(span, name, props)
     if start is not None:
         start, end = evidence.char_start + start, evidence.char_start + end
     return {"quote_status": status, "quote_start": start, "quote_end": end}
 
 
-def apply(evidence, name: str, props: dict | None, snapshot_text: str) -> None:
-    for k, v in fields(evidence, name, props, snapshot_text).items():
+# The signal words of safety notices (ANSI Z535 / ISO 3864 and their usual translations), printed alone on a line or a
+# heading above the notice's title and text (P22d: the model left them out for 50 of 66 hazards, 2026-10-25).
+SIGNAL_WORDS = frozenset("""DANGER WARNING CAUTION NOTICE GEFAHR WARNUNG VORSICHT ACHTUNG PELIGRO ADVERTENCIA PRECAUCIÓN
+ATENCIÓN AVERTISSEMENT ATTENTION AVVERTENZA PERICOLO""".split())
+_SIGNAL_LOOKBACK = 2000
+
+
+def signal_word(text: str, start: int) -> str:
+    """The signal word of the safety notice the text at `start` is in ("" when it is in none): the nearest line above
+    that is only a signal word, passing at most one other heading (the notice's title). A second heading first means
+    the text is in another section."""
+    headings = 0
+    above = text[max(0, start - _SIGNAL_LOOKBACK):start]
+    for line in reversed(above[:above.rfind("\n") + 1].splitlines()):      # the lines before the text's own line
+        bare = re.sub(r"^[#\s*_]+|[\s*_:!]+$", "", line).upper()
+        if bare in SIGNAL_WORDS:
+            return bare
+        if line.lstrip().startswith("#"):
+            headings += 1
+            if headings > 1:
+                return ""
+    return ""
+
+
+def apply(evidence, name: str, props: dict | None, snapshot_text: str, sentence: str = "") -> None:
+    for k, v in fields(evidence, name, props, snapshot_text, sentence).items():
         setattr(evidence, k, v)
 
 

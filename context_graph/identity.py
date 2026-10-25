@@ -84,12 +84,14 @@ class Match:
 
 
 # Facts that belong to a part (P21): their new ids carry the part, and they are matched within its family only.
-PART_LABELS = ("Alarm", "Procedure", "FailureMode", "Component", "Specification", "Parameter", "IOPoint", "Interface")
+PART_LABELS = ("Alarm", "Procedure", "FailureMode", "Component", "Specification", "Parameter", "IOPoint", "Interface",
+               "Hazard", "SafetyMeasure", "SafetyFunction")     # the safety types: P22d
 # Component -> fact links that make a part own a fact; a procedure is also owned through what it serves. A product
 # family or a device model owns its facts through the same links (P26b).
 OWNERS = ("Component", "ProductFamily", "DeviceModel")
 SINGLE_LINKS = ("INSTANCE_OF", "VARIANT_OF")   # an installed part has one model, a model one family (P26d)
-OWNING = ("HAS_ALARM", "HAS_PROCEDURE", "HAS_FAILURE_MODE", "HAS_SPEC", "HAS_PARAMETER", "HAS_IO", "COMMUNICATES_VIA")
+OWNING = ("HAS_ALARM", "HAS_PROCEDURE", "HAS_FAILURE_MODE", "HAS_SPEC", "HAS_PARAMETER", "HAS_IO", "COMMUNICATES_VIA",
+          "HAS_HAZARD", "PROVIDES")
 
 
 @dataclass(frozen=True)
@@ -129,7 +131,9 @@ class EntityIndex:
                     "RETURN c.id AS part, n.id AS id", owning=list(OWNING), owners=list(OWNERS)).data()
                 serves = s.run(
                     "MATCH (p:Procedure)-[:ADDRESSES]->(x:Entity) RETURN p.id AS id, x.id AS served "
-                    "UNION MATCH (x:FailureMode)-[:MITIGATED_BY]->(p:Procedure) RETURN p.id AS id, x.id AS served").data()
+                    "UNION MATCH (x:FailureMode)-[:MITIGATED_BY]->(p:Procedure) RETURN p.id AS id, x.id AS served "
+                    # a safety measure belongs to the parts of the hazard it protects against (P22d)
+                    "UNION MATCH (x:Hazard)-[:PROTECTED_BY]->(p:SafetyMeasure) RETURN p.id AS id, x.id AS served").data()
                 tree = s.run("MATCH (p:Component)-[:HAS_COMPONENT]->(c:Component) RETURN p.id AS parent, c.id AS id").data()
                 bom = s.run("MATCH (c:Component) WHERE c.source = 'structured' RETURN c.id AS id").data()
                 variants = s.run("MATCH (m:DeviceModel)-[:VARIANT_OF]->(f:ProductFamily) RETURN m.id AS id, f.id AS family").data()
@@ -147,7 +151,7 @@ class EntityIndex:
             owner = part_by_key.get(key.rsplit("/", 1)[0]) if "/" in key else None
             if owner and owner != row["id"] and repository.node_label(row["labels"]) in PART_LABELS:
                 index.owners.setdefault(row["id"], set()).add(owner)
-        for row in serves:                              # a procedure belongs to the parts of what it serves
+        for row in serves:                              # a procedure (a measure) belongs to the parts of what it serves
             if row["served"] in index.owners:
                 index.owners.setdefault(row["id"], set()).update(index.owners[row["served"]])
         index.parents = {row["id"]: row["parent"] for row in tree}

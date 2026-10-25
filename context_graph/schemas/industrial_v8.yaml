@@ -1,0 +1,356 @@
+# "Industrial" Context Graph schema — version 8 (2026-10-25), P22d: Safety.
+# Plan: claude/P22d_safety_plan.md (Studio web repository).
+#
+# Additive only: v7 unchanged (every type, pair, subtype, alias and facet rule) plus
+#   - Hazard: a danger the manual names (kind, severity = the signal word as written, consequence)
+#   - SafetyMeasure: what protects against it (PPE, lockout, a waiting time, a guard, a qualification, a label)
+#   - SafetyFunction: a safety function the device provides (STO, SS1, SLS), with standard and level
+#   - HAS_HAZARD, PROTECTED_BY (Hazard -> SafetyMeasure), REQUIRES (Procedure -> SafetyMeasure), PROVIDES; a safety
+#     function CONFIGURED_BY its parameters and HAS_IO its safety inputs; DESCRIBES the three
+#   - the three types are the Safety facet; a procedure that REQUIRES a measure is Safety too
+#
+name: Industrial
+description: Assets, components, signals, alarms, failure modes, procedures and documents of a manufacturing asset.
+
+entity_types:
+  Plant:           {description: "Manufacturing site."}
+  Area:            {description: "Area / department within a plant."}
+  Line:            {description: "Production line (work center)."}
+  Asset:
+    description: "Machine or equipment unit (One Asset = One Context)."
+    properties:
+      asset_type: "kind of machine, e.g. Extruder"
+      description: "what the asset is"
+  Component:
+    description: "Part or subsystem of an asset; can nest."
+    subtypes: [Motor, Drive, Gearbox, Screw, Barrel, Heater, Die, Feeder, Pump, Valve, Conveyor, Cutter,
+               Overload relay, Breaker, Contactor, Controller, Sensor, Instrument,
+               Heating zone, Conditioner, Measurement point, PLC, Computer, Power supply, Load cell, Bearing]
+    properties:
+      subtype: "the schema's subtype (v3); imports before v3 wrote `component_type`, which is kept"
+      component_type: "the type as the source wrote it (BOM Type column)"
+      manufacturer: "Digital Nameplate: manufacturer name"
+      model: "Digital Nameplate: product designation"
+      part_number: "order code / article number"
+      part_number_check: "how far the part number was verified"
+      serial_number: "Digital Nameplate: serial number, when known"
+      quantity: "how many in the asset"
+      manual_url: "where the manufacturer's manual is (one or several, ' | ')"
+      manual_title: "the manual's title"
+      notes: "free remarks from the source"
+      configuration: "the options this installed part has (outputs, inputs, modules), when the part number does not say"
+      configuration_basis: "where the configuration comes from: chosen (a decision) or assumed (the minimum, to be confirmed), with the date"
+  Signal:
+    description: "Measured or computed variable (tag)."
+    subtypes: [Temperature, Pressure, Flow, Speed, Torque, Power, Current, Voltage, Level, Moisture,
+               Density, Dimension, Rate, State, Counter, KPI]
+    properties:
+      unit: "engineering unit, normalized (°C, bar, kg/h …)"
+      data_type: "float, int, bool, text"
+      historian_ref: "the historian column (plc_1_historian.extruder_samples.<column>)"
+      subtype: "the schema's subtype"
+  OPCNode:
+    description: "OPC UA node implementing a signal."
+    properties:
+      node_id: "ns=…;s=…"
+      slot: "the PLC slot, e.g. AnalogIn[12]"
+      data_type: "the OPC UA data type"
+  Alarm:
+    description: "Alarm or event condition: a PLC alarm, or a device's own fault or warning code."
+    subtypes: [PLC alarm, Device fault, Device warning]
+    properties:
+      code: "the alarm or fault code as shown, e.g. DIE_PLUG, F7801"
+      severity: "priority (ISA-18.2)"
+      description: "the alarm text"
+      plc_index: "its place in the PLC's fault list"
+      setpoint: "the value at which it is raised, with its unit, when stated"
+      cause: "the documented cause(s), as written"
+      consequence: "what happens if nothing is done"
+      corrective_action: "what to do, as written"
+  OperatingLimit:
+    description: "Range or setpoint that applies to a signal."
+    properties:
+      kind: "normal | specification | alarm | trip"
+      low: "lower limit"
+      target: "target or setpoint"
+      high: "upper limit"
+      unit: "the signal's unit"
+      group: "a recipe or product the limit applies to"
+      basis: "where the values come from"
+  FailureMode:
+    description: "A way a component fails, as a maintenance or troubleshooting text describes it (ISO 14224), e.g. bearing overheating, screen pack blinding."
+    subtypes: [Electrical, Mechanical, Thermal, Process, Control, Instrumentation]
+    properties:
+      description: "the failure as described"
+      causes: "probable causes, as written (a list)"
+      effect: "what the failure does to the machine or the product"
+  Procedure:
+    description: "SOP, troubleshooting, inspection, lubrication or maintenance procedure (summary only)."
+    subtypes: [Inspection, Lubrication, Calibration, Commissioning, Corrective, Troubleshooting, Cleaning,
+               Replacement, Operation]
+    properties:
+      procedure_type: "the kind, as the source states it"
+      summary: "the steps, short"
+      interval: "how often, e.g. at least once a year, every 4,000 h"
+      amount: "quantities, e.g. grease per bearing"
+      status: "draft | approved"
+  Document:
+    description: "Source document (evidence lives in the document stores, not the graph)."
+    subtypes: [Operating instructions, Maintenance instructions, Technical specification, Data sheet, Drawing,
+               Spare parts list, Certificate, Standard operating procedure, Quality alert, Visual aid, Training, Report]
+    properties:
+      doc_key: "the library's document key"
+      doc_class: "VDI 2770 document class (the subtype)"
+      source_url: "where it was downloaded from"
+  Specification:
+    description: "A part's rating or datasheet value: measuring range, ambient or storage temperature, rated current or power, accuracy, response time (v4). Not a process limit: those are a signal's OperatingLimit."
+    subtypes: [Electrical, Thermal, Environmental, Mechanical, Measurement, Performance, Dimension]
+    properties:
+      value: "the single value, with its unit when it is not a number, e.g. 16.5, \"±1.0 °C or ±1.0 %\""
+      min: "lower end of a range"
+      max: "upper end of a range"
+      unit: "the unit of value / min / max"
+      condition: "when it applies, e.g. at 2 kHz pulse frequency, with mounted head transmitter"
+      basis: "where in the document: the table, row and column"
+  DocumentSection: {description: "Section/page range of a document, referenced as evidence."}
+
+  Parameter:
+    description: "A device's setting or readout as its manual names it (p1082 Maximum speed, 01.01 Motor speed used)."
+    subtypes: [Setting, Readout]
+    properties:
+      code: "the parameter number as written (p1082, r0021, 01.01)"
+      default: "the factory setting"
+      min: "the lowest allowed value"
+      max: "the highest allowed value"
+      unit: "the unit"
+      access: "read | write"
+      data_set: "the data set or index, if any (CDS, DDS, [0])"
+  IOPoint:
+    description: "A terminal of the device: a digital or analog input or output, a relay contact, a safety input."
+    subtypes: [Digital input, Digital output, Analog input, Analog output, Relay output, Safety input,
+               Temperature input, Power supply]
+    properties:
+      connector: "the terminal strip or connector (-X138)"
+      terminal: "the terminal number or name (5, DI 0)"
+      signal_type: "what it carries (24 V DC, 0-10 V, 0/4-20 mA, NO contact)"
+      direction: "in | out"
+  Interface:
+    description: "A communication interface of the device (fieldbus, Ethernet, serial, USB, operator panel)."
+    subtypes: [Fieldbus, Ethernet, Serial, USB, Wireless, Operator panel]
+    properties:
+      protocol: "PROFINET, PROFIBUS, USS, Modbus RTU …"
+      connector: "the connector (X150, RJ45)"
+      address_range: "the allowed addresses"
+      telegram: "the telegram or data format"
+
+  ProductFamily:
+    description: "A manufacturer's product series, as its manual covers it (SINAMICS G120C, EZ-ZONE PM PLUS) (v7)."
+    properties:
+      manufacturer: "the manufacturer"
+  Hazard:
+    description: "A danger the manual names, by what it is (electric shock from the DC link, hot surface), not by its signal word (v8)."
+    subtypes: [Electrical, Mechanical, Thermal, Chemical, Fire, Radiation, Noise, Pressure, Other]
+    properties:
+      severity: "the manual's signal word as written: DANGER, WARNING, CAUTION, NOTICE"
+      consequence: "what can happen, as the text says (death or serious injury, damage to the device)"
+  SafetyMeasure:
+    description: "What protects against a hazard, as the text gives it: protective equipment, lockout, a waiting time, a guard, a qualification, a label (v8)."
+    subtypes: [PPE, Lockout, Waiting time, Guard, Qualification, Label, Procedure step, Other]
+    properties:
+      value: "a waiting time, a distance, a number, with its unit when given"
+      unit: "the unit of value"
+  SafetyFunction:
+    description: "A safety function the device provides (Safe Torque Off, Safe Stop 1, Safely-Limited Speed) (v8)."
+    properties:
+      standard: "the standard it is rated to (IEC 61800-5-2, ISO 13849-1, IEC 62061)"
+      level: "the safety level as written (SIL 3, PL e, Cat. 3)"
+      response_time: "the response time with its unit, when given"
+  DeviceModel:
+    description: "One model or variant of a product family: the size, rating or option set a part is (G120C 7.5 kW 400 V PROFINET) (v7)."
+    properties:
+      manufacturer: "the manufacturer"
+      designation: "the model designation as the manufacturer writes it"
+      order_code: "the order code or product root, when one identifies the model"
+
+relationship_types:
+  CONTAINS:
+    description: Physical/organizational hierarchy.
+    pairs: [[Plant, Area], [Area, Line], [Line, Asset]]
+    aliases: [contains, includes area, includes line]
+  HAS_COMPONENT:
+    description: Composition.
+    pairs: [[Asset, Component], [Component, Component], [ProductFamily, Component], [DeviceModel, Component]]
+    aliases: [has component, has part, consists of, is equipped with, includes]
+  CONNECTED_TO:
+    description: "Connection between components (property `kind`: material_flow, electrical, mechanical, ...)."
+    pairs: [[Component, Component]]
+    aliases: [connected to, feeds, flows to, discharges to, coupled to]
+  MONITORED_BY:
+    description: Signal that monitors an asset or component.
+    pairs: [[Asset, Signal], [Component, Signal]]
+    aliases: [monitored by, measured by, sensed by, has signal, has sensor reading]
+  IMPLEMENTED_AS:
+    description: Signal realized by an OPC UA node.
+    pairs: [[Signal, OPCNode]]
+    aliases: [implemented as, mapped to opc node]
+  HAS_LIMIT:
+    description: Operating limit of a signal.
+    pairs: [[Signal, OperatingLimit]]
+    aliases: [has limit, has range, has setpoint, limited to]
+  HAS_SPEC:
+    description: "A part's rating or datasheet value (v4)."
+    pairs: [[Component, Specification], [ProductFamily, Specification], [DeviceModel, Specification]]
+    aliases: [has spec, has specification, has rating, is rated, rated at, technical data]
+  HAS_ALARM:
+    description: "Alarm defined for an asset; a device's own fault or warning code (Component, v3); the alarm of a tag (Signal, v3, ISA-18.2)."
+    pairs: [[Asset, Alarm], [Component, Alarm], [Signal, Alarm], [ProductFamily, Alarm], [DeviceModel, Alarm]]
+    aliases: [has alarm, raises alarm, has fault code, alarms on]
+  ASSOCIATED_WITH:
+    description: Component involved in an alarm.
+    pairs: [[Component, Alarm]]
+    aliases: [associated with, triggers, causes alarm]
+  HAS_PROCEDURE:
+    description: "Procedure available for an asset, or for a component (v3)."
+    pairs: [[Asset, Procedure], [Component, Procedure], [ProductFamily, Procedure], [DeviceModel, Procedure]]
+    aliases: [has procedure, has sop, has maintenance procedure]
+  APPLIES_TO:
+    description: Scope of a procedure.
+    pairs: [[Procedure, Asset], [Procedure, Component], [Procedure, ProductFamily], [Procedure, DeviceModel]]
+    aliases: [applies to, used for, performed on]
+  ADDRESSES:
+    description: Alarm a procedure resolves.
+    pairs: [[Procedure, Alarm]]
+    aliases: [addresses, resolves, clears, fixes]
+  HAS_FAILURE_MODE:
+    description: "A way the component (or the asset) can fail (v3, ISO 14224)."
+    pairs: [[Component, FailureMode], [Asset, FailureMode], [ProductFamily, FailureMode], [DeviceModel, FailureMode]]
+    aliases: [has failure mode, can fail by, may fail by, failure of]
+  INDICATED_BY:
+    description: "The symptom of a failure mode: an alarm or fault code, or a signal (v3)."
+    pairs: [[FailureMode, Alarm], [FailureMode, Signal]]
+    aliases: [indicated by, signalled by, shown by, symptom]
+  MITIGATED_BY:
+    description: "The corrective action for a failure mode (v3)."
+    pairs: [[FailureMode, Procedure]]
+    aliases: [mitigated by, corrected by, remedied by, what to do]
+  DRIVES:
+    description: A drive, motor or gearbox drives another component.
+    pairs: [[Component, Component]]
+    aliases: [drives, runs, powers, turns]
+  PROTECTS:
+    description: A protective device (overload relay, breaker) protects a component.
+    pairs: [[Component, Component]]
+    aliases: [protects, guards, trips for]
+  CONTROLS:
+    description: A controller or drive controls a component or a signal.
+    pairs: [[Component, Component], [Component, Signal]]
+    aliases: [controls, regulates, adjusts, sets]
+  DOCUMENTED_BY:
+    description: "Document describing an asset, a component, or a procedure (v3)."
+    pairs: [[Asset, Document], [Component, Document], [Procedure, Document], [ProductFamily, Document], [DeviceModel, Document]]
+  HAS_SECTION:
+    description: Document structure.
+    pairs: [[Document, DocumentSection]]
+  DESCRIBES:
+    description: Evidence link from a document section to what it describes.
+    pairs: [[DocumentSection, Asset], [DocumentSection, Component], [DocumentSection, Signal], [DocumentSection, Alarm],
+            [DocumentSection, Procedure], [DocumentSection, FailureMode], [DocumentSection, OperatingLimit],
+            [DocumentSection, Specification], [DocumentSection, Parameter], [DocumentSection, IOPoint], [DocumentSection, Interface],
+            [DocumentSection, DeviceModel], [DocumentSection, ProductFamily],
+            [DocumentSection, Hazard], [DocumentSection, SafetyMeasure], [DocumentSection, SafetyFunction]]
+  HAS_PARAMETER:
+    description: "A device's setting or readout (v6)."
+    pairs: [[Component, Parameter], [ProductFamily, Parameter], [DeviceModel, Parameter]]
+    aliases: [has parameter, has setting, is set by parameter]
+  HAS_IO:
+    description: "A terminal of the device (v6); a safety function's safety inputs (v8)."
+    pairs: [[Component, IOPoint], [ProductFamily, IOPoint], [DeviceModel, IOPoint], [SafetyFunction, IOPoint]]
+    aliases: [has terminal, has input, has output, has io]
+  COMMUNICATES_VIA:
+    description: "A communication interface of the device (v6)."
+    pairs: [[Component, Interface], [ProductFamily, Interface], [DeviceModel, Interface]]
+    aliases: [communicates via, has interface, connects via]
+  CONFIGURED_BY:
+    description: "The parameter that sets what a terminal does (DI 0 -> p0840) (v6); a parameter of a safety function (v8)."
+    pairs: [[IOPoint, Parameter], [SafetyFunction, Parameter]]
+    aliases: [configured by, assigned by, function set by]
+  SETS:
+    description: "A procedure step that sets a parameter (commissioning) (v6)."
+    pairs: [[Procedure, Parameter]]
+    aliases: [sets parameter, changes parameter, enters parameter]
+  MAPS_TO:
+    description: "The PLC signal carries the same quantity as the parameter (suggested by the Studio, approved) (v6)."
+    pairs: [[Parameter, Signal]]
+  CARRIES:
+    description: "The PLC signal wired to the terminal (suggested, approved) (v6)."
+    pairs: [[IOPoint, Signal]]
+
+  INSTANCE_OF:
+    description: "The installed part is one of this device model (v7)."
+    pairs: [[Component, DeviceModel]]
+    aliases: [instance of, is model]
+  VARIANT_OF:
+    description: "The device model belongs to this product family (v7)."
+    pairs: [[DeviceModel, ProductFamily]]
+    aliases: [variant of, model of, belongs to family]
+
+  HAS_HAZARD:
+    description: "A danger the manual names for the device (v8)."
+    pairs: [[Component, Hazard], [ProductFamily, Hazard], [DeviceModel, Hazard], [Asset, Hazard]]
+    aliases: [has hazard, has danger, risk of, warns of]
+  PROTECTED_BY:
+    description: "What protects against the hazard (v8)."
+    pairs: [[Hazard, SafetyMeasure]]
+    aliases: [protected by, prevented by, avoided by, safeguarded by]
+  REQUIRES:
+    description: "A safety measure a procedure needs before or while it is done (v8)."
+    pairs: [[Procedure, SafetyMeasure]]
+    aliases: [requires, needs, must wear, only after]
+  PROVIDES:
+    description: "A safety function the device provides (v8)."
+    pairs: [[Component, SafetyFunction], [ProductFamily, SafetyFunction], [DeviceModel, SafetyFunction]]
+    aliases: [provides, supports safety function, has safety function]
+
+facets:
+  types:
+    Alarm: [Troubleshooting]
+    FailureMode: [Troubleshooting, Maintenance]
+    OperatingLimit: [Operation]
+    Signal: [Controls]
+    OPCNode: [Controls]
+    IOPoint: [Controls, Installation]
+    Interface: [Controls]
+    Hazard: [Safety]
+    SafetyMeasure: [Safety]
+    SafetyFunction: [Safety]
+  subtypes:
+    Procedure:
+      Inspection: [Maintenance]
+      Lubrication: [Maintenance]
+      Cleaning: [Maintenance]
+      Replacement: [Maintenance]
+      Corrective: [Maintenance]
+      Troubleshooting: [Troubleshooting]
+      Calibration: [Setup, Quality]
+      Commissioning: [Setup]
+      Operation: [Operation]
+    Specification:          # a part's ratings are core, tagged by what they are used for
+      Measurement: [Quality]
+      Environmental: [Installation]
+      Dimension: [Installation]
+      Electrical: [Installation, Controls]
+      Performance: [Operation]
+      Mechanical: [Operation]
+      Thermal: [Operation]
+    Parameter:
+      Setting: [Setup]
+      Readout: [Controls]
+  defaults:
+    Procedure: [Maintenance]
+    Parameter: [Setup]   # no subtype: made by the Maintenance preset (Angel, D3)
+  links:
+    # a procedure that answers an alarm or a failure mode is also troubleshooting knowledge
+    - {rel: ADDRESSES, end: from, facets: [Troubleshooting]}
+    - {rel: MITIGATED_BY, end: to, facets: [Troubleshooting]}
+    # a procedure that needs a safety measure is also safety knowledge (v8)
+    - {rel: REQUIRES, end: from, facets: [Safety]}
