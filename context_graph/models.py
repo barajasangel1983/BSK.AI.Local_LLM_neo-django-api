@@ -114,6 +114,10 @@ class DataFile(models.Model):
     mapping = models.JSONField(default=dict, blank=True)    # last mapping used to stage triples
     uploaded_at = models.DateTimeField(auto_now_add=True)
     staged_at = models.DateTimeField(null=True, blank=True)
+    # P26f: a newer version of the same file (same filename, same asset) was staged. Kept with its triples and their
+    # evidence (deleting it would take its approved triples back out of the graph); hidden in the Import list.
+    superseded_by = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL, related_name="supersedes")
+    superseded_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-uploaded_at"]
