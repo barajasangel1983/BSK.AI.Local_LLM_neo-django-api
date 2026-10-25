@@ -209,7 +209,12 @@ def suggest(part_id: str, dry_run: bool = False) -> list[dict]:
 
 
 def _evidence(t: CandidateTriple, doc, chunk, r: dict) -> None:
+    from ingestion import library
+
+    excerpt = (r.get("quote") or chunk.text)[:1500]
+    snap = library.text_snapshot(doc)       # P25b: the quote's (or chunk's) place in the document's text
+    span = snap.locate(excerpt, chunk.page_start, chunk.page_end).fields(snap.hash) if snap is not None else {}
     t.evidence.add(Evidence.objects.create(
         source_kind="text", document=doc, page_start=chunk.page_start, page_end=chunk.page_end,
         section_path=chunk.section_path or [], extractor="suggest-maps", model=settings.DGX_CHAT_MODEL,
-        prompt=f"{PROMPT_NAME} v{PROMPT_VERSION}", excerpt=(r.get("quote") or chunk.text)[:1500], confidence=0.9))
+        prompt=f"{PROMPT_NAME} v{PROMPT_VERSION}", excerpt=excerpt, confidence=0.9, **span))

@@ -1084,6 +1084,8 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
         kept = languages.kept_pages((parsed.get("document") or {}).get("md_content") or "", doc.languages)
     all_windows = len(windows)
     selected = select_windows(windows, params, kept)
+    snap = None if dry else library.text_snapshot(doc, parsed)     # P25b: spans of the windows in the text
+    originals = {i: w.text for i, w in selected}                    # a window's text before its tables are read apart
     table_parts: list[tuple[int, object]] = []
     if params.get("tables_by_row", True):
         from . import tables
@@ -1205,6 +1207,21 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     # GRAPH_EXTRACT_PARALLEL windows go to the DGX at once (vLLM batches them); results are staged in the document's
     # order by this thread, which alone reports progress, so a run gives the same triples whatever the setting.
     calls = [(i, window, mode, preset) for i, window in selected + table_parts for mode, preset in presets.items()]
+    located: dict[int, dict] = {}
+
+    def span_of(i, window) -> dict:
+        """The window's place in the snapshot, found once per window (P25b): a table part has its rows already."""
+        if snap is None:
+            return {}
+        if i not in located:
+            if getattr(window, "row_start", None):
+                exact = window.char_start is not None
+                located[i] = {"text_hash": snap.hash, "char_start": window.char_start, "char_end": window.char_end,
+                              "span_status": "exact" if exact else "not_found",
+                              "row_start": window.row_start, "row_end": window.row_end}
+            else:
+                located[i] = snap.locate(originals.get(i, window.text), window.page_start, window.page_end).fields(snap.hash)
+        return located[i]
     parallel = max(1, int(settings.GRAPH_EXTRACT_PARALLEL))
 
     def work(call):
@@ -1223,7 +1240,8 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
                 failed += 1
                 raw = []
             stage(raw, mode, window, i, preset,
-                  lambda t, window=window, i=i, preset=preset: _evidence(doc, window, i, preset, schema, t, params))
+                  lambda t, window=window, i=i, preset=preset: _evidence(doc, window, i, preset, schema, t, params,
+                                                                         span_of(i, window)))
             done += 1
             beat(done, total)
     finally:
@@ -1248,7 +1266,7 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
                         failed += 1
                         logger.warning("drawing triples failed doc=%s figure=%d mode=%s: %s", doc.doc_key, figure["index"], mode, exc)
                     stage(raw, mode, drawings.window_for(figure), place, preset,
-                          lambda t, figure=figure: drawings.evidence_for(doc, figure, schema, t), model=settings.VLM_MODEL)
+                          lambda t, figure=figure: drawings.evidence_for(doc, figure, schema, t, snap), model=settings.VLM_MODEL)
                     done += 1
         except gpu.GpuError as exc:  # BSK asleep / busy: the text triples are still staged
             drawings_note = "drawings were not read: the BSK PC was not reachable"
@@ -1285,13 +1303,13 @@ def _extract(job, doc, params: dict, label: str = "") -> dict:
     return {"staged": len(staged), "failed": failed, "skipped": skipped, "left": len(left)}
 
 
-def _evidence(doc, window, i, preset, schema, t, params) -> Evidence:
+def _evidence(doc, window, i, preset, schema, t, params, span: dict | None = None) -> Evidence:
     return Evidence(
         source_kind=Evidence.Kind.TEXT, document=doc,
         page_start=window.page_start, page_end=window.page_end, section_path=window.section_path,
         chunk_index=i, window=params.get("chunking") or {}, extractor="llm-text",
         model=settings.DGX_CHAT_MODEL, prompt=f"{preset.name} v{preset.version}", schema_version=schema.version,
-        excerpt=window.text[:EVIDENCE_CHARS], confidence=t.get("confidence"),
+        excerpt=window.text[:EVIDENCE_CHARS], confidence=t.get("confidence"), **(span or {}),
     )
 
 
@@ -1305,6 +1323,24 @@ def rating_props(props: dict | None) -> dict:
     for key, value in (props or {}).items():
         if key in RATING_PROPS and value not in (None, ""):
             out[RATING_PROPS[key]] = value
+    return out
+
+
+# A value that is only a number or a range ("6", "88.8 x 56.8 x 45", "12...16", "≥ 0.001")
+_PLAIN_VALUE = re.compile(r"^[\s\d.,…≥≤<>~±+\-–x×/]*\d[\s\d.,…≥≤<>~±+\-–x×/]*$")
+
+
+def without_repeated_unit(p: dict) -> dict:
+    """A rating whose value repeats its unit ("6 ms" with unit "ms" showed as "6 ms ms", P25 D6): the unit leaves the
+    value, only when what is left is a plain number or range ("1 MB of RAM" with unit "RAM" stays as it is)."""
+    out = {}
+    unit = str(p.get("unit") or "").strip()
+    for key in ("value", "min", "max"):
+        v = p.get(key)
+        if unit and isinstance(v, str) and v.rstrip().endswith(" " + unit):
+            rest = v.rstrip()[: -len(unit)].rstrip()
+            if _PLAIN_VALUE.match(rest):
+                out[key] = rest
     return out
 
 
@@ -1353,6 +1389,8 @@ def _candidate(t, mode, schema, index, scope_key, doc, job, window, i, preset, m
                 props.setdefault(end, {}).update(given)
         for end in ("subject", "object"):      # P22c: one form of a parameter code ("P310", "p0310", "p1070[0]")
             p = props.get(end) or {}
+            if t[f"{end}_type"] == "Specification":
+                p.update(without_repeated_unit(p))
             if t[f"{end}_type"] == "Parameter" and p.get("code"):
                 code, position = normalize_code(str(p["code"]))
                 p["code"] = code

@@ -456,3 +456,6 @@ CHAT_ATTACHMENT_MAX_PAGES = int(os.getenv("CHAT_ATTACHMENT_MAX_PAGES", "50"))
 CHAT_ATTACHMENT_SHARE = float(os.getenv("CHAT_ATTACHMENT_SHARE", "0.5"))
 # Uploaded but never sent attachments are removed after this many hours.
 CHAT_ATTACHMENT_ORPHAN_HOURS = int(os.getenv("CHAT_ATTACHMENT_ORPHAN_HOURS", "24"))
+
+# P25b: source spans on evidence and chunks (ingestion/spans.py); off writes no spans and no text snapshots.
+EVIDENCE_SPANS = os.getenv("EVIDENCE_SPANS", "1") != "0"

@@ -176,6 +176,17 @@ class Evidence(models.Model):
     excerpt = models.TextField(blank=True, default="")
     confidence = models.FloatField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # P25b: where the window sits in the document's text snapshot (ingestion/spans.py); P25e: the supporting quote
+    # inside it. All empty for rows written before P25 until `manage.py evidence_spans` fills them.
+    text_hash = models.CharField(max_length=64, blank=True, default="")
+    char_start = models.PositiveIntegerField(null=True, blank=True)
+    char_end = models.PositiveIntegerField(null=True, blank=True)
+    span_status = models.CharField(max_length=16, blank=True, default="")    # exact | partial | ambiguous | not_found
+    row_start = models.PositiveIntegerField(null=True, blank=True)           # a table part's rows (1-based)
+    row_end = models.PositiveIntegerField(null=True, blank=True)
+    quote_start = models.PositiveIntegerField(null=True, blank=True)
+    quote_end = models.PositiveIntegerField(null=True, blank=True)
+    quote_status = models.CharField(max_length=16, blank=True, default="")
 
     class Meta:
         ordering = ["id"]
