@@ -142,6 +142,12 @@ class FamilyGraphTests(TestCase):
         self.assertIn("already reviewed on Cutter drive (1)", refused)
         self.assertEqual(extraction.reviewed_on_parts(self.doc, CUTTER), "")       # a part run is never refused
 
+    def test_rejected_facts_on_the_parts_do_not_wait(self):
+        CandidateTriple.objects.create(document=self.doc, mode="schema", status="rejected", anchor_id=CUTTER,
+                                       subject_name="Cutter drive", subject_type="Component", subject_id=CUTTER,
+                                       predicate="HAS_ALARM", object_name="Overcurrent", object_type="Alarm")
+        self.assertEqual(extraction.reviewed_on_parts(self.doc, FAMILY), "")
+
     def test_a_family_run_sees_the_familys_facts_not_the_parts(self):
         index = EntityIndex.load()
         family = index.part_scope(FAMILY, "siemens/sinamics-g120c")
