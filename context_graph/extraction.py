@@ -603,7 +603,9 @@ def anchors_of(params: dict) -> list[str]:
 
 def reviewed_on_parts(doc, anchor_id: str) -> str:
     """P26b D1: why a family or model run on `doc` is refused, or "". A manual already reviewed on the family's
-    installed parts would give every fact a second copy; those facts move to the family in P26c first."""
+    installed parts would give every fact a second copy; those facts move to the family in P26c first. Only approved
+    facts count: P26c moves those, and a rejected one is in no graph (G120C's 35 rejected facts on its parts kept its
+    family's Safety run out after the move, 2026-10-26)."""
     from django.db.models import Q
 
     from .device_models import kind_of, levels
@@ -612,7 +614,7 @@ def reviewed_on_parts(doc, anchor_id: str) -> str:
     parts = {p["id"]: p["name"] for p in levels(anchor_id)["parts"]}
     if not parts:
         return ""
-    done = (CandidateTriple.objects.filter(document=doc).exclude(status=CandidateTriple.Status.PENDING)
+    done = (CandidateTriple.objects.filter(document=doc, status=CandidateTriple.Status.APPROVED)
             .filter(Q(anchor_id__in=list(parts)) | Q(anchor_id="", subject_id__in=list(parts))
                     | Q(anchor_id="", object_id__in=list(parts))))
     counts: dict[str, int] = {}
