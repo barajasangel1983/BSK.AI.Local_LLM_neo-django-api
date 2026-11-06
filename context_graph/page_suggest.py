@@ -68,6 +68,27 @@ LEAVE_OUT_BY_PRESET = {
     "Safety (v2)": ("covers, contents, declarations of conformity, transport and storage without a hazard, pages only about "
                     "other models or options, parameter lists, figures without text"),
 }
+# The prompts that also read every page with a safety notice (P22d-1): a notice inside an ordinary section is not in
+# the outline (optris CT: a laser WARNING on p.52, CAUTIONs on p.68 and p.96, all missed on 2026-10-26).
+SIGNAL_PAGES_PRESETS = frozenset({"Safety (v2)"})
+SIGNAL_PAGES_TITLE = "Safety notices in other sections"
+
+
+def signal_pages(md: str, language: str = "", page_langs: list[str] | None = None) -> dict[int, list[str]]:
+    """{page: its signal words} for the pages in `language` (or every page) with a line that is a signal word alone or
+    starts with one (`quotes.line_signal_word`)."""
+    from .quotes import line_signal_word
+
+    pages = md.split(PAGE_BREAK)
+    page_langs = page_langs or [""] * len(pages)
+    found: dict[int, list[str]] = {}
+    for n, (page, lang) in enumerate(zip(pages, page_langs), start=1):
+        if language and lang and lang != language:
+            continue
+        words = [w for w in map(line_signal_word, page.splitlines()) if w]
+        if words:
+            found[n] = list(dict.fromkeys(words))
+    return found
 
 
 class SuggestError(ValueError):
@@ -194,6 +215,14 @@ def suggest(doc, *, preset: PromptPreset | None = None, asset_id: str = "", anch
             chosen |= pages
             sections.append({"pages": extraction.pages_text(_ranges(pages)), "title": str(s.get("title") or "")[:200],
                              "why": str(s.get("why") or "")[:300]})
+    if preset is not None and preset.name in SIGNAL_PAGES_PRESETS:
+        # Each page alone, not its outline entry: one notice in a 50-page fault list doesn't pull in the list.
+        extra = {p: w for p, w in signal_pages(md, language, page_langs).items() if p not in chosen}
+        if extra:
+            chosen |= set(extra)
+            words = ", ".join(dict.fromkeys(w for ws in extra.values() for w in ws))
+            sections.append({"pages": extraction.pages_text(_ranges(set(extra))), "title": SIGNAL_PAGES_TITLE,
+                             "why": f"{words} on a line of its own or starting a sentence, outside the chosen sections"})
     return {
         "pages": extraction.pages_text(_ranges(chosen)),
         "sections": sections,

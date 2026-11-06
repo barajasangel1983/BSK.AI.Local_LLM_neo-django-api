@@ -161,6 +161,21 @@ class SignalWordTests(SimpleTestCase):
         self.assertEqual(quotes.signal_word(text, at("Condensation")), "NOTICE")
         self.assertEqual(quotes.signal_word(WARNING, WARNING.index("Wait 5")), "WARNING")
 
+    def test_the_word_starting_the_quotes_own_line(self):
+        text = "## 4 Installation\n\nWARNING: Do not point the laser at the eyes!\n\nMount the sensor on the bracket."
+        self.assertEqual(quotes.signal_word(text, text.index("Do not point")), "WARNING")
+        self.assertEqual(quotes.signal_word(text, text.index("WARNING")), "WARNING")
+        self.assertEqual(quotes.signal_word(text, text.index("Mount")), "")           # the next paragraph is not in it
+        lower = "## 6 Messages\n\nWarning A07850: external fault."
+        self.assertEqual(quotes.signal_word(lower, lower.index("external")), "")
+
+    def test_which_lines_hold_a_signal_word(self):
+        for line, word in (("WARNING", "WARNING"), ("**CAUTION**", "CAUTION"), ("### DANGER", "DANGER"), ("| NOTICE |", "NOTICE"),
+                           ("WARNING: Do not…", "WARNING"), ("**CAUTION** - Never…", "CAUTION"), ("PRECAUCIÓN: …", "PRECAUCIÓN"),
+                           ("Warning A07850: fault", ""), ("Warnings and faults", ""), ("WARNINGS", ""),
+                           ("NOTICE BOARD near the entrance", ""), ("The DANGER zone: keep out", "")):
+            self.assertEqual(quotes.line_signal_word(line), word, line)
+
 
 class AbbreviationTests(SimpleTestCase):
     def test_a_name_and_its_initials_are_one_name(self):

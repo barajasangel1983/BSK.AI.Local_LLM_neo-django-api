@@ -9,6 +9,7 @@ from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APIClient
 
 from context_graph import page_suggest
+from context_graph.models import PromptPreset
 from ingestion import library
 from ingestion.chunker import PAGE_BREAK
 from ingestion.tests.tests_library import LibraryTestCase
@@ -26,6 +27,19 @@ PAGES = [
 ]
 MD = f"\n\n{PAGE_BREAK}\n\n".join(PAGES)
 
+# P22d-1: notices inside ordinary sections, as the manuals print them.
+SAFETY_PAGES = [
+    f"# 1 Safety instructions\n\n## DANGER\n\n{EN}",
+    f"## 4 Installation\n\n{EN}\n\nWARNING: Do not point the laser directly at the eyes of persons or animals!",
+    f"## 5 Outputs\n\n{EN}\n\n**CAUTION** - Never connect a supply voltage to the analog outputs.",
+    f"## 6 Messages\n\nWarning A07850: external fault.\n\n## Warnings and faults\n\n{EN}",   # lower case: not a notice
+    f"## 7 Seals\n\n| NOTICE |\n\n{EN}",
+    EN,                                                                               # continues 7 Seals
+    f"## 4 Instalación\n\nADVERTENCIA: No apunte el láser a los ojos.\n\n{ES}",       # another language
+]
+SAFETY_MD = f"\n\n{PAGE_BREAK}\n\n".join(SAFETY_PAGES)
+SAFETY_LANGS = ["en", "en", "en", "en", "en", "en", "es"]
+
 
 class OutlineTests(SimpleTestCase):
     def test_one_entry_per_heading_with_its_continuation_pages(self):
@@ -39,6 +53,13 @@ class OutlineTests(SimpleTestCase):
         self.assertEqual(page_suggest.outline_language(["de", "en", "es"], ["es", "en"]), "es")  # the first kept one
         self.assertEqual(page_suggest.outline_language(["de", "en", "es"], []), "en")
         self.assertEqual(page_suggest.outline_language(["de", "de", "fr"], []), "de")
+
+
+class SignalPagesTests(SimpleTestCase):
+    def test_a_word_alone_or_starting_a_sentence_in_upper_case(self):
+        self.assertEqual(page_suggest.signal_pages(SAFETY_MD, "en", SAFETY_LANGS),
+                         {1: ["DANGER"], 2: ["WARNING"], 3: ["CAUTION"], 5: ["NOTICE"]})
+        self.assertEqual(page_suggest.signal_pages(SAFETY_MD)[7], ["ADVERTENCIA"])     # every page with no language
 
 
 @override_settings(GRAPH_ENABLED=False)
@@ -97,3 +118,30 @@ class SuggestPagesTests(LibraryTestCase):
         self.assertEqual((r.status_code, r.json()["error"]), (400, "parse the document first (Library → Parse)"))
         with patch("context_graph.extraction.call_llm", return_value="not json"):
             self.assertEqual(self.suggest().status_code, 400)
+
+    def test_the_safety_prompt_also_reads_each_page_with_a_notice(self):
+        self.mock_convert.return_value = {"status": "success", "errors": [], "document": {"md_content": SAFETY_MD}}
+        doc, _ = library.add_document(SimpleUploadedFile("optris.pdf", b"%PDF optris"))
+        self.drain()
+        safety, _ = PromptPreset.objects.get_or_create(name="Safety (v2)", defaults={"mode": "schema", "template": "You extract safety facts."})
+        self.answer = {"note": "The safety chapter.", "sections": [{"pages": "1", "title": "1 Safety instructions"}]}
+        body = self.client.post("/api/graph/extract/suggest-pages/",
+                                {"document_id": str(doc.id), "preset_id": safety.pk, "follow_languages": False},
+                                format="json").json()
+        self.assertEqual(body["pages"], "1-3, 5")            # page by page: 5 without its continuation page 6
+        extra = body["sections"][-1]
+        self.assertEqual((extra["title"], extra["pages"]), (page_suggest.SIGNAL_PAGES_TITLE, "2-3, 5"))
+        self.assertTrue(extra["why"].startswith("WARNING, CAUTION, NOTICE"))
+
+        self.answer = {"note": "No safety chapter.", "sections": []}                # optris: the model chooses nothing
+        body = self.client.post("/api/graph/extract/suggest-pages/", {"document_id": str(doc.id), "preset_id": safety.pk},
+                                format="json").json()
+        self.assertEqual(body["pages"], "1-3, 5")                                  # runs instead of "nothing found"
+
+    def test_other_prompts_keep_the_models_choice(self):
+        self.mock_convert.return_value = {"status": "success", "errors": [], "document": {"md_content": SAFETY_MD}}
+        doc, _ = library.add_document(SimpleUploadedFile("optris.pdf", b"%PDF optris"))
+        self.drain()
+        self.answer = {"note": "", "sections": [{"pages": "1", "title": "1 Safety instructions"}]}
+        body = self.client.post("/api/graph/extract/suggest-pages/", {"document_id": str(doc.id)}, format="json").json()
+        self.assertEqual(body["pages"], "1")
