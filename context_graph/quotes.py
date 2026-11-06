@@ -144,12 +144,29 @@ def fields(evidence, name: str, props: dict | None, snapshot_text: str, sentence
 SIGNAL_WORDS = frozenset("""DANGER WARNING CAUTION NOTICE GEFAHR WARNUNG VORSICHT ACHTUNG PELIGRO ADVERTENCIA PRECAUCIÓN
 ATENCIÓN AVERTISSEMENT ATTENTION AVVERTENZA PERICOLO""".split())
 _SIGNAL_LOOKBACK = 2000
+_SIGNAL_ALTERNATIVES = "|".join(sorted(SIGNAL_WORDS, key=len, reverse=True))
+# A notice's line in upper case (P22d-1, 2026-11-06): the word alone ("WARNING", "**CAUTION**", "### DANGER", "| NOTICE |"),
+# or starting the notice's sentence ("WARNING: Do not point the laser…", optris CT p.52). Lower case is left out:
+# "Warning A07850" in a fault list or a heading "Warnings and faults" is not a notice.
+SIGNAL_ALONE_RE = re.compile(rf"^[#\s*_>|-]*({_SIGNAL_ALTERNATIVES})[\s*_:!.|]*$")
+SIGNAL_START_RE = re.compile(rf"^[#\s*_>|-]*({_SIGNAL_ALTERNATIVES})\b[\s*_]*[:!.\-–—]")
+
+
+def line_signal_word(line: str) -> str:
+    """The signal word a line holds alone or starts with ("" for any other line)."""
+    m = SIGNAL_ALONE_RE.match(line) or SIGNAL_START_RE.match(line)
+    return m.group(1) if m else ""
 
 
 def signal_word(text: str, start: int) -> str:
-    """The signal word of the safety notice the text at `start` is in ("" when it is in none): the nearest line above
-    that is only a signal word, passing at most one other heading (the notice's title). A second heading first means
-    the text is in another section."""
+    """The signal word of the safety notice the text at `start` is in ("" when it is in none): the word starting the
+    text's own line ("WARNING: Do not point…"), else the nearest line above that is only a signal word, passing at most
+    one other heading (the notice's title). A second heading first means the text is in another section."""
+    own_start = text.rfind("\n", 0, start) + 1
+    own_end = text.find("\n", start)
+    own = SIGNAL_START_RE.match(text[own_start:own_end if own_end >= 0 else len(text)])
+    if own:
+        return own.group(1)
     headings = 0
     above = text[max(0, start - _SIGNAL_LOOKBACK):start]
     for line in reversed(above[:above.rfind("\n") + 1].splitlines()):      # the lines before the text's own line
