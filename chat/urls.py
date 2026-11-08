@@ -19,6 +19,7 @@ urlpatterns = [
 
     # Main chat endpoint (create/continue a conversation)
     path("chat/", views.chat_view, name="chat"),
+    path("chat/stream/", views.chat_stream_view, name="chat-stream"),
 
     # Chat attachments (images, PDFs): kept with the conversation, never added to the library
     path("chat/settings/", settings_views.chat_settings, name="chat-settings"),

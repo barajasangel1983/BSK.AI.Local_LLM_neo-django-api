@@ -15,18 +15,20 @@
 # - GET  /api/health/...
 # RAG Lab document/chunk/config endpoints live in chat/rag_lab_views.py.
 
+import json
 import logging
 import os
 import re
 import time
 import requests
 from collections import defaultdict
+from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db.models import Max, Count
-from django.http import JsonResponse
+from django.http import JsonResponse, StreamingHttpResponse
 from django.contrib.auth.models import User
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes
@@ -421,19 +423,115 @@ def generate_reply_backend(
     already includes RAG context; otherwise each backend's default is used.
     `extra_context` (attached-document text) is appended to whichever prompt is used.
 
-    Returns (reply_text, history_messages_sent).
+    Returns (reply_text, history_messages_sent). The reply is the streamed one joined (P24-1).
     """
+
+    pieces, sent = stream_reply_backend(message, model_id, use_rag, history, system_prompt, extra_context)
+    return "".join(pieces), sent
+
+
+# ---------------------------------------------------------------------
+# Streaming (P24-1): every text backend streams its reply; the non-streamed path joins the same pieces, so the
+# Studio chat, POST /api/chat/ and (P24-3) EDGE get the answer from one code path.
+# ---------------------------------------------------------------------
+
+
+def _stream_lines(resp):
+    """The JSON objects of a streamed reply: OpenAI-style server-sent events (`data: {...}`, `data: [DONE]`) or
+    Ollama's one JSON object per line."""
+    for raw in resp.iter_lines():
+        if not raw:
+            continue
+        line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+        if line.startswith("data:"):
+            line = line[5:].strip()
+        if line == "[DONE]":
+            break
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            yield data
+
+
+def _piece(data: dict) -> str:
+    """The text in one streamed object (OpenAI delta or message, Ollama message)."""
+    choices = data.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices else {}
+    return ((first.get("delta") or {}).get("content") or (first.get("message") or {}).get("content")
+            or (data.get("message") or {}).get("content") or "")
+
+
+def _stream_call(label: str, url: str, headers: dict, payload: dict, timeout, messages: list[dict]):
+    """POST with stream=True and yield the reply's text pieces; one ModelCall for the whole reply. A server that
+    ignores `stream` and answers with one JSON object is read the same way."""
+    with usage.track(None, label) as call:
+        resp = requests.post(url, headers=headers, json=payload, timeout=timeout, stream=True)
+        resp.raise_for_status()
+        parts: list[str] = []
+        last: dict = {}
+        for data in _stream_lines(resp):
+            piece = _piece(data)
+            if piece:
+                parts.append(piece)
+                yield piece
+            if data.get("usage") or data.get("eval_count") is not None:
+                last = data
+        if not parts:
+            try:
+                data = resp.json()
+            except Exception:
+                data = {}
+            piece = _piece(data) if isinstance(data, dict) else ""
+            if piece:
+                parts.append(piece)
+                yield piece
+            last = data if isinstance(data, dict) and data else last
+        call.from_response(last)
+        call.estimate(usage.messages_text(messages), "".join(parts))
+
+
+def _backend_stream(model_id: str, messages: list[dict]):
+    """The reply's text pieces from the model's backend (the same models, prompts and limits as the calls above)."""
+    from django.conf import settings
+
+    if model_id in DGX_MODEL_IDS:
+        model = settings.DGX_CHAT_MODEL
+        return _stream_call(f"dgx-{model}", f"{settings.DGX_API_BASE.rstrip('/')}/v1/chat/completions",
+                            {"Content-Type": "application/json"},
+                            {"model": model, "messages": messages, "max_tokens": 2048, "stream": True,
+                             "stream_options": {"include_usage": True}},
+                            settings.DGX_CHAT_TIMEOUT, messages)
+    if model_id == "external-gpt":
+        if not settings.GROK_API_KEY:
+            raise RuntimeError("GROK_API_KEY is not set")
+        return _stream_call("external-gpt", f"{settings.GROK_API_BASE.rstrip('/')}/chat/completions",
+                            {"Authorization": f"Bearer {settings.GROK_API_KEY}", "Content-Type": "application/json"},
+                            {"model": settings.GROK_CHAT_MODEL, "messages": messages, "stream": True}, 30, messages)
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://100.76.107.3:11434")
+    return _stream_call("ollama-qwen3-8b", f"{base_url}/api/chat", {"Content-Type": "application/json"},
+                        {"model": "qwen3:8b", "messages": messages, "stream": True}, 60, messages)
+
+
+def stream_reply_backend(
+    message: str,
+    model_id: str,
+    use_rag: bool,
+    history: list[tuple[str, str]],
+    system_prompt: str | None = None,
+    extra_context: str = "",
+):
+    """generate_reply_backend, streamed: (iterator of text pieces, history messages sent)."""
 
     from django.conf import settings
 
     if model_id in DGX_MODEL_IDS:
-        backend, default_prompt = call_dgx_gpt_oss_20b, DEFAULT_SYSTEM_PROMPTS["dgx"]
+        default_prompt = DEFAULT_SYSTEM_PROMPTS["dgx"]
     elif model_id in ("external-gpt", "ollama-qwen3-8b"):
-        backend = call_grok_chat if model_id == "external-gpt" else call_ollama_qwen3_8b
         default_prompt = DEFAULT_SYSTEM_PROMPTS[model_id]
     else:
-        # Default: dummy echo
-        return generate_dummy_reply(message, model_id, use_rag), 0
+        return iter([generate_dummy_reply(message, model_id, use_rag)]), 0
 
     messages = build_chat_messages(
         history=history,
@@ -442,7 +540,7 @@ def generate_reply_backend(
         max_messages=settings.CHAT_HISTORY_MAX_MESSAGES,
         max_chars=context_budget_chars(model_id),
     )
-    return backend(messages), len(messages) - 2
+    return _backend_stream(model_id, messages), len(messages) - 2
 
 
 VLM_SYSTEM_PROMPT = ("You are Neo, an assistant for industrial engineers. When an image is attached, answer from what "
@@ -616,6 +714,53 @@ def _chat(request):
     - Return the full Conversation (with messages[] incl. sources).
     """
 
+    started = _start(request)
+    if isinstance(started, Response):
+        return started
+    try:
+        ctx = answer_context(started.user_message, started.model_id, started.use_rag, started.scope,
+                             started.search_folders, started.conversation)
+    except ContextError as exc:
+        return exc.response
+
+    start = time.time()
+    try:
+        pieces, history_sent = _reply_pieces(started, ctx)
+        assistant_reply = "".join(pieces)
+    except gpu.GpuError as exc:
+        logger.warning("chat gpu unavailable conversation=%s model=%s: %s", started.conversation.id, started.model_id, exc)
+        return _gpu_response(exc)
+    except Exception as exc:
+        logger.exception(
+            "chat failed conversation=%s model=%s latency_ms=%d",
+            started.conversation.id, started.model_id, round((time.time() - start) * 1000),
+        )
+        return Response(
+            {"error": f"Model backend failed: {exc}"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    _log_reply(started, ctx, history_sent, start)
+    return Response(_save_reply(started, ctx, assistant_reply), status=status.HTTP_200_OK)
+
+
+@dataclass
+class _Started:
+    """A chat request checked, its conversation found or made, and its user message saved."""
+    conversation: Conversation
+    history: list
+    user_message: str
+    model_id: str
+    use_rag: bool
+    scope: str
+    search_folders: list
+    attachment: object
+    attachment_page: int | None
+    is_vlm: bool
+
+
+def _start(request):
+    """Validate a chat request, find or create its conversation and save the user message: a _Started, or the
+    error Response. Nothing is saved when the request is refused."""
     conversation_id = request.data.get("conversation_id")
     user_message = request.data.get("message")
     model_id = request.data.get("model", "local-small")
@@ -717,6 +862,37 @@ def _chat(request):
         conversation.save(update_fields=["asset_id"])
     scope = conversation.asset_id
 
+    return _Started(conversation=conversation, history=history, user_message=user_message, model_id=model_id,
+                    use_rag=use_rag, scope=scope, search_folders=search_folders, attachment=attachment,
+                    attachment_page=attachment_page, is_vlm=is_vlm)
+
+
+class ContextError(Exception):
+    """The context can't be built (the GPU or Docling for an attached PDF): `response` says why."""
+
+    def __init__(self, response: Response):
+        super().__init__(response.data.get("error", "") if isinstance(response.data, dict) else "")
+        self.response = response
+
+
+@dataclass
+class AnswerContext:
+    """What the model is given for one question (P24-1: the one answer engine): the system prompt and the citations
+    shown under the answer, the attached documents' text, and the scope and RAG switch actually used."""
+    system_prompt: str | None
+    citations: list
+    document_block: str
+    use_rag: bool
+    scope: str
+    is_vlm: bool
+
+
+def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, search_folders: list,
+                   conversation: Conversation | None = None) -> AnswerContext:
+    """The context for one question: attached PDFs as text, the historian window, the planner, the asset's facts
+    (safety facts first for a safety question), the document excerpts, the system prompt. Raises ContextError."""
+    log_id = conversation.id if conversation is not None else "-"
+    is_vlm = model_id == settings.VLM_CHAT_MODEL_ID
     total_budget = context_budget_chars(model_id)
 
     # --- Attached PDFs read as text (this message's and earlier ones in the conversation) ---
@@ -724,19 +900,19 @@ def _chat(request):
     document_block, attachment_citations = "", []
     reads_documents = model_id in DGX_MODEL_IDS or model_id in ("external-gpt", "ollama-qwen3-8b")
     if reads_documents:
-        text_docs = attachments.text_documents(conversation)
+        text_docs = attachments.text_documents(conversation) if conversation is not None else []
         if text_docs:
             try:
                 document_block, attachment_citations = attachments.build_document_context(
                     text_docs, int(total_budget * settings.CHAT_ATTACHMENT_SHARE), wait=settings.VLM_CHAT_LOCK_WAIT)
             except gpu.GpuError as exc:
-                return _gpu_response(exc)
+                raise ContextError(_gpu_response(exc))
             except DoclingError as exc:
-                logger.warning("attachment parse failed conversation=%s: %s", conversation.id, exc)
+                logger.warning("attachment parse failed conversation=%s: %s", log_id, exc)
                 if isinstance(exc.__cause__, gpu.GpuError):
-                    return _gpu_response(exc.__cause__)
-                return Response({"error": f"The attached PDF could not be read: {exc}"},
-                                status=status.HTTP_502_BAD_GATEWAY)
+                    raise ContextError(_gpu_response(exc.__cause__))
+                raise ContextError(Response({"error": f"The attached PDF could not be read: {exc}"},
+                                                    status=status.HTTP_502_BAD_GATEWAY))
             # Asset facts and RAG share what is left.
             total_budget -= len(document_block)
 
@@ -755,10 +931,10 @@ def _chat(request):
             window = historian_window.compute(scope, asset_context.check_asset(scope), user_message,
                                               min(settings.CHAT_HISTORIAN_WINDOW_CHARS, total_budget // 3))
         except Exception as exc:        # the graph or the historian is down: answer as before
-            logger.warning("historian window failed conversation=%s asset=%s: %s", conversation.id, scope, exc)
+            logger.warning("historian window failed conversation=%s asset=%s: %s", log_id, scope, exc)
         if window:
             total_budget -= len(window.text)
-            logger.info("historian window conversation=%s asset=%s %s", conversation.id, scope, window.log)
+            logger.info("historian window conversation=%s asset=%s %s", log_id, scope, window.log)
     if scope:
         if settings.CHAT_PLANNER:
             route = planner.question_kind(user_message)
@@ -773,7 +949,7 @@ def _chat(request):
                 route = planner.plan(user_message, asset_ctx.parts, focus)
                 route.facet = facet
         except (GraphUnavailable, asset_context.AssetScopeError) as exc:
-            logger.warning("asset context failed conversation=%s asset=%s: %s", conversation.id, scope, exc)
+            logger.warning("asset context failed conversation=%s asset=%s: %s", log_id, scope, exc)
             asset_note = (f"You are Neo, the assistant for asset {scope}. Its facts are unavailable right now "
                           f"(Context Graph unreachable); say so if the question needs them.")
 
@@ -799,7 +975,7 @@ def _chat(request):
                 for c in query_chunks(query=user_message, top_k=5, where={"source": "plc_historian"}):
                     entries.append({"text": c.text, "source": c.source})
             except Exception:
-                logger.exception("historian retrieval failed conversation=%s", conversation.id)
+                logger.exception("historian retrieval failed conversation=%s", log_id)
             v2_top_n = 3
 
         reranker = "error"
@@ -836,7 +1012,7 @@ def _chat(request):
                 doc_scope = "folders" if in_folders else "library"
             entries.extend(found)
         except Exception:
-            logger.exception("v2 retrieval failed conversation=%s", conversation.id)
+            logger.exception("v2 retrieval failed conversation=%s", log_id)
 
         if asset_ctx:
             rag_block, used = build_rag_context(entries, rag_budget, header="DOCUMENT EXCERPTS:", footer="---",
@@ -848,7 +1024,7 @@ def _chat(request):
         logger.info(
             "rag conversation=%s model=%s retrieved=%d used=%d reranker=%s "
             "rag_chars=%d/%d doc_scope=%s fact_pages=%d plan=%s latency_ms=%d",
-            conversation.id, model_id, len(entries), len(used), reranker,
+            log_id, model_id, len(entries), len(used), reranker,
             len(rag_block or ""), rag_budget, doc_scope, fact_pages, route.describe() if route else "-",
             round((time.time() - rag_start) * 1000),
         )
@@ -858,50 +1034,49 @@ def _chat(request):
             f"\n\n{rag_block}" if rag_block else "")
         citations = asset_context.citations(asset_ctx) + ([window.citation] if window else []) + citations
         logger.info("asset context conversation=%s asset=%s facts=%d/%d chars=%d historian=%s docs_linked=%d",
-                    conversation.id, scope, len(asset_ctx.facts), asset_ctx.total_facts, len(asset_ctx.text),
+                    log_id, scope, len(asset_ctx.facts), asset_ctx.total_facts, len(asset_ctx.text),
                     bool(asset_ctx.historian), len(asset_ctx.doc_keys))
     elif asset_note:
         system_prompt = asset_note + (f"\n\n{rag_block}" if rag_block else "")
 
-    # --- Generate assistant reply ---
-
     citations = attachment_citations + citations
+    return AnswerContext(system_prompt=system_prompt, citations=citations, document_block=document_block,
+                         use_rag=use_rag, scope=scope, is_vlm=is_vlm)
 
-    start = time.time()
-    try:
-        if is_vlm:
-            shown = (attachment, attachment_page) if attachment is not None else attachments.latest_image(conversation)
-            jpeg = attachments.image_bytes(*shown) if shown else None
-            assistant_reply, history_sent = generate_vlm_reply(user_message, history, jpeg)
-        else:
-            assistant_reply, history_sent = generate_reply_backend(
-                message=user_message,
-                model_id=model_id,
-                use_rag=use_rag or bool(scope),
-                history=history,
-                system_prompt=system_prompt,
-                extra_context=document_block,
-            )
-    except gpu.GpuError as exc:
-        logger.warning("chat gpu unavailable conversation=%s model=%s: %s", conversation.id, model_id, exc)
-        return _gpu_response(exc)
-    except Exception as exc:
-        logger.exception(
-            "chat failed conversation=%s model=%s latency_ms=%d",
-            conversation.id, model_id, round((time.time() - start) * 1000),
-        )
-        return Response(
-            {"error": f"Model backend failed: {exc}"},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
 
+def _reply_pieces(started: _Started, ctx: AnswerContext):
+    """(the reply's text pieces, history messages sent): the vision model's reply in one piece, a text model's
+    streamed."""
+    if ctx.is_vlm:
+        shown = ((started.attachment, started.attachment_page) if started.attachment is not None
+                 else attachments.latest_image(started.conversation))
+        jpeg = attachments.image_bytes(*shown) if shown else None
+        reply, sent = generate_vlm_reply(started.user_message, started.history, jpeg)
+        return iter([reply]), sent
+    return stream_reply_backend(
+        message=started.user_message,
+        model_id=started.model_id,
+        use_rag=ctx.use_rag or bool(ctx.scope),
+        history=started.history,
+        system_prompt=ctx.system_prompt,
+        extra_context=ctx.document_block,
+    )
+
+
+def _log_reply(started: _Started, ctx: AnswerContext, history_sent: int, start: float) -> None:
     logger.info(
         "chat ok conversation=%s model=%s use_rag=%s history_sent=%d/%d "
         "rag_context_chars=%d rag_sources=%s latency_ms=%d",
-        conversation.id, model_id, use_rag, history_sent, len(history),
-        len(system_prompt or ""), [c["source"] for c in citations], round((time.time() - start) * 1000),
+        started.conversation.id, started.model_id, started.use_rag, history_sent, len(started.history),
+        len(ctx.system_prompt or ""), [c["source"] for c in ctx.citations], round((time.time() - start) * 1000),
     )
 
+
+def _save_reply(started: _Started, ctx: AnswerContext, assistant_reply: str) -> dict:
+    """Save the assistant message, title a new conversation; the conversation as the API returns it."""
+    conversation, history, user_message, model_id = (started.conversation, started.history, started.user_message,
+                                                      started.model_id)
+    citations = ctx.citations
     # --- Save assistant message ---
 
     Message.objects.create(
@@ -925,8 +1100,62 @@ def _chat(request):
 
     conversation.save(update_fields=update_fields)
 
-    serializer = ConversationDetailSerializer(conversation)
-    return Response(serializer.data, status=status.HTTP_200_OK)
+    return ConversationDetailSerializer(conversation).data
+
+
+def _sse(event: str, **data) -> str:
+    return f"data: {json.dumps({'type': event, **data}, default=str)}\n\n"
+
+
+@api_view(["POST"])
+def chat_stream_view(request):
+    """POST /api/chat/stream/ (P24-1): the same request as POST /api/chat/, answered as server-sent events:
+    model → token… → sources → done {conversation}  (or error {kind, message}). The reply is saved before `done`."""
+    purpose = request.data.get("purpose")
+    purpose = purpose if purpose in CHAT_PURPOSES else "chat"
+    with usage.scope(purpose=purpose):
+        started = _start(request)
+    if isinstance(started, Response):
+        return started
+
+    def events():
+        with usage.scope(purpose=purpose, conversation_id=started.conversation.id):
+            try:
+                ctx = answer_context(started.user_message, started.model_id, started.use_rag, started.scope,
+                                     started.search_folders, started.conversation)
+            except ContextError as exc:
+                data = exc.response.data if isinstance(exc.response.data, dict) else {}
+                yield _sse("error", kind=data.get("code") or "context", message=data.get("error", ""),
+                           status=exc.response.status_code)
+                return
+            yield _sse("model", name=started.model_id)
+            start = time.time()
+            parts: list[str] = []
+            try:
+                pieces, history_sent = _reply_pieces(started, ctx)
+                for piece in pieces:
+                    parts.append(piece)
+                    yield _sse("token", text=piece)
+            except gpu.GpuError as exc:
+                logger.warning("chat gpu unavailable conversation=%s model=%s: %s", started.conversation.id,
+                               started.model_id, exc)
+                data = _gpu_response(exc).data
+                yield _sse("error", kind=data.get("code"), message=data.get("error"), status=503)
+                return
+            except Exception as exc:
+                logger.exception("chat failed conversation=%s model=%s latency_ms=%d", started.conversation.id,
+                                 started.model_id, round((time.time() - start) * 1000))
+                yield _sse("error", kind="model", message=f"Model backend failed: {exc}", status=502)
+                return
+            _log_reply(started, ctx, history_sent, start)
+            conversation = _save_reply(started, ctx, "".join(parts))
+            yield _sse("sources", sources=ctx.citations)
+            yield _sse("done", conversation=conversation)
+
+    response = StreamingHttpResponse(events(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response
 
 
 # ---------------------------------------------------------------------

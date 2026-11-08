@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 import requests
 
@@ -72,8 +73,11 @@ class RagFooterTests(SimpleTestCase):
 
 
 def _ok_response(content):
+    """A model server's reply, streamed (P24-1: the chat streams every reply) and as one JSON object."""
     resp = MagicMock()
     resp.json.return_value = {"choices": [{"message": {"content": content}}]}
+    resp.iter_lines.side_effect = lambda *a, **k: iter([
+        b"data: " + json.dumps({"choices": [{"delta": {"content": content}}]}).encode(), b"data: [DONE]"])
     resp.raise_for_status.return_value = None
     return resp
 
