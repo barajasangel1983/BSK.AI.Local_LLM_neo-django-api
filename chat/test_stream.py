@@ -90,7 +90,7 @@ class ChatStreamViewTests(TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r["Content-Type"], "text/event-stream")
         events = _events(r)
-        self.assertEqual([e["type"] for e in events], ["model", "token", "token", "sources", "done"])
+        self.assertEqual([e["type"] for e in events], ["status", "model", "token", "token", "sources", "done"])
         self.assertEqual("".join(e["text"] for e in events if e["type"] == "token"), "Hi Angel.")
         done = events[-1]["conversation"]
         self.assertEqual([m["role"] for m in done["messages"]], ["user", "assistant"])
@@ -118,3 +118,74 @@ class ChatStreamViewTests(TestCase):
     def test_a_bad_request_is_refused_before_streaming(self):
         r = self.client.post("/api/chat/stream/", {"message": ""}, format="json")
         self.assertEqual(r.status_code, 400)
+
+
+@override_settings(CHAT_HISTORIAN_WINDOWS=False, CHAT_QUESTION_AGENT=True)
+class EngineFeatureTests(TestCase):
+    """P24-2: EDGE's question agent, "nothing found" and "which machine?" in the one engine."""
+
+    def setUp(self):
+        self.client = APIClient()
+        for target, value in (("chat.views.generate_title", ("Title", "llm")),
+                              ("chat.question_agent.known_names", ["Extruder EXTR01", "BX80 manual"])):
+            patcher = patch(target, return_value=value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # No machine named in these questions.
+        patcher = patch("context_service.service.resolve", return_value={"asset": None, "focus": [], "ambiguous": []})
+        self.resolve = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _ask(self, message, conversation_id=None):
+        return _events(self.client.post("/api/chat/stream/", {"conversation_id": conversation_id, "message": message,
+                                                               "model": "dgx-qwen38-27b-fp8", "use_rag": True},
+                                        format="json"))
+
+    @patch("chat.views.requests.post")
+    def test_a_name_almost_known_is_asked_about_without_a_model_call(self, post):
+        events = self._ask("what is the temperature range of the BX81?")
+        self.assertEqual(post.call_count, 0)
+        reply = "".join(e["text"] for e in events if e["type"] == "token")
+        self.assertIn("Did you mean BX80?", reply)
+        agent = [s for s in events[-2]["sources"] if s.get("kind") == "agent"][0]
+        self.assertEqual(agent["action"], "confirm")
+
+    @patch("chat.views.search_v2")
+    @patch("chat.views.requests.post")
+    def test_topics_are_searched_and_shown_and_nothing_found_says_where_it_looked(self, post, search):
+        agent_reply = json.dumps({"action": "search", "queries": ["BX80 temperature range", "BX80 cleaning"], "message": ""})
+        post.return_value = _streamed(_openai(agent_reply))
+        empty = MagicMock(chunks=[], reranker="ok")
+        search.return_value = empty
+        events = self._ask("tell me the BX80 temperature range and how to clean it")
+        self.assertEqual(post.call_count, 1)                  # the agent only: the answer model is not asked
+        queries = [c.args[0] for c in search.call_args_list]
+        self.assertEqual(queries, ["tell me the BX80 temperature range and how to clean it", "BX80 temperature range",
+                                   "BX80 cleaning"])
+        reply = "".join(e["text"] for e in events if e["type"] == "token")
+        self.assertIn("found nothing relevant enough", reply)
+        self.assertIn("“BX80 cleaning”", reply)
+        agent = [s for s in events[-2]["sources"] if s.get("kind") == "agent"][0]
+        self.assertEqual((agent["action"], agent["queries"]), ("nothing_found", ["BX80 temperature range", "BX80 cleaning"]))
+
+    @patch("chat.views.requests.post")
+    def test_a_question_naming_two_machines_asks_which(self, post):
+        self.resolve.return_value = {"asset": None, "focus": [], "ambiguous": [
+            {"phrase": "asset", "candidates": [{"id": "bsk:asset:A", "name": "A"}, {"id": "bsk:asset:B", "name": "B"}]}]}
+        events = self._ask("compare the drives of A and B")
+        self.assertEqual(events[-1]["type"], "needs_choice")
+        self.assertEqual([c["id"] for c in events[-1]["candidates"]], ["bsk:asset:A", "bsk:asset:B"])
+        self.assertEqual(post.call_count, 0)
+        unstreamed = self.client.post("/api/chat/", {"message": "compare the drives of A and B",
+                                                     "model": "dgx-qwen38-27b-fp8", "use_rag": True}, format="json")
+        self.assertEqual(unstreamed.status_code, 409)
+        self.assertEqual(unstreamed.data["code"], "needs_choice")
+
+    @patch("chat.views.requests.post")
+    def test_the_agent_never_blocks_a_question(self, post):
+        post.side_effect = [RuntimeError("agent down"), _streamed(_openai("An answer."))]
+        with patch("chat.views.search_v2") as search:
+            search.return_value = MagicMock(chunks=[], reranker="ok")
+            events = self._ask("hello there")
+        # The agent failed: the question was searched as written; nothing found → where it looked.
+        self.assertIn("“hello there”", "".join(e["text"] for e in events if e["type"] == "token"))

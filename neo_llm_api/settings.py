@@ -340,6 +340,9 @@ CHAT_HISTORIAN_WINDOW_CHARS = int(os.getenv("CHAT_HISTORIAN_WINDOW_CHARS", "2500
 # join an asset chat's facts, and a safety question puts them first and gives the facts this share of the prompt.
 CHAT_SAFETY_FACTS = os.getenv("CHAT_SAFETY_FACTS", "0") == "1"
 PLANNER_SAFETY_FACTS_SHARE = float(os.getenv("PLANNER_SAFETY_FACTS_SHARE", "0.4"))
+# P24-2: the question agent (ported from EDGE): splits a question into topics to search, asks "did you mean …" or one
+# question back; "nothing found" answers without the model. One extra short model call per question.
+CHAT_QUESTION_AGENT = os.getenv("CHAT_QUESTION_AGENT", "0") == "1"
 # Default top_k on /api/rag/query/ (RAG Lab Top-K slider marker).
 RAG_QUERY_DEFAULT_TOP_K = int(os.getenv("RAG_QUERY_DEFAULT_TOP_K", "5"))
 # Upper bound for top_k on /api/rag/query/ (RAG Lab Top-K slider).

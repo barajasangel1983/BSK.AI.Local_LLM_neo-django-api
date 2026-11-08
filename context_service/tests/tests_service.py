@@ -278,9 +278,10 @@ class LookupTests(ContextTestCase):
         post.return_value.raise_for_status.return_value = None
         out = service.ask("Why is the die pressure high on EXTR01?")
         self.assertEqual(out["answer"], "It is above its range [G].")
+        # P24-2: the Studio chat's engine and prompt answer here too.
         system = post.call_args.kwargs["json"]["messages"][0]["content"]
-        self.assertIn("GRAPH FACTS [G]", system)
-        self.assertIn("Do not invent values", system)
+        self.assertIn("ASSET FACTS", system)
+        self.assertIn("do not invent values", system)
         self.assertEqual(out["packet"]["resolved_scope"]["asset"]["id"], ASSET)
         with self.assertRaisesMessage(service.ContextError, "unknown model"):
             service.ask("x", model="gpt-9")

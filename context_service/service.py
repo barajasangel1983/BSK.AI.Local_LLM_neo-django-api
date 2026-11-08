@@ -40,13 +40,6 @@ FOCUS_LABELS = ("Component", "Signal", "Alarm", "Procedure", "FailureMode", "Spe
 # and "Measuring range" are on many parts and stay ranking words (P26e).
 NAMED_BY_WORDS = ("Specification", "Parameter", "IOPoint")
 _CODE = re.compile(r"[A-Za-z]{0,3}\d[\w.\[\]-]*")
-ANSWER_PROMPT = (
-    "You are the assistant of the BSKLAB plant. Answer the question from the CONTEXT below.\n"
-    "- Graph facts are authoritative; cite them as [G]. Cite document excerpts as [1], [2], … by their number.\n"
-    "- Current values are the last recorded ones; state their time and the machine state when you use them.\n"
-    "- If the context does not contain the answer, say so plainly. Do not invent values, limits or procedures.\n\n"
-    "CONTEXT\n{context}"
-)
 
 
 class ContextError(ValueError):
@@ -637,22 +630,25 @@ def render(packet: dict, ctx=None) -> str:
 # --- answering (for clients without a model of their own) -----------------------------------
 
 def ask(query: str, asset_id: str | None = None, model: str | None = None, include_documents: bool = True) -> dict:
-    """Answer a question with one of the Studio's models, from the packet. Returns {answer, model, packet}."""
-    from chat.views import DGX_MODEL_IDS, call_dgx_gpt_oss_20b, call_grok_chat, call_ollama_qwen3_8b, context_budget_chars
+    """Answer a question with one of the Studio's models. Returns {answer, model, packet}.
+
+    P24-2: the answer comes from the Studio chat's engine (`chat.views.answer_context` and its prompt), so a client
+    asking here gets the answer the Studio chat gives; the packet still says what was found (sources, scope)."""
+    from chat.views import DGX_MODEL_IDS, TEXT_MODELS, ContextError as EngineError, answer_context, context_budget_chars, \
+        generate_reply_backend
     from usage import recorder as usage
 
     model = model or DGX_MODEL_IDS[-1]
-    backends = {**{m: call_dgx_gpt_oss_20b for m in DGX_MODEL_IDS}, "external-gpt": call_grok_chat,
-                "ollama-qwen3-8b": call_ollama_qwen3_8b}
-    if model not in backends:
-        raise ContextError(f"unknown model {model!r}; choose one of {', '.join(backends)}")
-    # Leave room for the instructions, the question and the answer.
+    if model not in TEXT_MODELS:
+        raise ContextError(f"unknown model {model!r}; choose one of {', '.join(TEXT_MODELS)}")
     packet = assemble(query, asset_id, include_documents, int(context_budget_chars(model) * 0.8))
-    if packet["resolved_scope"]["ambiguous"] and not packet["resolved_scope"]["asset"]:
-        return {"answer": None, "model": model, "packet": packet,
-                "needs_choice": packet["resolved_scope"]["ambiguous"]}
-    messages = [{"role": "system", "content": ANSWER_PROMPT.format(context=packet["context_text"])},
-                {"role": "user", "content": packet["query"]["text"]}]
+    scope = packet["resolved_scope"]
+    if scope["ambiguous"] and not scope["asset"]:
+        return {"answer": None, "model": model, "packet": packet, "needs_choice": scope["ambiguous"]}
+    try:
+        ctx = answer_context(query, model, include_documents, scope["asset"]["id"] if scope["asset"] else "", [])
+    except EngineError as exc:
+        raise ContextError(str(exc))
     with usage.scope(purpose="context-ask"):
-        answer = backends[model](messages)
+        answer, _ = generate_reply_backend(query, model, ctx.use_rag or bool(ctx.scope), [], ctx.system_prompt)
     return {"answer": answer, "model": model, "packet": packet}
