@@ -31,7 +31,8 @@ from django.db.models import Max, Count
 from django.http import JsonResponse, StreamingHttpResponse
 from django.contrib.auth.models import User
 from rest_framework import status
-from rest_framework.decorators import api_view, parser_classes
+from rest_framework.decorators import api_view, parser_classes, renderer_classes
+from rest_framework.renderers import BaseRenderer, JSONRenderer
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from pathlib import Path
@@ -1256,7 +1257,19 @@ def _sse(**event) -> str:
     return f"data: {json.dumps(event, default=str)}\n\n"
 
 
+class EventStreamRenderer(BaseRenderer):
+    """Lets a client ask for `Accept: text/event-stream` (browsers' EventSource and the Studio do): without it DRF's
+    content negotiation refused the request with 406 (2026-11-08). An error before the stream starts is JSON."""
+    media_type = "text/event-stream"
+    format = "event-stream"
+    charset = "utf-8"
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        return json.dumps(data, default=str).encode("utf-8")
+
+
 @api_view(["POST"])
+@renderer_classes([JSONRenderer, EventStreamRenderer])
 def chat_stream_view(request):
     """POST /api/chat/stream/ (P24-1): the same request as POST /api/chat/, answered as server-sent events:
     [status…] → model → token… → sources → done {conversation}, or needs_choice {candidates}, or error {kind, message,

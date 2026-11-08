@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
@@ -342,7 +343,9 @@ CHAT_SAFETY_FACTS = os.getenv("CHAT_SAFETY_FACTS", "0") == "1"
 PLANNER_SAFETY_FACTS_SHARE = float(os.getenv("PLANNER_SAFETY_FACTS_SHARE", "0.4"))
 # P24-2: the question agent (ported from EDGE): splits a question into topics to search, asks "did you mean …" or one
 # question back; "nothing found" answers without the model. One extra short model call per question.
-CHAT_QUESTION_AGENT = os.getenv("CHAT_QUESTION_AGENT", "0") == "1"
+# Off under `manage.py test` whatever `.env` says: tests that count model calls assume no agent call (its own tests turn
+# it on with override_settings).
+CHAT_QUESTION_AGENT = os.getenv("CHAT_QUESTION_AGENT", "0") == "1" and sys.argv[1:2] != ["test"]
 # Default top_k on /api/rag/query/ (RAG Lab Top-K slider marker).
 RAG_QUERY_DEFAULT_TOP_K = int(os.getenv("RAG_QUERY_DEFAULT_TOP_K", "5"))
 # Upper bound for top_k on /api/rag/query/ (RAG Lab Top-K slider).

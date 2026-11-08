@@ -115,6 +115,17 @@ class ChatStreamViewTests(TestCase):
         self.assertEqual(events[-1]["kind"], "model")
         self.assertIn("down", events[-1]["message"])
 
+    @patch("chat.views.requests.post")
+    def test_a_browser_asking_for_an_event_stream_is_answered(self, post):
+        """The Studio sends Accept: text/event-stream; DRF refused it with 406 on 2026-11-08."""
+        post.return_value = _streamed(_openai("ok"))
+        r = self.client.post("/api/chat/stream/", {"message": "Hello", "model": "dgx-qwen38-27b-fp8", "use_rag": False},
+                             format="json", HTTP_ACCEPT="text/event-stream")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(_events(r)[-1]["type"], "done")
+        bad = self.client.post("/api/chat/stream/", {"message": ""}, format="json", HTTP_ACCEPT="text/event-stream")
+        self.assertEqual((bad.status_code, json.loads(bad.content)["error"]), (400, "message is required"))
+
     def test_a_bad_request_is_refused_before_streaming(self):
         r = self.client.post("/api/chat/stream/", {"message": ""}, format="json")
         self.assertEqual(r.status_code, 400)
