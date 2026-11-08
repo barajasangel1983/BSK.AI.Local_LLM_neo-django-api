@@ -274,6 +274,23 @@ def build_server() -> FastMCP:
         from alarms import service as alarms
         return await _call("get_alarm_code", alarms.code_detail, asset_id, code, max(1, min(int(days), 90)))
 
+    # --- P32: the digital twin (read only) ----------------------------------------------------------------------
+
+    @mcp.tool()
+    async def get_twin(asset_id: str) -> dict:
+        """The machine's digital-twin manifest: template, areas (with what the Studio knows and their PLC alarms),
+        sensors (historian columns with name, unit, normal range, area, part) and the columns that drive motion and heat
+        colours. `enabled` false: don't show the twin. Generated from the graph on first use."""
+        from twin import service as twin
+        return await _call("get_twin", twin.manifest, asset_id)
+
+    @mcp.tool()
+    async def get_twin_live(asset_id: str) -> dict:
+        """The machine now for its twin: state, active fault and each sensor's value (with `outside` its normal range),
+        from the PLC over OPC UA (source "opc"), else the newest historian row (source "historian"), with its age."""
+        from twin import service as twin
+        return await _call("get_twin_live", twin.live, asset_id)
+
     # --- P30: SPC, read only (the Studio sets SPC up; EDGE shows it) ------------------------------------------------
 
     @mcp.tool()

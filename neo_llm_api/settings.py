@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     "monitor",
     "problems",
     "alarms",
+    "twin",
 ]
 
 MIDDLEWARE = [
