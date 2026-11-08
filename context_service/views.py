@@ -106,8 +106,15 @@ def ask(request):
 
 # --- MCP server settings ------------------------------------------------------------------
 
+# The tools are read-only except the problem-solving tickets (P29): EDGE fills and approves them here.
+TICKET_TOOLS = ["open_ticket", "save_ticket", "make_ticket_final_version", "submit_ticket", "approve_ticket", "return_ticket",
+                "close_ticket", "add_ticket_picture", "remove_ticket_picture", "set_ticket_action", "validate_ticket_action",
+                "add_ticket_users", "run_ticket_check"]
 MCP_TOOLS = ["list_assets", "resolve_entity", "get_entity_context", "get_sources", "search_documents",
              "assemble_context", "ask", "get_operational_state", "get_signal_history", "get_monitor_posts",
+             "list_tickets", "get_ticket", "open_ticket", "save_ticket", "make_ticket_final_version", "submit_ticket",
+             "approve_ticket", "return_ticket", "close_ticket", "add_ticket_picture", "remove_ticket_picture",
+             "set_ticket_action", "validate_ticket_action", "get_ticket_report", "get_ticket_picture", "add_ticket_users", "run_ticket_check", "get_problem_settings",
              "list_documents", "get_document", "get_document_page", "get_figure_image", "get_graph",
              "describe_image",
              "get_system_health"]

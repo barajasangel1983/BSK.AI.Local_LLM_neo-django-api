@@ -11,6 +11,7 @@ from django.core.management.base import BaseCommand
 
 from monitor import agent
 from monitor.models import MonitorSettings
+from problems import llm as problems_llm, triggers
 
 
 class Command(BaseCommand):
@@ -33,4 +34,14 @@ class Command(BaseCommand):
             total += written
             if written:
                 self.stdout.write(f"{asset['id']}: {written} post(s)")
+            try:                          # P29: problem-solving tickets after a long downtime or SPC violation
+                for ticket in triggers.tick(asset["id"]):
+                    self.stdout.write(f"{asset['id']}: ticket {ticket.number} opened ({ticket.trigger})")
+            except Exception as exc:
+                self.stderr.write(f"{asset['id']}: problem triggers failed ({type(exc).__name__}: {str(exc)[:200]})")
+        try:                              # P29c: one queued knowledge check, when it is due
+            if problems_llm.run_due(limit=1):
+                self.stdout.write("problem-solving check done")
+        except Exception as exc:
+            self.stderr.write(f"problem-solving check failed ({type(exc).__name__}: {str(exc)[:200]})")
         self.stdout.write(f"monitor pass done: {total} post(s)")

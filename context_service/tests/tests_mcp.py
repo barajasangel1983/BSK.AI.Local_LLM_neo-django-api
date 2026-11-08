@@ -96,11 +96,15 @@ class ToolTests(TransactionTestCase):
         return asyncio.run(run())
 
     def test_tools_are_registered_and_read_only(self):
-        from context_service.views import MCP_TOOLS
+        """Read-only, except the problem-solving tickets (P29): the graph and the library are never written here."""
+        from context_service.views import MCP_TOOLS, TICKET_TOOLS
         tools = asyncio.run(mcp_server.build_server().list_tools())
         self.assertEqual([t.name for t in tools], MCP_TOOLS)
         self.assertTrue(all(t.description for t in tools))
-        self.assertFalse([t.name for t in tools if any(w in t.name for w in ("create", "delete", "update", "write", "approve"))])
+        others = [t.name for t in tools if t.name not in TICKET_TOOLS]
+        self.assertFalse([n for n in others if any(w in n for w in ("create", "delete", "update", "write", "approve", "save",
+                                                                     "add_", "remove", "open_", "submit", "close"))])
+        self.assertTrue(all("ticket" in n for n in TICKET_TOOLS))
 
     def test_assemble_context_passes_arguments_and_records_usage(self):
         with patch.object(service, "assemble", return_value={"packet_version": "1"}) as assemble:

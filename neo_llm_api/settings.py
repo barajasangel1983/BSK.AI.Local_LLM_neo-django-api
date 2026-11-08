@@ -68,6 +68,7 @@ INSTALLED_APPS = [
     "spc",
     "plc",
     "monitor",
+    "problems",
 ]
 
 MIDDLEWARE = [
@@ -459,6 +460,9 @@ DRAWING_MAX_TOKENS = int(os.getenv("DRAWING_MAX_TOKENS", "1000"))
 FIGURE_RETRY_MINUTES = [int(m) for m in os.getenv("FIGURE_RETRY_MINUTES", "5,15").split(",") if m.strip()]
 
 # Chat attachments (images, PDFs): kept with the conversation, never added to the library / RAG.
+# P29: pictures of problem-solving tickets, under PROBLEM_FILES_DIR/<ticket id>/.
+PROBLEM_FILES_DIR = os.getenv("PROBLEM_FILES_DIR", str(BASE_DIR / "data" / "problem_files"))
+PROBLEM_PICTURE_MAX_BYTES = int(os.getenv("PROBLEM_PICTURE_MAX_BYTES", str(12 * 1024 * 1024)))
 CHAT_FILES_DIR = os.getenv("CHAT_FILES_DIR", str(BASE_DIR / "data" / "chat_files"))
 CHAT_ATTACHMENT_MAX_BYTES = int(os.getenv("CHAT_ATTACHMENT_MAX_BYTES", str(20 * 1024 * 1024)))
 CHAT_ATTACHMENT_MAX_PAGES = int(os.getenv("CHAT_ATTACHMENT_MAX_PAGES", "50"))
