@@ -744,6 +744,11 @@ class _Started:
     attachment: object
     attachment_page: int | None
     is_vlm: bool
+    # P24-3, a client without a Studio conversation (EDGE): its own prompt, the picture it already read, whether its
+    # last reply was the agent's question back. None = take them from the conversation.
+    editable: str | None = None
+    picture_text: str | None = None
+    asked_before: bool | None = None
 
 
 def _start(request):
@@ -1111,9 +1116,21 @@ def _log_reply(started: _Started, ctx: AnswerContext, history_sent: int, start: 
     logger.info(
         "chat ok conversation=%s model=%s use_rag=%s history_sent=%d/%d "
         "rag_context_chars=%d rag_sources=%s latency_ms=%d",
-        started.conversation.id, started.model_id, started.use_rag, history_sent, len(started.history),
+        _conv_id(started), started.model_id, started.use_rag, history_sent, len(started.history),
         len(ctx.system_prompt or ""), [c["source"] for c in ctx.citations], round((time.time() - start) * 1000),
     )
+
+
+def _conv_id(started: _Started) -> str:
+    return str(started.conversation.id) if started.conversation is not None else "-"
+
+
+def _done(started: _Started, ctx: AnswerContext, reply: str) -> dict:
+    """The `done` event: with a Studio conversation the reply is saved and the conversation returned; a client without
+    one (EDGE, P24-3) keeps its own and gets the reply and its sources."""
+    if started.conversation is None:
+        return {"type": "done", "reply": reply, "sources": ctx.citations}
+    return {"type": "done", "conversation": _save_reply(started, ctx, reply)}
 
 
 def _save_reply(started: _Started, ctx: AnswerContext, assistant_reply: str) -> dict:
@@ -1202,12 +1219,12 @@ def _answer_events(started: _Started):
     from . import prompt as prompts
 
     conversation = started.conversation
-    editable = prompts.for_conversation(conversation)
+    editable = started.editable or prompts.for_conversation(conversation)
 
     # 0. A picture is read first, by the vision model (EDGE's way): a text model answers with it, the facts and the
     #    manuals. A follow-up question uses the conversation's latest picture.
-    picture = ""
-    if started.model_id in TEXT_MODELS:
+    picture = (started.picture_text or "").strip()
+    if started.picture_text is None and conversation is not None and started.model_id in TEXT_MODELS:
         current = started.attachment if (started.attachment is not None and started.attachment.kind
                                          == attachments.ChatAttachment.Kind.IMAGE) else None
         shown = current or _latest_picture(conversation)
@@ -1233,12 +1250,13 @@ def _answer_events(started: _Started):
         try:
             named = resolve(started.user_message)
         except Exception as exc:          # the graph is down: answer without a machine, as before
-            logger.warning("scope check failed conversation=%s: %s", conversation.id, exc)
+            logger.warning("scope check failed conversation=%s: %s", _conv_id(started), exc)
             named = None
         if named and named["asset"]:
             started.scope = named["asset"]["id"]
-            conversation.asset_id = started.scope
-            conversation.save(update_fields=["asset_id"])
+            if conversation is not None:
+                conversation.asset_id = started.scope
+                conversation.save(update_fields=["asset_id"])
         elif named and any(a["phrase"] == "asset" for a in named["ambiguous"]):
             yield {"type": "needs_choice",
                    "candidates": next(a["candidates"] for a in named["ambiguous"] if a["phrase"] == "asset")}
@@ -1248,7 +1266,8 @@ def _answer_events(started: _Started):
     plan = None
     if settings.CHAT_QUESTION_AGENT and started.use_rag and started.model_id in TEXT_MODELS:
         yield {"type": "status", "text": "Reading the question…"}
-        last = conversation.messages.filter(role="assistant").order_by("-created_at").values_list("sources", flat=True).first()
+        last = (conversation.messages.filter(role="assistant").order_by("-created_at").values_list("sources", flat=True)
+                .first() if conversation is not None else None)
         asset_name = ""
         if started.scope:
             try:
@@ -1256,16 +1275,17 @@ def _answer_events(started: _Started):
             except (asset_context.AssetScopeError, GraphUnavailable):
                 asset_name = ""
         plan = question_agent.prepare(started.model_id, started.user_message, _agent_history(started.history),
-                                      asset_name, asked_before=question_agent.already_asked(last),
+                                      asset_name, asked_before=(started.asked_before if started.asked_before is not None
+                                                                else question_agent.already_asked(last)),
                                       has_picture=bool(picture))
         if plan.action != "search":
             ctx = AnswerContext(system_prompt=None, citations=[plan.shown()], document_block="", use_rag=started.use_rag,
                                 scope=started.scope, is_vlm=False)
             yield {"type": "model", "name": started.model_id}
             yield {"type": "token", "text": plan.message}
-            saved = _save_reply(started, ctx, plan.message)
+            done = _done(started, ctx, plan.message)
             yield {"type": "sources", "sources": ctx.citations}
-            yield {"type": "done", "conversation": saved}
+            yield done
             return
 
     # 3. The context.
@@ -1291,9 +1311,9 @@ def _answer_events(started: _Started):
         text = question_agent.nothing_found(plan, ctx.closest)
         yield {"type": "model", "name": started.model_id}
         yield {"type": "token", "text": text}
-        saved = _save_reply(started, ctx, text)
+        done = _done(started, ctx, text)
         yield {"type": "sources", "sources": ctx.citations}
-        yield {"type": "done", "conversation": saved}
+        yield done
         return
 
     # 5. The model writes the answer.
@@ -1306,19 +1326,44 @@ def _answer_events(started: _Started):
             parts.append(piece)
             yield {"type": "token", "text": piece}
     except gpu.GpuError as exc:
-        logger.warning("chat gpu unavailable conversation=%s model=%s: %s", conversation.id, started.model_id, exc)
+        logger.warning("chat gpu unavailable conversation=%s model=%s: %s", _conv_id(started), started.model_id, exc)
         data = _gpu_response(exc).data
         yield {"type": "error", "kind": data.get("code"), "message": data.get("error"), "status": 503}
         return
     except Exception as exc:
-        logger.exception("chat failed conversation=%s model=%s latency_ms=%d", conversation.id, started.model_id,
+        logger.exception("chat failed conversation=%s model=%s latency_ms=%d", _conv_id(started), started.model_id,
                          round((time.time() - start) * 1000))
         yield {"type": "error", "kind": "model", "message": f"Model backend failed: {exc}", "status": 502}
         return
     _log_reply(started, ctx, history_sent, start)
-    saved = _save_reply(started, ctx, "".join(parts))
+    done = _done(started, ctx, "".join(parts))
     yield {"type": "sources", "sources": ctx.citations}
-    yield {"type": "done", "conversation": saved}
+    yield done
+
+
+def answer_events(question: str, model_id: str, asset_id: str = "", history: list[dict] | None = None,
+                  use_rag: bool = True, system_prompt: str | None = None, picture: str | None = None,
+                  asked_before: bool = False):
+    """P24-3: the engine for a client that keeps its own conversations (BSKLAB EDGE, through the MCP server's
+    /answer): the same steps and events as the Studio chat; `done` carries {reply, sources}. `history`: the client's
+    recent messages [{role, content}], oldest first (the engine keeps what fits, as for the Studio). `system_prompt`:
+    the conversation's own editable part (None = the standard one). `picture`: what the vision model read in the
+    conversation's latest picture. Raises ValueError for a bad request."""
+    from . import prompt as prompts
+    question = (question or "").strip()
+    if not question:
+        raise ValueError("question is required")
+    if model_id not in TEXT_MODELS:
+        raise ValueError(f"unknown model {model_id!r}; choose one of {', '.join(TEXT_MODELS)}")
+    if asset_id:
+        asset_context.check_asset(asset_id)           # AssetScopeError (a ValueError) for an unknown asset
+    turns = [(str(m.get("role")), str(m.get("content") or "")) for m in (history or [])
+             if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+    started = _Started(conversation=None, history=turns, user_message=question, model_id=model_id, use_rag=use_rag,
+                       scope=asset_id or "", search_folders=[], attachment=None, attachment_page=None, is_vlm=False,
+                       editable=(system_prompt or "").strip()[:prompts.MAX_CHARS] or prompts.standard(),
+                       picture_text=(picture or "").strip(), asked_before=bool(asked_before))
+    yield from _answer_events(started)
 
 
 def _sse(**event) -> str:

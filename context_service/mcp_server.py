@@ -21,6 +21,7 @@ import contextvars
 import json
 import logging
 import signal
+import threading
 import time
 
 import requests
@@ -30,7 +31,7 @@ from django.conf import settings
 from django.db import close_old_connections
 from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.transport_security import TransportSecuritySettings
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from . import mcp_access, service
 
@@ -93,6 +94,67 @@ def build_server() -> FastMCP:
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request):
         return JSONResponse({"status": "ok", "server": "bsk-context-mcp"})
+
+    @mcp.custom_route("/answer", methods=["POST"])
+    async def answer(request):
+        """P24-3: the Studio chat's answer engine for a client with its own conversations (BSKLAB EDGE), streamed as
+        server-sent events (status, model, token, sources, done {reply, sources}, needs_choice, error). Body:
+        {question, model, asset_id?, history?: [{role, content}], include_documents?, system_prompt?, picture?,
+        asked_before?}. The token is checked like every other call (BearerAuth)."""
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            return JSONResponse({"error": "a JSON object is required"}, status_code=400)
+        args = {"question": str(body.get("question") or ""), "model_id": str(body.get("model") or ""),
+                "asset_id": str(body.get("asset_id") or ""), "history": body.get("history") or [],
+                "use_rag": body.get("include_documents", True) is not False,
+                "system_prompt": body.get("system_prompt") if isinstance(body.get("system_prompt"), str) else None,
+                "picture": body.get("picture") if isinstance(body.get("picture"), str) else None,
+                "asked_before": bool(body.get("asked_before"))}
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        client = _client.get()
+
+        def work():
+            """The engine is Django code: one worker thread runs it from start to finish."""
+            from chat.views import answer_events
+            from usage import recorder as usage
+            close_old_connections()
+            start, status, error = time.monotonic(), "ok", ""
+            try:
+                with usage.scope(purpose="edge"):
+                    for event in answer_events(**args):
+                        if event.get("type") == "error":
+                            status, error = "error", str(event.get("message") or "")
+                        loop.call_soon_threadsafe(queue.put_nowait, event)
+            except ValueError as exc:
+                status, error = "error", str(exc)
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "kind": "bad_request", "message": str(exc),
+                                                             "status": 400})
+            except Exception as exc:
+                status, error = "error", f"{type(exc).__name__}: {exc}"
+                logger.exception("mcp answer failed client=%s", client)
+                loop.call_soon_threadsafe(queue.put_nowait, {"type": "error", "kind": "server",
+                                                             "message": "The Context Studio could not answer.", "status": 500})
+            finally:
+                logger.info("mcp route=answer client=%s status=%s ms=%d %s", client, status,
+                            round((time.monotonic() - start) * 1000), error[:200])
+                close_old_connections()
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        threading.Thread(target=work, name="mcp-answer", daemon=True).start()
+
+        async def events():
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield f"data: {json.dumps(event, default=str)}\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @mcp.tool()
     async def list_assets() -> dict:
