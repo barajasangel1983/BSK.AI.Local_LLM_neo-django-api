@@ -142,3 +142,41 @@ class AuthTests(TransactionTestCase):
         self.assertEqual(self.request("/mcp", "bsk_wrong"), 401)
         self.assertEqual(self.request("/mcp", token), 200)
         self.assertEqual(self.request("/health"), 200)
+
+
+class AnswerRouteTests(TransactionTestCase):
+    """P24-3: POST /answer on the MCP server streams the engine's events, behind the token."""
+
+    def post(self, body, token=None):
+        from starlette.testclient import TestClient
+        client = TestClient(mcp_server.BearerAuth(mcp_server.build_server().streamable_http_app()),
+                            base_url="http://127.0.0.1:8002")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        return client.post("/answer", headers=headers, content=body if isinstance(body, str) else json.dumps(body))
+
+    def test_token_required(self):
+        self.assertEqual(self.post({"question": "hi", "model": "ollama-qwen3-8b"}).status_code, 401)
+
+    def test_events_are_streamed(self):
+        _, token = mcp_access.create_token("EDGE")
+        events = [{"type": "status", "text": "Reading the question…"}, {"type": "token", "text": "Hi"},
+                  {"type": "done", "reply": "Hi", "sources": []}]
+        with patch("chat.views.answer_events", return_value=iter(events)) as engine:
+            r = self.post({"question": "hi", "model": "ollama-qwen3-8b", "asset_id": "bsk:asset:EXTR01",
+                           "history": [{"role": "user", "content": "x"}], "system_prompt": "Be brief.", "picture": "A plate"},
+                          token)
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.headers["content-type"].startswith("text/event-stream"))
+        got = [json.loads(chunk[6:]) for chunk in r.text.split("\n\n") if chunk.startswith("data: ")]
+        self.assertEqual(got, events)
+        self.assertEqual(engine.call_args.kwargs, {"question": "hi", "model_id": "ollama-qwen3-8b",
+                                                   "asset_id": "bsk:asset:EXTR01", "history": [{"role": "user", "content": "x"}],
+                                                   "use_rag": True, "system_prompt": "Be brief.", "picture": "A plate",
+                                                   "asked_before": False})
+
+    def test_a_bad_request_is_an_error_event(self):
+        _, token = mcp_access.create_token("EDGE")
+        r = self.post({"question": "hi", "model": "gpt-9"}, token)
+        got = [json.loads(chunk[6:]) for chunk in r.text.split("\n\n") if chunk.startswith("data: ")]
+        self.assertEqual((got[-1]["type"], got[-1]["kind"]), ("error", "bad_request"))
+        self.assertEqual(self.post("not json", token).status_code, 400)

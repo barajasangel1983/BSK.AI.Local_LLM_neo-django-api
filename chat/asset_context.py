@@ -844,7 +844,9 @@ def citations(ctx: AssetContext) -> list[dict]:
             snippet += f"; out of range: {', '.join(h['out_of_range'])}"
         out.append({"kind": "historian", "source": h["source"], "asset_id": ctx.asset_id, "section_path": [],
                     "page_start": None, "page_end": None, "score": None, "snippet": snippet[:400],
-                    "facts": h["out_of_range"]})
+                    "facts": h["out_of_range"],
+                    # P24-3: the same as fields, for a client that shows them apart (EDGE's "Values" line)
+                    "latest_ts": h["latest_ts"], "state": h["state"], "running_ts": h.get("running_ts")})
     return out
 
 

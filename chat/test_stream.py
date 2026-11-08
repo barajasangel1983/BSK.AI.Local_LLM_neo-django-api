@@ -234,3 +234,45 @@ class PromptTests(TestCase):
         self.client.patch(f"/api/conversations/{r.data['id']}/", {"system_prompt": None}, format="json")
         r, system = self._system(post, conversation_id=r.data["id"])
         self.assertEqual(system, "You are the plant's assistant. Be brief.")
+
+
+@override_settings(CHAT_HISTORIAN_WINDOWS=False)
+class EdgeEngineTests(TestCase):
+    """P24-3: answer_events, the engine for a client with its own conversations (EDGE): the same model input as the
+    Studio chat, nothing saved in the Studio, `done` carries the reply and sources."""
+
+    def setUp(self):
+        self.client = APIClient()
+        patcher = patch("chat.views.generate_title", return_value=("Title", "llm"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @patch("chat.views.requests.post")
+    def test_the_model_gets_exactly_what_the_studio_chat_sends(self, post):
+        post.side_effect = lambda *a, **k: _streamed(_openai("Same answer."))
+        studio = self.client.post("/api/chat/", {"message": "What is the die pressure?", "model": "dgx-qwen38-27b-fp8",
+                                                 "use_rag": False}, format="json")
+        self.assertEqual(studio.status_code, 200)
+        conversations = Conversation.objects.count()
+        events = list(views.answer_events("What is the die pressure?", "dgx-qwen38-27b-fp8", use_rag=False))
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["messages"], post.call_args_list[1].kwargs["json"]["messages"])
+        self.assertEqual(events[-1], {"type": "done", "reply": "Same answer.", "sources": []})
+        self.assertEqual(Conversation.objects.count(), conversations)          # nothing saved for EDGE
+
+    @patch("chat.views.requests.post")
+    def test_own_prompt_picture_and_history(self, post):
+        post.return_value = _streamed(_openai("ok"))
+        list(views.answer_events("And its power?", "ollama-qwen3-8b", use_rag=False, system_prompt="Answer in Spanish.",
+                                 picture="Nameplate: 7.5 kW",
+                                 history=[{"role": "user", "content": "What is this?"},
+                                          {"role": "assistant", "content": "A motor."}]))
+        messages = post.call_args.kwargs["json"]["messages"]
+        self.assertTrue(messages[0]["content"].startswith("Answer in Spanish."))
+        self.assertIn("PICTURE (what the vision model read in the attached picture):\nNameplate: 7.5 kW", messages[0]["content"])
+        self.assertEqual([m["role"] for m in messages], ["system", "user", "assistant", "user"])
+
+    def test_a_bad_request(self):
+        with self.assertRaisesMessage(ValueError, "unknown model"):
+            list(views.answer_events("hi", "gpt-9"))
+        with self.assertRaisesMessage(ValueError, "question is required"):
+            list(views.answer_events("  ", "ollama-qwen3-8b"))
