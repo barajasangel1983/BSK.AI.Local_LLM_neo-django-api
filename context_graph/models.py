@@ -285,6 +285,20 @@ class CandidateTriple(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     committed_at = models.DateTimeField(null=True, blank=True)
 
+    # P27c: the automated review's decision (`manage.py review_apply`): auto (approved by the batch), reject (rejected
+    # by it), leave (left pending: its hazard or its quote is missing) or doubtful (left pending for a person), why,
+    # and the batch, so `review_batch --undo` can take it back. Empty for triples a person decided.
+    class ReviewTier(models.TextChoices):
+        AUTO = "auto"
+        REJECT = "reject"
+        LEAVE = "leave"
+        DOUBTFUL = "doubtful"
+
+    review_tier = models.CharField(max_length=10, choices=ReviewTier.choices, blank=True, default="", db_index=True)
+    review_reason = models.CharField(max_length=255, blank=True, default="")
+    review_batch = models.ForeignKey("ReviewBatch", on_delete=models.SET_NULL, null=True, blank=True,
+                                     related_name="triples")
+
     class Meta:
         ordering = ["document_id", "chunk_index", "id"]
         indexes = [models.Index(fields=["document", "status"]), models.Index(fields=["data_file", "status"])]
@@ -331,3 +345,30 @@ class FactMove(models.Model):
     new_id = models.CharField(max_length=512, blank=True, default="", db_index=True)
     owner_before = models.CharField(max_length=512, blank=True, default="")
     owner_after = models.CharField(max_length=512, blank=True, default="")
+
+
+class ReviewBatch(models.Model):
+    """One apply of the automated review (P27c), one manual by default: which tool decided, on what, the counts, and
+    every triple the batch edited before approving it (`before` / `after`, {triple id: fields}), so `undo` can put
+    them back. The triples it decided point here (`CandidateTriple.review_batch`)."""
+
+    class Status(models.TextChoices):
+        APPLIED = "applied"
+        UNDONE = "undone"
+
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.APPLIED)
+    tool_version = models.CharField(max_length=40)                     # p27-v1: judge rules v2 and its thresholds
+    scope = models.JSONField(default=dict, blank=True)                 # {facet, document_id, document, report, sheet}
+    summary = models.JSONField(default=dict, blank=True)               # counts: approved, rejected, left, ...
+    before = models.JSONField(default=dict, blank=True)
+    after = models.JSONField(default=dict, blank=True)
+    author = models.CharField(max_length=150, blank=True, default="")      # auto:p27-v1
+    started_by = models.CharField(max_length=150, blank=True, default="")  # the person who ran it
+    created_at = models.DateTimeField(auto_now_add=True)
+    undone_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"review batch {self.pk} ({self.status})"

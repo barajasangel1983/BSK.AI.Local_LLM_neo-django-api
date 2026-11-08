@@ -225,6 +225,9 @@ def triple_json(t: CandidateTriple) -> dict:
                    "properties": t.object_props or {}, "changes": (t.replaces or {}).get(t.object_id) or {}},
         "confidence": t.confidence, "issue": t.issue, "occurrences": t.occurrences, "edited": t.edited,
         "auto_fix": t.auto_fix, "facets": t.facets or [],
+        # P27c: the automated review's decision, why, and its batch (empty when a person decided)
+        "review_tier": t.review_tier or None, "review_reason": t.review_reason or None,
+        "review_batch": t.review_batch_id,
         # P26b: the run's anchor (part, model or family), a reviewer's move, the link's `instance`
         "anchor_id": t.anchor_id or None, "moved_from": t.moved_from or None, "link_properties": t.rel_props or {},
         # Every place the triple was found (P8a); `evidence` below is the first one (kept for older clients).
@@ -264,6 +267,11 @@ def triple_list(request):
             return _error("min_confidence must be a number between 0 and 1")
         # Import rows have no confidence (they are not guesses): they always pass.
         qs = qs.filter(Q(confidence__gte=floor) | Q(confidence__isnull=True))
+    doubtful_base = qs        # P27c: the Doubtful chip counts the doubtful pending ones under the same filters
+    if qp.get("review_tier"):   # P27c: auto | reject | leave | doubtful
+        if qp["review_tier"] not in CandidateTriple.ReviewTier.values:
+            return _error(f"review_tier must be one of {', '.join(CandidateTriple.ReviewTier.values)}")
+        qs = qs.filter(review_tier=qp["review_tier"])
     facet_base = qs           # before the facet filter: the tabs count every facet
     if qp.get("facet"):   # P22b: one facet, or "none" for triples with no facet (core)
         if qp["facet"] == "none":
@@ -283,6 +291,13 @@ def triple_list(request):
     counts = {s: 0 for s in CandidateTriple.Status.values}
     for row in qs.order_by().values("status").annotate(n=Count("id")):
         counts[row["status"]] = row["n"]
+    if qp.get("facet") and qp["facet"] in facets.FACETS:
+        doubtful_base = doubtful_base.annotate(facets_text=Cast("facets", TextField())).filter(
+            facets_text__contains=f'"{qp["facet"]}"')
+    elif qp.get("facet") == "none":
+        doubtful_base = doubtful_base.filter(Q(facets=[]) | Q(facets__isnull=True))
+    doubtful = doubtful_base.filter(status=CandidateTriple.Status.PENDING,
+                                    review_tier=CandidateTriple.ReviewTier.DOUBTFUL).count()
     facet_counts = None
     if qp.get("facet_counts") in ("1", "true"):   # P22c-0: the review's facet tabs (same filters, every facet)
         facet_counts = {f: 0 for f in (*facets.FACETS, "none")}
@@ -297,7 +312,7 @@ def triple_list(request):
     except ValueError as exc:
         return _error(str(exc))
     return Response({
-        "total": qs.count(), "counts": counts, "offset": offset, "limit": limit,
+        "total": qs.count(), "counts": counts, "doubtful": doubtful, "offset": offset, "limit": limit,
         **({"facet_counts": facet_counts} if facet_counts is not None else {}),
         "triples": [triple_json(t) for t in qs[offset:offset + limit]],
     })

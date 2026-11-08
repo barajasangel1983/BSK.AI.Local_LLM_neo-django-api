@@ -348,11 +348,14 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
         repository.upsert_node(tx, schema, "Document", doc_id, {"name": doc.filename, "doc_key": doc.doc_key,
                                                                 "document_id": str(doc.id), "source": "library"})
     section_id = _section_id(t)
-    repository.upsert_node(tx, schema, "DocumentSection", section_id, {
-        "name": (t.section_path or [doc.filename])[-1], "section_path": t.section_path or [],
-        "page_start": t.page_start, "page_end": t.page_end, "doc_key": doc.doc_key,
-        "document_id": str(doc.id), "source": "library"})
-    repository.upsert_relationship(tx, schema, doc_id, "HAS_SECTION", section_id, {"source": "library"})
+    # A section or a link that is already there is left as it is (P27c, 2026-11-07): rewriting it changed its
+    # `updated_at`, and a family's DOCUMENTED_BY made by P26c lost its `source`, so an undo couldn't put it back.
+    if not tx.run("MATCH (s:Entity {id: $id}) RETURN s.id", id=section_id).single():
+        repository.upsert_node(tx, schema, "DocumentSection", section_id, {
+            "name": (t.section_path or [doc.filename])[-1], "section_path": t.section_path or [],
+            "page_start": t.page_start, "page_end": t.page_end, "doc_key": doc.doc_key,
+            "document_id": str(doc.id), "source": "library"})
+    _link_once(tx, schema, doc_id, "HAS_SECTION", section_id)
     for node_id, label in {(t.subject_id, t.subject_type), (t.object_id, t.object_type)}:
         if _allowed(schema, "DocumentSection", "DESCRIBES", label):
             _supports(tx, schema, t, section_id, "DESCRIBES", node_id, {"doc_key": doc.doc_key})
@@ -361,10 +364,17 @@ def _commit_curated(tx, t: CandidateTriple, schema, asset_scope: str | None) -> 
         label = schema.label_for_slug(anchor.split(":", 2)[1])
         if _allowed(schema, label, "DOCUMENTED_BY", "Document") and tx.run(
                 "MATCH (n:Entity {id: $id}) RETURN n.id", id=anchor).single():
-            repository.upsert_relationship(tx, schema, anchor, "DOCUMENTED_BY", doc_id, {"source": "library"})
+            _link_once(tx, schema, anchor, "DOCUMENTED_BY", doc_id)
     if asset_scope and _allowed(schema, "Asset", "DOCUMENTED_BY", "Document"):
         if tx.run("MATCH (a:Asset {id: $id}) RETURN a.id", id=asset_scope).single():
-            repository.upsert_relationship(tx, schema, asset_scope, "DOCUMENTED_BY", doc_id, {"source": "library"})
+            _link_once(tx, schema, asset_scope, "DOCUMENTED_BY", doc_id)
+
+
+def _link_once(tx, schema, from_id: str, rel: str, to_id: str) -> None:
+    """An evidence link (source "library"), unless one is already there: an existing link keeps its properties."""
+    if not tx.run(f"MATCH (:Entity {{id: $a}})-[r:{rel}]->(:Entity {{id: $b}}) RETURN count(r) AS n",   # rel: a constant
+                  a=from_id, b=to_id).single()["n"]:
+        repository.upsert_relationship(tx, schema, from_id, rel, to_id, {"source": "library"})
 
 
 def _plain_props(props: dict) -> dict:
@@ -460,12 +470,15 @@ def safety_blocker(t: CandidateTriple, alone: bool) -> str:
     return ""
 
 
-def approve(triples: list[CandidateTriple]) -> dict:
-    """Commit pending/rejected triples. Returns {approved: [ids], errors: {id: message}, layers: {curated, lab}}."""
+def approve(triples: list[CandidateTriple], automatic: bool = False) -> dict:
+    """Commit pending/rejected triples. Returns {approved: [ids], errors: {id: message}, layers: {curated, lab}}.
+
+    `automatic` (P27c): the automated review's batch (`manage.py review_apply`) approves Safety facts several at a
+    time; only the one-at-a-time rule is skipped, a Safety fact still needs its exact quote. Never set from the API."""
     schema = registry.active_schema()
     approved, errors, layers = [], {}, {"curated": 0, "lab": 0}
     ready = []
-    alone = sum(t.status != CandidateTriple.Status.APPROVED for t in triples) == 1
+    alone = automatic or sum(t.status != CandidateTriple.Status.APPROVED for t in triples) == 1
     for t in triples:   # checks that need no graph connection first
         if t.status == CandidateTriple.Status.APPROVED:
             continue
@@ -601,12 +614,22 @@ def _uncommit(tx, t: CandidateTriple) -> None:
     facets.refresh(tx, registry.active_schema(), [t.subject_id, t.object_id])   # P22b: a removed link may drop one
     if t.document is None:
         return
-    # Sections that no longer describe anything, then documents with no sections left.
+    # Its section if it no longer describes anything, then documents with no sections left. Only this triple's own
+    # section: an empty section something else left behind is not this triple's to remove (P27c, 2026-11-07: an undo
+    # took 3 old empty G120C sections with it, so the graph wasn't as before).
     tx.run(
-        "MATCH (s:DocumentSection {doc_key: $doc, source: 'library'}) "
+        "MATCH (s:DocumentSection {id: $sid, source: 'library'}) "
         "WHERE NOT (s)-[:DESCRIBES]->() DETACH DELETE s",
-        doc=t.document.doc_key,
+        sid=_section_id(t),
     )
+    # The family's or model's "documented by" link this manual's facts made goes with the last of them (P27c,
+    # 2026-11-07: an undo left the DDA family documented by its manual). A link made otherwise (P26c, an import) stays.
+    anchor = t.anchor_id or ""
+    if anchor.split(":", 2)[1:2] and anchor.split(":", 2)[1] in PRODUCT_SLUGS and not (
+            CandidateTriple.objects.filter(status=CandidateTriple.Status.APPROVED, document_id=t.document_id,
+                                           anchor_id=anchor).exclude(pk=t.pk).exists()):
+        tx.run("MATCH (:Entity {id: $a})-[r:DOCUMENTED_BY {source: 'library'}]->(:Document {doc_key: $doc}) DELETE r",
+               a=anchor, doc=t.document.doc_key)
     # Only a Document text made and nothing else uses: never one an import's approved link still points to.
     tx.run(
         "MATCH (d:Document {doc_key: $doc, source: 'library'}) "
