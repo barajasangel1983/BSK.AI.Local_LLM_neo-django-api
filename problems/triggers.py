@@ -132,6 +132,7 @@ def _promote(event, title: str) -> bool:
     ticket.context = {**ticket.context, "trigger_event": {"tool": event.tool.name, "type": event.type, "rule": event.rule,
                                                           "value": event.value, "extreme": event.extreme,
                                                           "unit": event.tool.unit, "limits": event.limits}}
+    ticket.context["analysis"] = service.summary(ticket.asset_id, ticket.window_start, None, ticket.source_key)
     service._log(ticket, "became a specification ticket", {"username": "system", "name": "Problem-solving trigger"})
     ticket.save()
     return True

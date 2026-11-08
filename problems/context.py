@@ -107,6 +107,8 @@ def as_text(ticket) -> str:
                      f"{e['unit']}, worst {e['extreme']:.4g} ({bounds})")
     if c.get("oee") is not None:
         lines.append(f"OEE while running: {c['oee']} %")
+    from .analysis import as_lines
+    lines += [f"Data summary: {line}" for line in as_lines(c.get("analysis") or {})]
     users = c.get("edge_users") or []
     if users:
         lines.append("Signed in on EDGE: " + ", ".join(f"{u.get('name') or u.get('username')} ({u.get('role', '')}, "

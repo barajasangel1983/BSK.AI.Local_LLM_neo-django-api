@@ -4,7 +4,7 @@
 - `html(ticket)`: the printable report with the pictures, for "Download report" (the browser saves it as PDF).
 
 Sections, in order: header (machine, ticket, trigger, window, author, approver, dates, status) · Problem · What
-happened · 5-Why · Root cause · Pictures of the problem · Containment · Corrective actions (table) · Final report ·
+happened · Data summary (P29e) · 5-Why · Root cause · Pictures of the problem · Containment · Corrective actions (table) · Final report ·
 Pictures after the fix · Validation.
 """
 
@@ -13,9 +13,9 @@ from __future__ import annotations
 import base64
 import html as h
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
-from . import context
+from . import analysis, context
 from .models import Ticket
 
 logger = logging.getLogger("chat")
@@ -124,6 +124,7 @@ def html(t: Ticket) -> str:
 <dl class="meta">{meta}</dl>
 <h2>Problem</h2><pre>{e(t.problem or '(not written)')}</pre>
 <h2>What happened (historian and SPC)</h2><pre>{e(context.as_text(t))}</pre>
+{data_summary_html(t)}
 <h2>5-Why</h2><ol>{whys}</ol>
 <h2>Root cause</h2><pre>{e(t.root_cause or '(not written)')}</pre>
 {pictures('problem', 'Pictures of the problem')}
@@ -133,3 +134,99 @@ def html(t: Ticket) -> str:
 {pictures('after', 'Pictures after the fix')}
 <h2>Validation and history</h2><ul>{validation}</ul>
 </body></html>"""
+
+
+# --- the data summary as inline SVG (P29e) ------------------------------------------------------------------------
+
+STATE_FILL = {"RUNNING": "#dcfce7", "STOPPED": "#fee2e2", "ALARMED": "#fecaca"}
+
+
+def _svg_trend(a: dict, series: dict, height: int, caption: str) -> str:
+    """One trend: the line, the normal range or limits, the onset band and the start line."""
+    e = h.escape
+    pts = series.get("points") or []
+    if not pts:
+        return f"<p class='muted'>{e(caption)}: no values.</p>"
+    x0 = datetime.fromisoformat(a["from"]).timestamp()
+    x1 = max(datetime.fromisoformat(a["until"]).timestamp(), x0 + 60)
+    lim = series.get("limits") or {}
+    refs = [(k.upper(), lim[k]) for k in ("lsl", "lcl", "cl", "ucl", "usl") if isinstance(lim.get(k), (int, float))]
+    if not refs:
+        refs = [(n, series[k]) for n, k in (("low", "low"), ("high", "high")) if isinstance(series.get(k), (int, float))]
+    ys = [p[1] for p in pts] + [v for _, v in refs]
+    y0, y1 = min(ys), max(ys)
+    pad = (y1 - y0) * 0.08 or 1
+    y0, y1 = y0 - pad, y1 + pad
+    W, L, R, T, B = 860, 48, 8, 6, 18
+    pw, ph = W - L - R, height - T - B
+
+    def X(t):
+        return L + (t - x0) / (x1 - x0) * pw
+
+    def Y(v):
+        return T + (y1 - v) / (y1 - y0) * ph
+
+    parts = []
+    start = datetime.fromisoformat(a["start"]).timestamp()
+    onset = datetime.fromisoformat(a["onset"]).timestamp()
+    if onset < start:
+        parts.append(f"<rect x='{X(onset):.1f}' y='{T}' width='{X(start) - X(onset):.1f}' height='{ph}' fill='#fef3c7'/>")
+    for name, v in refs:
+        dash = "" if name in ("LSL", "USL") else " stroke-dasharray='4 3'"
+        color = "#dc2626" if name in ("LSL", "USL") else "#94a3b8"
+        parts.append(f"<line x1='{L}' x2='{L + pw}' y1='{Y(v):.1f}' y2='{Y(v):.1f}' stroke='{color}' stroke-width='1'{dash}/>"
+                     f"<text x='{L + pw - 2}' y='{Y(v) - 2:.1f}' font-size='9' text-anchor='end' fill='{color}'>{name} {v:.4g}</text>")
+    line = " ".join(f"{X(t):.1f},{Y(v):.1f}" for t, v in pts)
+    parts.append(f"<polyline points='{line}' fill='none' stroke='#2563eb' stroke-width='1.3'/>")
+    parts.append(f"<line x1='{X(start):.1f}' x2='{X(start):.1f}' y1='{T}' y2='{T + ph}' stroke='#111' stroke-width='1'/>")
+    parts.append(f"<text x='{L - 4}' y='{T + 9}' font-size='9' text-anchor='end'>{y1:.4g}</text>"
+                 f"<text x='{L - 4}' y='{T + ph}' font-size='9' text-anchor='end'>{y0:.4g}</text>")
+    for frac in (0, 0.5, 1):
+        t = x0 + frac * (x1 - x0)
+        anchor = "start" if frac == 0 else "end" if frac == 1 else "middle"
+        parts.append(f"<text x='{X(t):.1f}' y='{height - 4}' font-size='9' text-anchor='{anchor}'>"
+                     f"{datetime.fromtimestamp(t, tz=timezone.utc):%H:%M}</text>")
+    return (f"<figure><figcaption><b>{e(caption)}</b></figcaption><svg viewBox='0 0 {W} {height}' width='100%' "
+            f"role='img' aria-label='{e(caption)}'>{''.join(parts)}</svg></figure>")
+
+
+def _svg_states(a: dict) -> str:
+    st = a.get("states") or []
+    if not st:
+        return ""
+    x0 = datetime.fromisoformat(a["from"]).timestamp()
+    x1 = max(datetime.fromisoformat(a["until"]).timestamp(), x0 + 60)
+    W, L, R, H = 860, 48, 8, 14
+    pw = W - L - R
+    rects = []
+    for i, (t, s) in enumerate(st):
+        t_end = st[i + 1][0] if i + 1 < len(st) else x1
+        a_, b_ = max(t, x0), min(t_end, x1)
+        if b_ <= a_:
+            continue
+        x = L + (a_ - x0) / (x1 - x0) * pw
+        w = (b_ - a_) / (x1 - x0) * pw
+        rects.append(f"<rect x='{x:.1f}' y='0' width='{w:.1f}' height='{H}' fill='{STATE_FILL.get(s, '#e5e7eb')}'>"
+                     f"<title>{h.escape(s)}</title></rect>")
+    return (f"<figure><figcaption><b>Machine state</b> (green running, red stopped or alarmed, grey other)</figcaption>"
+            f"<svg viewBox='0 0 {W} {H}' width='100%'>{''.join(rects)}</svg></figure>")
+
+
+def data_summary_html(t: Ticket) -> str:
+    a = (t.context or {}).get("analysis") or {}
+    if not a or a.get("error") and not a.get("from"):
+        return f"<h2>Data summary</h2><p class='muted'>{h.escape(a.get('error', 'No data summary.'))}</p>" if a else ""
+    blocks = [_svg_states(a)]
+    if a.get("trigger"):
+        tr = a["trigger"]
+        blocks.append(_svg_trend(a, tr, 150, f"Trigger: {tr['name']} ({tr.get('unit') or '-'})"))
+    for c in a.get("candidates") or []:
+        follow = f"; with {', '.join(c['with'])}" if c.get("with") else ""
+        blocks.append(_svg_trend(a, c, 90, f"{c['name']} ({c.get('unit') or '-'}): moved {analysis._minutes(c['lead_min'])} "
+                                           f"the start, {c['direction']} {c['peak_sigma']} σ{follow}"))
+    words = "".join(f"<li>{h.escape(x)}</li>" for x in analysis.as_lines(a))
+    if a.get("error"):
+        words += f"<li>{h.escape(a['error'])}</li>"
+    return ("<h2>Data summary</h2><p class='muted'>The black line is the start of the problem; the yellow band is from "
+            "the first signal that moved to the start. \"Moved\" means more than 3 σ from the running baseline 2 h to "
+            "1 h before the start; it is not a cause.</p>" + "".join(blocks) + (f"<ul>{words}</ul>" if words else ""))
