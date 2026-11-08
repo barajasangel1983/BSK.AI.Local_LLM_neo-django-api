@@ -646,7 +646,9 @@ def ask(query: str, asset_id: str | None = None, model: str | None = None, inclu
     if scope["ambiguous"] and not scope["asset"]:
         return {"answer": None, "model": model, "packet": packet, "needs_choice": scope["ambiguous"]}
     try:
-        ctx = answer_context(query, model, include_documents, scope["asset"]["id"] if scope["asset"] else "", [])
+        from chat.prompt import standard
+        ctx = answer_context(query, model, include_documents, scope["asset"]["id"] if scope["asset"] else "", [],
+                             editable=standard())
     except EngineError as exc:
         raise ContextError(str(exc))
     with usage.scope(purpose="context-ask"):
