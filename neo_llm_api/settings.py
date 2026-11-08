@@ -336,6 +336,10 @@ PLANNER_PARTS_EXCERPTS_SHARE = float(os.getenv("PLANNER_PARTS_EXCERPTS_SHARE", "
 # (Home's stats), in a block cited [H], capped at this many characters (and a third of the prompt).
 CHAT_HISTORIAN_WINDOWS = os.getenv("CHAT_HISTORIAN_WINDOWS", "0") == "1"
 CHAT_HISTORIAN_WINDOW_CHARS = int(os.getenv("CHAT_HISTORIAN_WINDOW_CHARS", "2500"))
+# P22g: the parts' safety notices (hazards with their measures, safety functions, the measures a procedure requires)
+# join an asset chat's facts, and a safety question puts them first and gives the facts this share of the prompt.
+CHAT_SAFETY_FACTS = os.getenv("CHAT_SAFETY_FACTS", "0") == "1"
+PLANNER_SAFETY_FACTS_SHARE = float(os.getenv("PLANNER_SAFETY_FACTS_SHARE", "0.4"))
 # Default top_k on /api/rag/query/ (RAG Lab Top-K slider marker).
 RAG_QUERY_DEFAULT_TOP_K = int(os.getenv("RAG_QUERY_DEFAULT_TOP_K", "5"))
 # Upper bound for top_k on /api/rag/query/ (RAG Lab Top-K slider).

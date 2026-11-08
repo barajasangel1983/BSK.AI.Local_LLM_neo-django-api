@@ -24,11 +24,19 @@ PARTS_QUESTION = re.compile(r"\b(which|how many|what model|made by|manufacturer|
 NOT_PARTS = re.compile(r"\b(replac\w*|interval|how often|maintenance|lubric\w*|clean\w*|calibrat\w*|fault|alarm|"
                        r"warning|years?|hours?|torque)\b")
 CODE = re.compile(r"\b(?:[A-F]?\d{4}|[A-F][0-9A-F]{3}|[A-Z]\d{4,5}|\d{2}\.\d{1,2})\b")
+# The question's facet (P22g): a safety question ("is it safe to open …", "what PPE …", "before I work on …") puts the
+# parts' safety notices first. General words, any machine; only Safety has a list so far.
+FACET_WORDS = {
+    "Safety": re.compile(r"\b(safe\w*|hazard\w*|danger\w*|risks?|ppe|protective|gloves?|goggles?|glasses|injur\w*|"
+                         r"shock\w*|burns?|electrocut\w*|isolat\w*|lock ?out|tag ?out|de-?energi[sz]\w*|precaution\w*|"
+                         r"before (?:i|we|you) (?:open|touch|work|remove|disconnect|lift|clean|service))\b"),
+}
 
 
 @dataclass
 class Plan:
     kind: str = "general"               # parts | code | general
+    facet: str = ""                     # P22g: the question's facet ("Safety"), its facts first
     parts: list[str] = field(default_factory=list)      # the parts the question is about (ids)
     doc_keys: list[str] = field(default_factory=list)   # their manuals, searched first
     facts_share: float = 0.0            # 0 = the setting's share
@@ -38,7 +46,7 @@ class Plan:
     query_note: str = ""
 
     def describe(self) -> str:
-        return f"kind={self.kind} parts={len(self.parts)} manuals={len(self.doc_keys)} note={self.query_note!r}"
+        return f"kind={self.kind} facet={self.facet or '-'} parts={len(self.parts)} manuals={len(self.doc_keys)} note={self.query_note!r}"
 
     def query(self, question: str) -> str:
         return f"{question} ({self.query_note})" if self.query_note else question
@@ -78,6 +86,10 @@ def question_kind(question: str) -> Plan:
             settings.PLANNER_PARTS_EXCERPTS_SHARE
     elif CODE.search(question):
         out.kind = "code"
+    if settings.CHAT_SAFETY_FACTS:
+        out.facet = next((f for f, words in FACET_WORDS.items() if words.search(question.lower())), "")
+        if out.facet and out.kind == "general":
+            out.facts_share = settings.PLANNER_SAFETY_FACTS_SHARE
     return out
 
 

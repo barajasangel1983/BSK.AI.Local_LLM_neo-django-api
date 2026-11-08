@@ -766,9 +766,12 @@ def _chat(request):
         facts_budget, _ = asset_context.budgets(total_budget, *shares)
         try:
             focus = _focus(scope, user_message)
-            asset_ctx = asset_context.build(scope, user_message, facts_budget, focus)
+            asset_ctx = asset_context.build(scope, user_message, facts_budget, focus,
+                                            facet=route.facet if route else "")
             if route:
+                facet = route.facet
                 route = planner.plan(user_message, asset_ctx.parts, focus)
+                route.facet = facet
         except (GraphUnavailable, asset_context.AssetScopeError) as exc:
             logger.warning("asset context failed conversation=%s asset=%s: %s", conversation.id, scope, exc)
             asset_note = (f"You are Neo, the assistant for asset {scope}. Its facts are unavailable right now "

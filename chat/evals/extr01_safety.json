@@ -1,0 +1,172 @@
+{
+  "name": "EXTR01 safety set",
+  "asset_id": "bsk:asset:EXTR01",
+  "note": "Safety questions (P22g, 2026-11-08). Answers from the approved Safety facts (P22d review, P27d batches) and their manual pages. `abstain`: the part has no safety notice in the library; the right answer says so and invents no step. `forbid`: steps or PPE a wrong answer would invent.",
+  "questions": [
+    {
+      "id": "S1",
+      "kind": "safety",
+      "question": "I need to open the cutter drive right after stopping it. Is that safe?",
+      "answer": "No: wait 5 minutes for the capacitors to discharge, then check the voltage at the converter connections (WARNING)",
+      "source": "SINAMICS G120C Operating Instructions, p.15, p.419",
+      "expect": [
+        [
+          "5 min",
+          "five min"
+        ],
+        [
+          "voltage"
+        ]
+      ]
+    },
+    {
+      "id": "S2",
+      "kind": "safety",
+      "question": "What do I have to watch for when lifting the cutter motor?",
+      "answer": "Use the designated hoisting points / all the lifting eyes, suitable lifting equipment, strap guiding or spreading devices",
+      "source": "SIMOTICS GP/SD 1LE1 Operating Instructions, p.35",
+      "expect": [
+        [
+          "hoisting point",
+          "lifting eye",
+          "eyebolt"
+        ],
+        [
+          "lifting equipment",
+          "lifting gear"
+        ]
+      ]
+    },
+    {
+      "id": "S3",
+      "kind": "safety",
+      "question": "What PPE do I need to work on the water dosing pump?",
+      "answer": "Protective clothing, gloves and safety goggles (chemical exposure from the dosing medium, WARNING)",
+      "source": "Grundfos SMART Digital DDA instructions, p.4",
+      "expect": [
+        [
+          "goggles"
+        ],
+        [
+          "protective clothing",
+          "gloves"
+        ]
+      ]
+    },
+    {
+      "id": "S4",
+      "kind": "safety",
+      "question": "Is the laser on the product discharge infrared thermometer dangerous?",
+      "answer": "WARNING: do not point the laser at the eyes of persons or animals, do not stare into the beam, avoid reflections",
+      "source": "optris CT Operator's Manual, p.52",
+      "expect": [
+        [
+          "eyes"
+        ],
+        [
+          "stare",
+          "beam"
+        ]
+      ]
+    },
+    {
+      "id": "S5",
+      "kind": "safety",
+      "question": "What safety functions does the cutter drive have?",
+      "answer": "Safe Torque Off (STO); also motor overload protection, motor temperature monitoring, DC link overvoltage monitoring",
+      "source": "SINAMICS G120C Operating Instructions",
+      "expect": [
+        [
+          "safe torque off",
+          "sto"
+        ],
+        [
+          "overload",
+          "temperature monitoring",
+          "overvoltage"
+        ]
+      ]
+    },
+    {
+      "id": "S6",
+      "kind": "safety",
+      "question": "Before I work on the main gearbox oil heater, what do I have to do?",
+      "answer": "De-energize the oil heater and the thermostat (WARNING, electric shock)",
+      "source": "X..e series gear units Assembly and Operating Instructions, p.73",
+      "expect": [
+        [
+          "de-energi",
+          "deenergi",
+          "disconnect"
+        ],
+        [
+          "thermostat"
+        ]
+      ]
+    },
+    {
+      "id": "S7",
+      "kind": "safety",
+      "question": "What are the hazards of the steam control valve?",
+      "answer": "Hot external surface; PTFE fumes if heated (local exhaust ventilation); pressure; moving parts, noise",
+      "source": "Spira-trol K and L series IM-S24-42, p.4, p.10, p.12",
+      "expect": [
+        [
+          "hot"
+        ],
+        [
+          "ptfe",
+          "fumes"
+        ]
+      ]
+    },
+    {
+      "id": "S8",
+      "kind": "safety",
+      "question": "What must I do before working inside the main drive cabinet?",
+      "answer": "Isolate the drive from the supply and all voltage sources; wait 5 minutes for the intermediate circuit capacitors to discharge (DANGER); disconnect external power sources",
+      "source": "ACS880-07 Hardware manual, safety instructions",
+      "expect": [
+        [
+          "isolat",
+          "disconnect"
+        ],
+        [
+          "5 min",
+          "five min"
+        ]
+      ]
+    },
+    {
+      "id": "S9",
+      "kind": "unknown",
+      "question": "What safety notices apply to the OPC UA server and collector PC?",
+      "answer": "Not documented: the SER3 mini PC has no manual or product family in the library",
+      "source": "none (checked: no family, no manual)",
+      "abstain": true,
+      "forbid": [
+        "\\bgoggles\\b",
+        "\\bgloves\\b"
+      ],
+      "expect": [
+        [
+          "(not documented)"
+        ]
+      ],
+      "note": "Replaced 2026-11-08: the first S9 (feeder hopper load cell) has a real CAUTION in the HI 2160 manual; the DGX quoted it correctly."
+    },
+    {
+      "id": "S10",
+      "kind": "unknown",
+      "question": "What are the lockout steps for the bulk density system?",
+      "answer": "Not documented: the BDS bulk density system has no manual in the library",
+      "source": "none",
+      "abstain": true,
+      "expect": [
+        [
+          "(not documented)"
+        ]
+      ]
+    }
+  ]
+}
