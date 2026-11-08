@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "plc",
     "monitor",
     "problems",
+    "alarms",
 ]
 
 MIDDLEWARE = [
