@@ -204,3 +204,61 @@ class MonitorPostsToolTests(TransactionTestCase):
         self.assertTrue(first["more"])
         rest = call({"asset_id": "bsk:asset:EXTR01", "before_id": first["posts"][-1]["id"]})
         self.assertEqual(([p["title"] for p in rest["posts"]], rest["more"]), (["Hour 0"], False))
+
+
+class SpcToolTests(TransactionTestCase):
+    """P30: EDGE reads SPC from the Studio (read only); a chart is thinned for a tablet."""
+
+    def call(self, name, args):
+        result = asyncio.run(mcp_server.build_server().call_tool(name, args))
+        content = result[0] if isinstance(result, tuple) else result
+        return json.loads(content[0].text)
+
+    def test_thinning_keeps_shape_and_every_rule_point(self):
+        from spc.service import thin_samples
+        samples = [{"ts": i, "value": float(i % 50), "rules": ["beyond_limits"] if i in (7, 777, 2999) else []}
+                   for i in range(3000)]
+        thin = thin_samples(samples, limit=200)
+        self.assertLessEqual(len(thin), 203)
+        self.assertEqual([s["ts"] for s in thin], sorted(s["ts"] for s in thin))          # time order kept
+        self.assertTrue({7, 777, 2999} <= {s["ts"] for s in thin})                      # rule points kept
+        self.assertEqual((min(s["value"] for s in thin), max(s["value"] for s in thin)), (0.0, 49.0))
+        self.assertEqual(len(thin_samples(samples[:100], limit=200)), 100)              # short: unchanged
+
+    def test_chart_overview_and_events_are_plain_json_with_tickets(self):
+        from datetime import datetime, timedelta, timezone
+        from problems.models import Ticket
+        from spc import service as spc
+        from spc.models import SpcEvent, SpcTool
+        tool = SpcTool.objects.create(asset_id="bsk:asset:EXTR01", signal_id="bsk:signal:EXTR01/scrap_output_kg",
+                                      column="scrap_output_kg", name="Scrap output", unit="kg")
+        t0 = datetime(2026, 11, 7, 16, 13, tzinfo=timezone.utc)
+        ev = SpcEvent.objects.create(tool=tool, tool_version=1, type="control_violation", rule="beyond_limits",
+                                     started_at=t0, last_at=t0 + timedelta(hours=1), value=4.6, extreme=5.2,
+                                     limits={"ucl": 3.5})
+        Ticket.objects.create(asset_id=tool.asset_id, trigger="spc_control", title="Scrap", window_start=t0,
+                              source_key=f"spc:{ev.pk}")
+        samples = [{"ts": t0 + timedelta(seconds=20 * i), "value": 2.0 + (i % 7) / 10, "range": None, "group": "",
+                    "rules": ["beyond_limits"] if i == 1500 else []} for i in range(2000)]
+        fake = {"tool_id": str(tool.id), "name": tool.name, "samples": samples, "window_start": t0,
+                "box": {"outliers": list(range(80))}, "_active": 1}
+        with patch.object(spc, "detail", return_value=fake):
+            chart = self.call("get_spc_chart", {"tool_id": str(tool.id), "hours": 999})
+        self.assertTrue(chart["thinned"])
+        self.assertEqual(chart["sample_count_full"], 2000)
+        self.assertLessEqual(len(chart["samples"]), spc.CLIENT_POINTS + 1)
+        self.assertIn(["beyond_limits"], [s["rules"] for s in chart["samples"]])
+        self.assertEqual(chart["window_start"], t0.isoformat())                         # ISO text, not a datetime
+        self.assertEqual(len(chart["box"]["outliers"]), spc.CLIENT_OUTLIERS)
+        self.assertNotIn("_active", chart)
+        self.assertEqual(chart["events"][0]["ticket"]["number"], Ticket.objects.get().number)
+
+        with self.assertRaisesMessage(Exception, "SPC tool not found"):
+            self.call("get_spc_chart", {"tool_id": "not-a-tool"})
+
+        events = self.call("list_spc_events", {"asset_id": "bsk:asset:EXTR01"})
+        self.assertEqual(events["events"][0]["ticket"]["status"], "open")
+        with patch.object(spc, "screening", return_value={"tools": [], "summary": {}, "newest_row": t0}) as screening:
+            overview = self.call("get_spc_overview", {"asset_id": "bsk:asset:EXTR01", "hours": 500})
+        screening.assert_called_once_with("bsk:asset:EXTR01", None, None, 72)            # hours capped at 72
+        self.assertEqual(overview["newest_row"], t0.isoformat())
