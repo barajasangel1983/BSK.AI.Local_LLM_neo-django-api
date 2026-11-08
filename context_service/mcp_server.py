@@ -246,6 +246,34 @@ def build_server() -> FastMCP:
         from monitor import agent
         return await _call("get_monitor_posts", agent.posts, asset_id, before_id or None, limit)
 
+    # --- P31: the machine live over OPC UA, read only (Start / Pause stay on the Studio's PLC page) --------------
+
+    @mcp.tool()
+    async def get_opc_live(asset_id: str, everything: bool = False) -> dict:
+        """The machine now, as its PLC reports it over OPC UA (read at most every 2 s by the Studio, whoever asks):
+        state and step, the active fault, production, the labelled analog values (with unit, the PLC's limits, and the
+        Studio's name and normal range for historian signals; `outside` when out of range) and digital I/O. With
+        `everything`, every OPC UA variable (path, value, type). Never a command."""
+        from plc import live
+        return await _call("get_opc_live", live.live, asset_id, everything)
+
+    @mcp.tool()
+    async def get_alarms(asset_id: str, hours: int = 24, code: str = "", category: str = "", active_only: bool = False,
+                         limit: int = 200) -> dict:
+        """The machine's alarm episodes over the last `hours` (1-744), newest first: code, description, severity,
+        category (equipment, process, quality, sensor), start, end, minutes, repeats (the same code within 5 minutes is
+        one episode), active. Also what is active now and, per code, episodes, repeats, alarm minutes and last seen.
+        limit=0 gives only the per-code counts."""
+        from alarms import service as alarms
+        return await _call("get_alarms", alarms.summary, asset_id, hours, code, category, active_only, limit)
+
+    @mcp.tool()
+    async def get_alarm_code(asset_id: str, code: str, days: int = 30) -> dict:
+        """One alarm code: its episodes over `days` (1-90), what the Studio knows about it (procedures, parts, signals
+        from the graph) and the problem-solving tickets whose window covers an episode."""
+        from alarms import service as alarms
+        return await _call("get_alarm_code", alarms.code_detail, asset_id, code, max(1, min(int(days), 90)))
+
     # --- P30: SPC, read only (the Studio sets SPC up; EDGE shows it) ------------------------------------------------
 
     @mcp.tool()

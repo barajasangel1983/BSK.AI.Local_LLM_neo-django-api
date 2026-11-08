@@ -112,7 +112,7 @@ TICKET_TOOLS = ["open_ticket", "save_ticket", "make_ticket_final_version", "subm
                 "add_ticket_users", "run_ticket_check"]
 MCP_TOOLS = ["list_assets", "resolve_entity", "get_entity_context", "get_sources", "search_documents",
              "assemble_context", "ask", "get_operational_state", "get_signal_history", "get_monitor_posts",
-             "get_spc_overview", "get_spc_chart", "list_spc_events",
+             "get_opc_live", "get_alarms", "get_alarm_code", "get_spc_overview", "get_spc_chart", "list_spc_events",
              "list_tickets", "get_ticket", "open_ticket", "save_ticket", "make_ticket_final_version", "submit_ticket",
              "approve_ticket", "return_ticket", "close_ticket", "add_ticket_picture", "remove_ticket_picture",
              "set_ticket_action", "validate_ticket_action", "get_ticket_report", "get_ticket_picture", "add_ticket_users", "run_ticket_check", "get_problem_settings",

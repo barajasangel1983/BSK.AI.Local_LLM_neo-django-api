@@ -34,6 +34,11 @@ class Command(BaseCommand):
             total += written
             if written:
                 self.stdout.write(f"{asset['id']}: {written} post(s)")
+            try:                          # P31: alarm episodes from the new rows
+                from alarms import service as alarms
+                alarms.update(asset["id"])
+            except Exception as exc:
+                self.stderr.write(f"{asset['id']}: alarm episodes failed ({type(exc).__name__}: {str(exc)[:200]})")
             try:                          # P29: problem-solving tickets after a long downtime or SPC violation
                 for ticket in triggers.tick(asset["id"]):
                     self.stdout.write(f"{asset['id']}: ticket {ticket.number} opened ({ticket.trigger})")
