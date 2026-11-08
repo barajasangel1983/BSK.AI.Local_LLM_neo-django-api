@@ -9,7 +9,7 @@ Specification: claude/P12_SPCimplementation.md, sections 5 to 6.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -552,3 +552,87 @@ def detail(tool: SpcTool, window_hours: int | None = None, end=None) -> dict:
         "box": engine.box_plot(extra["values"]),
     })
     return view
+
+
+# --- P30: SPC for a client over MCP (BSKLAB EDGE) -------------------------------------------------------------------
+
+CLIENT_POINTS = 600          # points kept on a chart for a tablet (plus every point that broke a rule)
+CLIENT_RULE_POINTS = 600     # at most this many rule-breaking points (the newest)
+CLIENT_OUTLIERS = 50
+
+
+def _jsonable(value):
+    """Datetimes as ISO 8601 text, everything else as is (a client gets plain JSON)."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items() if not str(k).startswith("_")}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def thin_samples(samples: list[dict], limit: int = CLIENT_POINTS, rule_limit: int = CLIENT_RULE_POINTS) -> list[dict]:
+    """A chart's points for a small screen: every point that broke a rule (the newest `rule_limit`), and of the others
+    each bucket's lowest and highest value, so the line keeps its shape and spikes. Time order is kept."""
+    if len(samples) <= limit:
+        return samples
+    flagged = [i for i, s in enumerate(samples) if s.get("rules")][-rule_limit:]
+    keep = set(flagged)
+    buckets = max(1, limit // 2)
+    size = len(samples) / buckets
+    for b in range(buckets):
+        part = [i for i in range(int(b * size), int((b + 1) * size)) if samples[i].get("value") is not None]
+        if part:
+            keep.add(min(part, key=lambda i: samples[i]["value"]))
+            keep.add(max(part, key=lambda i: samples[i]["value"]))
+    return [samples[i] for i in sorted(keep)]
+
+
+def client_overview(asset_id: str, window_hours: int | None = None) -> dict:
+    """The screening of every tool on a machine, as plain JSON (P30)."""
+    return _jsonable(screening(asset_id, None, None, window_hours))
+
+
+def client_chart(tool_id: str, window_hours: int | None = None) -> dict:
+    """One tool's chart for a tablet: the detail with its points thinned, the newest events (P30)."""
+    tool = SpcTool.objects.filter(pk=tool_id).first() if _is_uuid(tool_id) else None
+    if tool is None:
+        raise SpcError("SPC tool not found")
+    d = detail(tool, window_hours)
+    samples = d.get("samples") or []
+    d["sample_count_full"] = len(samples)
+    d["samples"] = thin_samples(samples)
+    d["thinned"] = len(d["samples"]) < len(samples)
+    box = d.get("box") or {}
+    if isinstance(box.get("outliers"), list) and len(box["outliers"]) > CLIENT_OUTLIERS:
+        box["outliers"] = box["outliers"][:CLIENT_OUTLIERS // 2] + box["outliers"][-CLIENT_OUTLIERS // 2:]
+    d["events"] = _with_tickets(events(None, str(tool.id), False, 10)["events"])
+    return _jsonable(d)
+
+
+def client_events(asset_id: str, active: bool = False, tool_id: str = "", limit: int = 30) -> dict:
+    found = events(asset_id or None, tool_id or None, active, max(1, min(int(limit), 100)))
+    return _jsonable({**found, "events": _with_tickets(found["events"])})
+
+
+def _with_tickets(items: list[dict]) -> list[dict]:
+    """Each event with the P29 ticket opened for it, when there is one: {id, number, status}."""
+    try:
+        from problems.models import Ticket
+        found = {t.source_key: t for t in Ticket.objects.filter(source_key__in=[f"spc:{e['id']}" for e in items])}
+    except Exception:
+        found = {}
+    for e in items:
+        t = found.get(f"spc:{e['id']}")
+        e["ticket"] = {"id": t.id, "number": t.number, "status": t.status} if t else None
+    return items
+
+
+def _is_uuid(value: str) -> bool:
+    import uuid
+    try:
+        uuid.UUID(str(value))
+        return True
+    except ValueError:
+        return False

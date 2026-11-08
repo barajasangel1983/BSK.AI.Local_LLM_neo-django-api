@@ -246,6 +246,32 @@ def build_server() -> FastMCP:
         from monitor import agent
         return await _call("get_monitor_posts", agent.posts, asset_id, before_id or None, limit)
 
+    # --- P30: SPC, read only (the Studio sets SPC up; EDGE shows it) ------------------------------------------------
+
+    @mcp.tool()
+    async def get_spc_overview(asset_id: str, hours: int = 8) -> dict:
+        """Every SPC chart of a machine over the last `hours` (1-72): status (stable, warning, trending,
+        out_of_control, specification_violation, paused, configuration_required), current value, mean, sigma, Cp, Cpk,
+        Pp, Ppk, limits (LSL, LCL, CL, UCL, USL), violations, a small trend and the distribution; `summary` counts them.
+        The same numbers as the Studio's SPC page."""
+        from spc import service as spc
+        return await _call("get_spc_overview", spc.client_overview, asset_id, max(1, min(int(hours), 72)))
+
+    @mcp.tool()
+    async def get_spc_chart(tool_id: str, hours: int = 8) -> dict:
+        """One SPC chart (tool_id from get_spc_overview) over the last `hours` (1-72): its points (thinned to about 600
+        for a tablet; every point that broke a rule is kept, with the rules), limits per group, capability, box plot
+        and the newest events (each with its problem-solving ticket when one was opened)."""
+        from spc import service as spc
+        return await _call("get_spc_chart", spc.client_chart, tool_id, max(1, min(int(hours), 72)))
+
+    @mcp.tool()
+    async def list_spc_events(asset_id: str = "", active: bool = False, tool_id: str = "", limit: int = 30) -> dict:
+        """SPC events, newest first (control or specification violations, trends): tool, type, rule, start, last,
+        value, worst value, limits, active, and the problem-solving ticket when one was opened."""
+        from spc import service as spc
+        return await _call("list_spc_events", spc.client_events, asset_id, active, tool_id, limit)
+
     # --- P29: problem-solving tickets (EDGE fills and approves them; the Studio owns them) ---------------------
     # `user` is who acts on EDGE: {username, name, role, source}. Only engineers and admins write; the approver is not
     # the author. A rule that is broken comes back as the tool's error text, to show as is.
