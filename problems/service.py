@@ -171,6 +171,7 @@ def open_ticket(asset_id: str, trigger: str, title: str, start: datetime, end: d
                     title=title[:300], window_start=start, window_end=end, opened_by=opened_by or {})
     if with_context:
         ticket.context = context.build(asset_id, start, end)
+        ticket.context["analysis"] = summary(asset_id, start, end, source_key)
     _log(ticket, "opened", opened_by or {"username": "system", "name": "Problem-solving trigger"})
     try:
         with transaction.atomic():
@@ -210,10 +211,21 @@ def open_manual(asset_id: str, title: str, start: datetime, end: datetime | None
     return ticket
 
 
+def summary(asset_id: str, start, end, source_key: str = "") -> dict:
+    """The data summary (P29e); never blocks a ticket."""
+    from . import analysis
+    try:
+        return analysis.build(asset_id, start, end, analysis.trigger_for(source_key or ""))
+    except Exception as exc:
+        logger.exception("problems: the data summary failed for %s", asset_id)
+        return {"version": analysis.VERSION, "error": f"The data summary could not be made: {type(exc).__name__}"}
+
+
 def refresh_context(ticket: Ticket) -> Ticket:
     """Read the window again (when it closes, or by hand). Keeps who was signed in (from EDGE) and the trigger's event."""
     kept = {k: v for k, v in (ticket.context or {}).items() if k in ("edge_users", "edge_users_at", "trigger_event")}
-    ticket.context = {**context.build(ticket.asset_id, ticket.window_start, ticket.window_end), **kept}
+    ticket.context = {**context.build(ticket.asset_id, ticket.window_start, ticket.window_end), **kept,
+                      "analysis": summary(ticket.asset_id, ticket.window_start, ticket.window_end, ticket.source_key)}
     ticket.save(update_fields=["context", "updated_at"])
     return ticket
 
