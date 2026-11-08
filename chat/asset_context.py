@@ -53,6 +53,7 @@ class Line:
     parts: tuple[str, ...] = ()     # the installed parts the fact belongs to: a part in focus brings it (P26e)
     level: str = ""                 # part | model | family: where the fact comes from (P26e)
     owner: str = ""                 # the model's or family's id when level is model / family
+    facets: tuple[str, ...] = ()    # the node's facets (P22g): a question of that facet puts the fact first
 
 
 @dataclass
@@ -222,11 +223,12 @@ def _singular(word: str) -> str:
 
 
 def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] | None = None,
-          ctx: dict | None = None) -> AssetContext:
+          ctx: dict | None = None, facet: str = "") -> AssetContext:
     """Fact sheet for `asset_id` within `budget_chars` (raises GraphUnavailable / AssetScopeError).
 
     `focus_ids`: entities the question is about; their facts are kept first when the sheet is cut.
-    `ctx`: the asset's graph context when the caller has read it already (one read per packet, P26e)."""
+    `ctx`: the asset's graph context when the caller has read it already (one read per packet, P26e).
+    `facet`: the question's facet (P22g, the planner's): that facet's facts go first."""
     try:
         ctx = ctx or services.get_asset_context(asset_id)
     except NodeNotFound:
@@ -364,7 +366,10 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
             text += f"; addresses: {', '.join(alarm_names.get(a, a) for a in pr['addresses'])}"
         lines.append(Line("PROCEDURES", text, node_id=pr["id"], related=tuple(pr.get("addresses") or ())))
 
-    part_lines, part_props = _part_lines(ctx, names, {a["id"] for a in ctx["alarms"]}, {pr["id"] for pr in ctx["procedures"]})
+    part_lines, part_props = _part_lines(ctx, names, {a["id"] for a in ctx["alarms"]}, {pr["id"] for pr in ctx["procedures"]},
+                                         facet)
+    for ln in part_lines:
+        ln.facets = tuple(part_props.get(ln.node_id, {}).get("facets") or ())
     lines += part_lines
 
     for conn in ctx["connections"]:
@@ -376,7 +381,7 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
         lines.append(Line("DOCUMENTS", f"- {d['name']}" + (f" (doc_key {d['properties']['doc_key']})" if d["properties"].get("doc_key") else "")))
 
     focus_ids = focus_ids or set()
-    selected = _fit(lines, question, budget_chars, focus_ids)
+    selected = _fit(lines, question, budget_chars, focus_ids, facet)
     text = _render(selected)
     cited = [ln for ln in selected if not ln.pinned or ln.text.startswith(("Location", "Historian"))]
     node_props = {asset_id: asset["properties"]}
@@ -402,7 +407,7 @@ def build(asset_id: str, question: str, budget_chars: int, focus_ids: set[str] |
                 "focus": ln.node_id in focus_ids, "level": ln.level, "owner": ln.owner,
                 "evidence_id": next(iter(node_props.get(ln.node_id, {}).get("evidence_ids") or []), None)} for ln in cited],
         values=values,
-        pages=fact_pages(lines, question, focus_ids, node_props, settings.CHAT_FACT_PAGES),
+        pages=fact_pages(lines, question, focus_ids, node_props, settings.CHAT_FACT_PAGES, facet),
         parts=[{"id": c["id"], "name": c["name"], "parent": c.get("parent") or "",
                 "model": " ".join(str(c["properties"][k]) for k in ("manufacturer", "model") if c["properties"].get(k)),
                 "doc_keys": [manuals[t] for t in re.split(r"\s+\|\s+", str(c["properties"].get("manual_title") or ""))
@@ -435,7 +440,8 @@ def _level(owners, products: dict) -> tuple[str, str, str]:
     return ("part", "", "") if owners else ("", "", "")
 
 
-def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set) -> tuple[list[Line], dict]:
+def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set,
+                facet: str = "") -> tuple[list[Line], dict]:
     """Fact lines for the parts' alarms, procedures and failure modes (P16a, 2026-10-16), and their properties.
 
     A procedure reached from an alarm or a failure mode is listed once, with the part it is for. Alarms and
@@ -498,6 +504,8 @@ def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set
             text += f": {_cut(p['summary'])}"
         if entry["addresses"]:
             text += f"; addresses: {', '.join(alarm_name.get(a, a) for a in entry['addresses'])}"
+        if settings.CHAT_SAFETY_FACTS and facet == "Safety" and entry["node"].get("requires"):
+            text += f"; requires: {_cut('; '.join(entry['node']['requires']), 300)}"
         level, owner, said = _level(entry["owners"], products)
         lines.append(Line("PART_PROCEDURES", text + said, node_id=pid, related=tuple(entry["addresses"]),
                           parts=tuple(entry["components"]), level=level, owner=owner))
@@ -560,7 +568,44 @@ def _part_lines(ctx: dict, names: dict, asset_alarms: set, asset_procedures: set
         level, owner, said = _level(x.get("owners"), products)
         lines.append(Line("INTERFACES", text + said, node_id=x["id"], parts=tuple(x["components"]), level=level, owner=owner))
         props[x["id"]] = p
+    if settings.CHAT_SAFETY_FACTS:
+        lines += _safety_lines(ctx, parts, products, props)
     return lines, props
+
+
+SEVERITY = {"DANGER": 3, "WARNING": 2, "CAUTION": 1}      # NOTICE and none: 0 (P22g: the order on a tie)
+SAFETY_SECTIONS = ("SAFETY", "SAFETY_FUNCTIONS")
+SIGNAL_WORD = re.compile(r"\((DANGER|WARNING|CAUTION|NOTICE)\)")
+
+
+def _severity(p: dict) -> str:
+    return str(p.get("severity") or "").strip().upper()
+
+
+def _safety_lines(ctx: dict, parts, products: dict, props: dict) -> list[Line]:
+    """The parts' safety notices (P22g): one line per hazard with the measures the manual gives against it, as the
+    manual says them; then the safety functions. Ranked like every other fact, never pinned."""
+    lines: list[Line] = []
+    for h in ctx.get("hazards", []):
+        p = h["properties"]
+        text = f"- {h['name']}" + (f" ({_severity(p)})" if _severity(p) else "") + f" on {parts(h['components'])}"
+        if p.get("consequence") and str(p["consequence"]).lower() not in h["name"].lower():
+            text += f": consequence: {_cut(p['consequence'], 200)}"
+        if h["measures"]:
+            text += f"; measures: {_cut('; '.join(m['name'] for m in h['measures']))}"
+        level, owner, said = _level(h.get("owners"), products)
+        lines.append(Line("SAFETY", text + said, node_id=h["id"], parts=tuple(h["components"]), level=level, owner=owner))
+        props[h["id"]] = p
+    for x in ctx.get("safety_functions", []):
+        p = x["properties"]
+        detail = [d for d in (p.get("subtype"), p.get("description") and _cut(p["description"], 200)) if d]
+        text = f"- {x['name']} (safety function) of {parts(x['components'])}" + (
+            f": {', '.join(str(d) for d in detail)}" if detail else "")
+        level, owner, said = _level(x.get("owners"), products)
+        lines.append(Line("SAFETY_FUNCTIONS", text + said, node_id=x["id"], parts=tuple(x["components"]),
+                          level=level, owner=owner))
+        props[x["id"]] = p
+    return lines
 
 
 def _range(p: dict) -> str:
@@ -637,6 +682,8 @@ SECTION_TITLES = {
     "PART_ALARMS": "Alarms on parts", "PART_PROCEDURES": "Procedures on parts", "FAILURE_MODES": "Failure modes",
     "SPECIFICATIONS": "Ratings of parts (datasheet values, not process limits)",
     "PARAMETERS": "Parameters of parts", "TERMINALS": "Terminals of parts", "INTERFACES": "Communication interfaces of parts",
+    "SAFETY": "Safety notices of parts (from the manuals: hazard (signal word) on parts; measures)",
+    "SAFETY_FUNCTIONS": "Safety functions of parts",
 }
 
 
@@ -651,12 +698,13 @@ def _render(lines: list[Line]) -> str:
     return "\n".join(out)
 
 
-def _fit(lines: list[Line], question: str, budget: int, focus_ids: set[str] | None = None) -> list[Line]:
+def _fit(lines: list[Line], question: str, budget: int, focus_ids: set[str] | None = None,
+         facet: str = "") -> list[Line]:
     """All lines if they fit; otherwise pinned lines + the facts about the focus entities,
     then the best-matching ones, in original order."""
     if len(_render(lines)) <= budget:
         return lines
-    scored = [i for i, _ in _ranked(lines, question, focus_ids)]
+    scored = [i for i, _ in _ranked(lines, question, focus_ids, facet)]
     keep = {i for i, ln in enumerate(lines) if ln.pinned}
     for i in scored:
         trial = keep | {i}
@@ -666,41 +714,66 @@ def _fit(lines: list[Line], question: str, budget: int, focus_ids: set[str] | No
     return [lines[i] for i in sorted(keep)]
 
 
-def _ranked(lines: list[Line], question: str, focus_ids: set[str] | None = None) -> list[tuple[int, bool]]:
-    """Unpinned lines, best first: (index, matched), matched = in focus or sharing a question word."""
+def _ranked(lines: list[Line], question: str, focus_ids: set[str] | None = None,
+            facet: str = "") -> list[tuple[int, bool]]:
+    """Unpinned lines, best first: (index, matched), matched = in focus or sharing a question word.
+
+    `facet` (P22g): a fact of the question's facet comes right after the facts in focus (of the parts in focus when
+    there are any, else those sharing a question word), the stronger signal word first on a tie."""
     q = _tokens(question)
     focus_ids = set(focus_ids or ())
     # A fact in focus brings its related ones: an alarm its procedure, a failure mode its fix (P16a).
     focus_ids |= {r for ln in lines if ln.node_id in focus_ids for r in ln.related}
     # A question word found in many facts counts for less ("main drive" is on each of the drive's alarms, P16a).
     words = [q & _tokens(ln.text) for ln in lines]
-    df = Counter(w for ws in words for w in ws)
-    weight = [sum(math.log(1 + len(lines) / df[w]) for w in ws) for ws in words]
+    # P22g: in a question of another facet the safety notices don't count in the word weights either, so the other
+    # facts rank exactly as without them.
+    counted = [ln.section not in SAFETY_SECTIONS or facet == "Safety" for ln in lines]
+    df = Counter(w for ws, c in zip(words, counted) if c for w in ws)
+    n = sum(counted)
+    weight = [sum(math.log(1 + n / df[w]) for w in ws if df[w]) for ws in words]
     # A part in focus brings its own facts (its model's and family's too, P26e): those sharing a question word count
     # half again as much, and the rest of the part's come after every matching fact. A bonus, not a tier of their own:
     # a fact about another part the question names can still score higher (the drive's fan procedure, eval H22).
     mine = [bool(focus_ids.intersection(ln.parts)) for ln in lines]
     score = [w * PART_BONUS if m else w for w, m in zip(weight, mine)]
 
+    # With a part in focus only its own facts of the facet go first; with none, those sharing a question word.
+    any_mine = any(f.startswith("bsk:component:") for f in focus_ids)
+    ours = [bool(facet) and facet in ln.facets and (mine[i] if any_mine else weight[i] > 0) for i, ln in enumerate(lines)]
+
+    # In a question of another facet the safety notices come after every other fact: they only use room that is left,
+    # never the facts the answer needs (P22g eval: 10 hazards took the room of 9 facts in a parameter question).
+    behind = [ln.section in SAFETY_SECTIONS and facet != "Safety" for ln in lines]
+
     def tier(i):
         if lines[i].node_id in focus_ids:
             return 0
+        if ours[i]:
+            return 0.5
+        if behind[i]:
+            return 4
         if weight[i] > 0:
             return 1
         return 2 if mine[i] else 3
 
-    scored = sorted((i for i, ln in enumerate(lines) if not ln.pinned), key=lambda i: (tier(i), -score[i], i))
+    def severity(i):
+        m = SIGNAL_WORD.search(lines[i].text) if ours[i] else None
+        return SEVERITY.get(m.group(1), 0) if m else 0
+
+    scored = sorted((i for i, ln in enumerate(lines) if not ln.pinned),
+                    key=lambda i: (tier(i), -score[i], -severity(i), i))
     return [(i, lines[i].node_id in focus_ids or weight[i] > 0) for i in scored]
 
 
 def fact_pages(lines: list[Line], question: str, focus_ids: set[str] | None, node_props: dict,
-               limit: int) -> list[tuple[str, int]]:
+               limit: int, facet: str = "") -> list[tuple[str, int]]:
     """The document pages (doc_key, page) of the best facts for the question, best first (P17a): the facts in
     focus, then those sharing a question word. Their excerpts are offered to the reranker with the search's."""
     if limit <= 0:
         return []
     from context_graph.models import Evidence
-    wanted = [eid for i, matched in _ranked(lines, question, focus_ids) if matched and lines[i].node_id
+    wanted = [eid for i, matched in _ranked(lines, question, focus_ids, facet) if matched and lines[i].node_id
               for eid in (node_props.get(lines[i].node_id, {}).get("evidence_ids") or [])[:2]]
     found = {e.pk: e for e in Evidence.objects.filter(pk__in=wanted, document__isnull=False, page_start__isnull=False)
              .select_related("document")}
@@ -722,7 +795,12 @@ ASSET FACTS — from the curated Context Graph; treat them as authoritative:
 {facts}
 {historian_note}{window}
 Answer about this asset. Use the asset facts first and cite them as [G]; cite document excerpts as [1], [2], … when they are provided.
-If the facts and excerpts don't contain the answer, say so plainly — do not invent values, limits or procedures."""
+If the facts and excerpts don't contain the answer, say so plainly — do not invent values, limits or procedures.{safety_rule}"""
+
+
+SAFETY_RULE = ("\nWhen a safety notice in the facts applies to the work asked about, give its measures first, as the manual "
+               "states them, with its signal word (DANGER, WARNING, CAUTION, NOTICE); never add PPE or steps the facts "
+               "and excerpts don't give.")
 
 
 WINDOW_NOTE = ("\n{block}\nThe historian window above is computed from the historian's rows for the time the question asks "
@@ -738,7 +816,8 @@ def system_prompt(ctx: AssetContext, window: str = "") -> str:
     if ctx.historian and ctx.historian["out_of_range"]:
         note = "\nOut of normal range in the last running sample: " + "; ".join(ctx.historian["out_of_range"]) + "\n"
     return ASSET_PROMPT.format(name=ctx.name, asset_id=ctx.asset_id, facts=ctx.text, historian_note=note,
-                               window=WINDOW_NOTE.format(block=window) if window else "")
+                               window=WINDOW_NOTE.format(block=window) if window else "",
+                               safety_rule=SAFETY_RULE if settings.CHAT_SAFETY_FACTS else "")
 
 
 def citations(ctx: AssetContext) -> list[dict]:

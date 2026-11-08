@@ -452,11 +452,13 @@ def get_asset_context(asset_id: str) -> dict:
         ]
         part_procedures = [
             {**repository.serialize_node(row["p"]), "components": parts_of(row["comps"]), "owners": row["comps"],
-             "addresses": row["alarms"]}
+             "addresses": row["alarms"], "requires": row["requires"]}
             for row in tx.run(
                 "MATCH (c:Entity)-[:HAS_PROCEDURE]->(p:Procedure) WHERE c.id IN $ids "
                 "OPTIONAL MATCH (p)-[:ADDRESSES]->(al:Alarm) "
-                "RETURN p, collect(DISTINCT c.id) AS comps, collect(DISTINCT al.id) AS alarms ORDER BY p.name",
+                "OPTIONAL MATCH (p)-[:REQUIRES]->(sm:SafetyMeasure) "    # P22g: the safety measures a procedure needs
+                "RETURN p, collect(DISTINCT c.id) AS comps, collect(DISTINCT al.id) AS alarms, "
+                "collect(DISTINCT sm.name) AS requires ORDER BY p.name",
                 ids=fact_owners,
             )
         ]
@@ -492,6 +494,19 @@ def get_asset_context(asset_id: str) -> dict:
         parameters = owned("HAS_PARAMETER", "Parameter")
         io_points = owned("HAS_IO", "IOPoint")
         interfaces = owned("COMMUNICATES_VIA", "Interface")
+        # The parts' safety notices (P22g): each hazard with the measures the manual gives against it, and the safety
+        # functions a drive provides. Most hang on the family, like the parameters.
+        hazards = [
+            {**repository.serialize_node(row["h"]), "components": parts_of(row["comps"]), "owners": row["comps"],
+             "measures": [repository.serialize_node(m) for m in row["measures"]]}
+            for row in tx.run(
+                "MATCH (c:Entity)-[:HAS_HAZARD]->(h:Hazard) WHERE c.id IN $ids "
+                "OPTIONAL MATCH (h)-[:PROTECTED_BY]->(m:SafetyMeasure) "
+                "RETURN h, collect(DISTINCT c.id) AS comps, collect(DISTINCT m) AS measures ORDER BY h.name",
+                ids=fact_owners,
+            )
+        ]
+        safety_functions = owned("PROVIDES", "SafetyFunction")
         # Which owners are a device model or a product family, so a fact can say where it comes from (P26e)
         products = {}
         for comp in components.values():
@@ -528,6 +543,8 @@ def get_asset_context(asset_id: str) -> dict:
             "parameters": parameters,
             "io_points": io_points,
             "interfaces": interfaces,
+            "hazards": hazards,
+            "safety_functions": safety_functions,
             "products": products,
             "counts": {
                 "components": len(components),
@@ -542,6 +559,8 @@ def get_asset_context(asset_id: str) -> dict:
                 "parameters": len(parameters),
                 "io_points": len(io_points),
                 "interfaces": len(interfaces),
+                "hazards": len(hazards),
+                "safety_functions": len(safety_functions),
             },
         }
 
