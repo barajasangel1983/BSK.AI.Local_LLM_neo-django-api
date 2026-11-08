@@ -22,7 +22,7 @@ import re
 import time
 import requests
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.conf import settings
@@ -717,30 +717,17 @@ def _chat(request):
     started = _start(request)
     if isinstance(started, Response):
         return started
-    try:
-        ctx = answer_context(started.user_message, started.model_id, started.use_rag, started.scope,
-                             started.search_folders, started.conversation)
-    except ContextError as exc:
-        return exc.response
-
-    start = time.time()
-    try:
-        pieces, history_sent = _reply_pieces(started, ctx)
-        assistant_reply = "".join(pieces)
-    except gpu.GpuError as exc:
-        logger.warning("chat gpu unavailable conversation=%s model=%s: %s", started.conversation.id, started.model_id, exc)
-        return _gpu_response(exc)
-    except Exception as exc:
-        logger.exception(
-            "chat failed conversation=%s model=%s latency_ms=%d",
-            started.conversation.id, started.model_id, round((time.time() - start) * 1000),
-        )
-        return Response(
-            {"error": f"Model backend failed: {exc}"},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-    _log_reply(started, ctx, history_sent, start)
-    return Response(_save_reply(started, ctx, assistant_reply), status=status.HTTP_200_OK)
+    for event in _answer_events(started):
+        if event["type"] == "error":
+            code = event.get("kind") if event.get("kind") not in ("", "model", "context") else None
+            return Response({"error": event["message"], **({"code": code} if code else {})},
+                            status=event.get("status") or status.HTTP_502_BAD_GATEWAY)
+        if event["type"] == "needs_choice":
+            return Response({"error": "The question names several machines: choose one.", "code": "needs_choice",
+                             "candidates": event["candidates"]}, status=status.HTTP_409_CONFLICT)
+        if event["type"] == "done":
+            return Response(event["conversation"], status=status.HTTP_200_OK)
+    return Response({"error": "No answer"}, status=status.HTTP_502_BAD_GATEWAY)
 
 
 @dataclass
@@ -885,12 +872,19 @@ class AnswerContext:
     use_rag: bool
     scope: str
     is_vlm: bool
+    documents_found: int = 0          # excerpts relevant enough (P24-2: "nothing found" when 0 and no facts)
+    facts_found: int = 0
+    closest: list = field(default_factory=list)    # the documents that came nearest when nothing passed
+    retrieval_failed: bool = False
 
 
 def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, search_folders: list,
-                   conversation: Conversation | None = None) -> AnswerContext:
+                   conversation: Conversation | None = None, search_queries: list[str] | None = None) -> AnswerContext:
     """The context for one question: attached PDFs as text, the historian window, the planner, the asset's facts
-    (safety facts first for a safety question), the document excerpts, the system prompt. Raises ContextError."""
+    (safety facts first for a safety question), the document excerpts, the system prompt. Raises ContextError.
+
+    `search_queries` (P24-2, the question agent's topics): the documents are also searched once per topic and the
+    excerpts merged in turn, so each topic is represented; the question as asked is always searched too."""
     log_id = conversation.id if conversation is not None else "-"
     is_vlm = model_id == settings.VLM_CHAT_MODEL_ID
     total_budget = context_budget_chars(model_id)
@@ -958,6 +952,7 @@ def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, 
     system_prompt: str | None = None
     citations: list[dict] = []
     rag_block: str | None = None
+    documents_found, retrieval_failed, closest = 0, False, []
     if use_rag:
         rag_start = time.time()
         entries: list[dict] = []
@@ -981,12 +976,13 @@ def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, 
         reranker = "error"
         doc_scope = "library"
         fact_pages = 0
+        retrieval_failed = False
+        missed: list = []
         try:
             relevant = lambda result: [  # noqa: E731
                 c.to_dict() for c in result.chunks
                 if c.rerank_score is None or c.rerank_score >= settings.RAG_MIN_RERANK_SCORE
             ]
-            found: list[dict] = []
             # "Search in" (P15b): only the documents of the chosen folders, in both passes.
             in_folders = folders.doc_keys_in(search_folders) if search_folders else None
             asset_keys = asset_ctx.doc_keys if asset_ctx else []
@@ -994,25 +990,50 @@ def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, 
                 asset_keys = [k for k in asset_keys if k in in_folders]
             part_keys = [k for k in (route.doc_keys if route else []) if k in asset_keys]
             query = route.query(user_message) if route else user_message      # the parts' make and model (P17b)
-            if asset_keys:
-                # The asset's own documents first; the (chosen part of the) library when none of them match.
-                # The graph facts' own pages join the candidates (P17a).
-                pages = [(k, p) for k, p in asset_ctx.pages if k in asset_keys]
-                # The manuals of the parts the question is about (P17b) are searched too, and their chunks are
-                # reranked with the asset-wide ones: a part's manual is not always where the answer is (the valve's
-                # stroke is in its actuator's manual).
-                extra = page_chunks(pages) + part_candidates(query, part_keys)
-                fact_pages = len(pages)
-                result = search_v2(query, top_n=v2_top_n, doc_keys=asset_keys, extra=extra)
-                found, reranker, doc_scope = relevant(result), result.reranker, "asset+part" if part_keys else "asset"
-            if not found and in_folders != set():          # folders with no document: nothing to search
-                result = (search_v2(user_message, top_n=v2_top_n, doc_keys=sorted(in_folders)) if in_folders
-                          else search_v2(user_message, top_n=v2_top_n))
-                found, reranker = relevant(result), result.reranker
-                doc_scope = "folders" if in_folders else "library"
-            entries.extend(found)
+            # The question as asked, then the agent's topics (P24-2): each searched the same way.
+            from context_service.service import MAX_SEARCH_QUERIES
+            topics = [q.strip() for q in (search_queries or []) if q and q.strip() and q.strip() != user_message.strip()]
+            searches = list(dict.fromkeys([query, *topics]))[:MAX_SEARCH_QUERIES]
+            pages = [(k, p) for k, p in asset_ctx.pages if k in asset_keys] if asset_keys else []
+            per_query: list[list[dict]] = []
+            for n, q in enumerate(searches):
+                found: list[dict] = []
+                if asset_keys:
+                    # The asset's own documents first; the (chosen part of the) library when none of them match.
+                    # The graph facts' own pages join the candidates (P17a), with the first search.
+                    # The manuals of the parts the question is about (P17b) are searched too, and their chunks are
+                    # reranked with the asset-wide ones: a part's manual is not always where the answer is (the
+                    # valve's stroke is in its actuator's manual).
+                    extra = (page_chunks(pages) if n == 0 else []) + part_candidates(q, part_keys)
+                    fact_pages = len(pages)
+                    result = search_v2(q, top_n=v2_top_n, doc_keys=asset_keys, extra=extra)
+                    found, reranker, doc_scope = relevant(result), result.reranker, "asset+part" if part_keys else "asset"
+                if not found and in_folders != set():          # folders with no document: nothing to search
+                    library_q = user_message if n == 0 else q
+                    result = (search_v2(library_q, top_n=v2_top_n, doc_keys=sorted(in_folders)) if in_folders
+                              else search_v2(library_q, top_n=v2_top_n))
+                    found, reranker = relevant(result), result.reranker
+                    doc_scope = "folders" if in_folders else "library"
+                    if not found:
+                        missed.extend(result.chunks)
+                per_query.append(found)
+            merged, seen = [], set()
+            for rank in range(max((len(r) for r in per_query), default=0)):     # each search's best first
+                for results in per_query:
+                    if rank < len(results) and results[rank].get("id") not in seen:
+                        seen.add(results[rank].get("id"))
+                        merged.append(results[rank])
+            entries.extend(merged[:v2_top_n + len(searches) - 1] if len(searches) > 1 else merged)
         except Exception:
+            retrieval_failed = True
             logger.exception("v2 retrieval failed conversation=%s", log_id)
+        documents_found = len(entries)
+        if not entries:
+            from context_service.service import CLOSEST_DOCUMENTS, CLOSEST_MIN_SCORE
+            for c in sorted(missed, key=lambda c: c.score, reverse=True):
+                if c.score >= CLOSEST_MIN_SCORE and c.source not in {d["document"] for d in closest}:
+                    closest.append({"document": c.source, "page": c.page_start, "score": round(c.score, 4)})
+            closest = closest[:CLOSEST_DOCUMENTS]
 
         if asset_ctx:
             rag_block, used = build_rag_context(entries, rag_budget, header="DOCUMENT EXCERPTS:", footer="---",
@@ -1041,7 +1062,9 @@ def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, 
 
     citations = attachment_citations + citations
     return AnswerContext(system_prompt=system_prompt, citations=citations, document_block=document_block,
-                         use_rag=use_rag, scope=scope, is_vlm=is_vlm)
+                         use_rag=use_rag, scope=scope, is_vlm=is_vlm, documents_found=documents_found,
+                         facts_found=len(asset_ctx.facts) if asset_ctx else 0, closest=closest,
+                         retrieval_failed=retrieval_failed)
 
 
 def _reply_pieces(started: _Started, ctx: AnswerContext):
@@ -1103,14 +1126,141 @@ def _save_reply(started: _Started, ctx: AnswerContext, assistant_reply: str) -> 
     return ConversationDetailSerializer(conversation).data
 
 
-def _sse(event: str, **data) -> str:
-    return f"data: {json.dumps({'type': event, **data}, default=str)}\n\n"
+TEXT_MODELS = (*DGX_MODEL_IDS, "external-gpt", "ollama-qwen3-8b")
+AGENT_HISTORY_CHARS = 1500      # the question agent's look back (EDGE's HISTORY_CHARS)
+
+
+def _agent_history(history: list) -> list[dict]:
+    """The last exchanges that fit in AGENT_HISTORY_CHARS, oldest first, starting with a user message."""
+    picked, used = [], 0
+    for role, content in reversed([h for h in history if h[0] in ("user", "assistant")]):
+        if used + len(content) > AGENT_HISTORY_CHARS:
+            break
+        picked.append({"role": role, "content": strip_rag_footer(content)})
+        used += len(content)
+    picked.reverse()
+    while picked and picked[0]["role"] != "user":
+        picked.pop(0)
+    return picked
+
+
+def _answer_events(started: _Started):
+    """One question, start to finish (P24, the one answer engine), as events:
+
+        no machine chosen → the one the question names, or needs_choice when it names several
+        → the question agent: what to search for, or one question back (confirm / clarify)
+        → the context (facts, historian window, the agent's searches)
+        → nothing relevant and no facts → say where it looked, never guess (the model is not asked)
+        → the model streams the answer → saved → sources → done
+
+    Events are dicts {"type": status | model | token | sources | done | needs_choice | error, ...}; the streamed
+    endpoint sends them as they come, POST /api/chat/ waits for done."""
+    from context_service.service import resolve
+
+    from . import question_agent
+
+    conversation = started.conversation
+
+    # 1. Never guess between machines; a question that names one machine is about it.
+    if not started.scope and not started.is_vlm:
+        try:
+            named = resolve(started.user_message)
+        except Exception as exc:          # the graph is down: answer without a machine, as before
+            logger.warning("scope check failed conversation=%s: %s", conversation.id, exc)
+            named = None
+        if named and named["asset"]:
+            started.scope = named["asset"]["id"]
+            conversation.asset_id = started.scope
+            conversation.save(update_fields=["asset_id"])
+        elif named and any(a["phrase"] == "asset" for a in named["ambiguous"]):
+            yield {"type": "needs_choice",
+                   "candidates": next(a["candidates"] for a in named["ambiguous"] if a["phrase"] == "asset")}
+            return
+
+    # 2. The question agent: what to search the documents for, or one question back.
+    plan = None
+    if settings.CHAT_QUESTION_AGENT and started.use_rag and started.model_id in TEXT_MODELS:
+        yield {"type": "status", "text": "Reading the question…"}
+        last = conversation.messages.filter(role="assistant").order_by("-created_at").values_list("sources", flat=True).first()
+        asset_name = ""
+        if started.scope:
+            try:
+                asset_name = asset_context.check_asset(started.scope)
+            except (asset_context.AssetScopeError, GraphUnavailable):
+                asset_name = ""
+        plan = question_agent.prepare(started.model_id, started.user_message, _agent_history(started.history),
+                                      asset_name, asked_before=question_agent.already_asked(last))
+        if plan.action != "search":
+            ctx = AnswerContext(system_prompt=None, citations=[plan.shown()], document_block="", use_rag=started.use_rag,
+                                scope=started.scope, is_vlm=False)
+            yield {"type": "model", "name": started.model_id}
+            yield {"type": "token", "text": plan.message}
+            saved = _save_reply(started, ctx, plan.message)
+            yield {"type": "sources", "sources": ctx.citations}
+            yield {"type": "done", "conversation": saved}
+            return
+
+    # 3. The context.
+    yield {"type": "status", "text": "Looking in the facts and the manuals…"}
+    try:
+        ctx = answer_context(started.user_message, started.model_id, started.use_rag, started.scope,
+                             started.search_folders, conversation,
+                             search_queries=plan.queries if plan and plan.used else None)
+    except ContextError as exc:
+        data = exc.response.data if isinstance(exc.response.data, dict) else {}
+        yield {"type": "error", "kind": data.get("code") or "context", "message": data.get("error", ""),
+               "status": exc.response.status_code}
+        return
+    if plan:
+        ctx.citations.append(plan.shown())
+
+    # 4. Nothing relevant enough, and nothing else to answer from: say where it looked.
+    if (plan and ctx.use_rag and not ctx.documents_found and not ctx.facts_found and not ctx.document_block
+            and not ctx.retrieval_failed):
+        agent = ctx.citations[-1]
+        agent["action"] = "nothing_found"
+        text = question_agent.nothing_found(plan, ctx.closest)
+        yield {"type": "model", "name": started.model_id}
+        yield {"type": "token", "text": text}
+        saved = _save_reply(started, ctx, text)
+        yield {"type": "sources", "sources": ctx.citations}
+        yield {"type": "done", "conversation": saved}
+        return
+
+    # 5. The model writes the answer.
+    yield {"type": "model", "name": started.model_id}
+    start = time.time()
+    parts: list[str] = []
+    try:
+        pieces, history_sent = _reply_pieces(started, ctx)
+        for piece in pieces:
+            parts.append(piece)
+            yield {"type": "token", "text": piece}
+    except gpu.GpuError as exc:
+        logger.warning("chat gpu unavailable conversation=%s model=%s: %s", conversation.id, started.model_id, exc)
+        data = _gpu_response(exc).data
+        yield {"type": "error", "kind": data.get("code"), "message": data.get("error"), "status": 503}
+        return
+    except Exception as exc:
+        logger.exception("chat failed conversation=%s model=%s latency_ms=%d", conversation.id, started.model_id,
+                         round((time.time() - start) * 1000))
+        yield {"type": "error", "kind": "model", "message": f"Model backend failed: {exc}", "status": 502}
+        return
+    _log_reply(started, ctx, history_sent, start)
+    saved = _save_reply(started, ctx, "".join(parts))
+    yield {"type": "sources", "sources": ctx.citations}
+    yield {"type": "done", "conversation": saved}
+
+
+def _sse(**event) -> str:
+    return f"data: {json.dumps(event, default=str)}\n\n"
 
 
 @api_view(["POST"])
 def chat_stream_view(request):
     """POST /api/chat/stream/ (P24-1): the same request as POST /api/chat/, answered as server-sent events:
-    model → token… → sources → done {conversation}  (or error {kind, message}). The reply is saved before `done`."""
+    [status…] → model → token… → sources → done {conversation}, or needs_choice {candidates}, or error {kind, message,
+    status}. The reply is saved before `done`."""
     purpose = request.data.get("purpose")
     purpose = purpose if purpose in CHAT_PURPOSES else "chat"
     with usage.scope(purpose=purpose):
@@ -1120,37 +1270,8 @@ def chat_stream_view(request):
 
     def events():
         with usage.scope(purpose=purpose, conversation_id=started.conversation.id):
-            try:
-                ctx = answer_context(started.user_message, started.model_id, started.use_rag, started.scope,
-                                     started.search_folders, started.conversation)
-            except ContextError as exc:
-                data = exc.response.data if isinstance(exc.response.data, dict) else {}
-                yield _sse("error", kind=data.get("code") or "context", message=data.get("error", ""),
-                           status=exc.response.status_code)
-                return
-            yield _sse("model", name=started.model_id)
-            start = time.time()
-            parts: list[str] = []
-            try:
-                pieces, history_sent = _reply_pieces(started, ctx)
-                for piece in pieces:
-                    parts.append(piece)
-                    yield _sse("token", text=piece)
-            except gpu.GpuError as exc:
-                logger.warning("chat gpu unavailable conversation=%s model=%s: %s", started.conversation.id,
-                               started.model_id, exc)
-                data = _gpu_response(exc).data
-                yield _sse("error", kind=data.get("code"), message=data.get("error"), status=503)
-                return
-            except Exception as exc:
-                logger.exception("chat failed conversation=%s model=%s latency_ms=%d", started.conversation.id,
-                                 started.model_id, round((time.time() - start) * 1000))
-                yield _sse("error", kind="model", message=f"Model backend failed: {exc}", status=502)
-                return
-            _log_reply(started, ctx, history_sent, start)
-            conversation = _save_reply(started, ctx, "".join(parts))
-            yield _sse("sources", sources=ctx.citations)
-            yield _sse("done", conversation=conversation)
+            for event in _answer_events(started):
+                yield _sse(**event)
 
     response = StreamingHttpResponse(events(), content_type="text/event-stream")
     response["Cache-Control"] = "no-cache"
