@@ -21,6 +21,9 @@ class Conversation(models.Model):
     # Model that was used for this conversation's last turn (optional)
     model_id = models.CharField(max_length=64, blank=True)
 
+    # P24-2: this conversation's editable part of the system prompt (null = the standard one, Settings → Chat)
+    system_prompt = models.TextField(null=True, blank=True)
+
     # Auto timestamps: set when created, and each time updated.
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -86,6 +89,8 @@ class ChatAttachment(models.Model):
     page_count = models.PositiveIntegerField(null=True, blank=True)     # PDFs
     width = models.PositiveIntegerField(null=True, blank=True)          # images, as stored
     height = models.PositiveIntegerField(null=True, blank=True)
+    # P24-2: what the vision model read in an image (read once, then reused by the text model's answers)
+    description = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -120,6 +125,9 @@ class ChatSettings(models.Model):
     speech_enabled = models.BooleanField(default=False)
     speech_language = models.CharField(max_length=8, default="auto")      # auto | en | es
     speech_api_key = models.CharField(max_length=300, blank=True, default="")
+    # P24-2: the standard editable part of the system prompt, for the Studio chat and every EDGE ("" = the built-in
+    # one, chat.prompt.DEFAULT_EDITABLE). The fixed rules after it are not editable.
+    system_prompt = models.TextField(blank=True, default="")
 
     class Meta:
         db_table = "chat_settings"

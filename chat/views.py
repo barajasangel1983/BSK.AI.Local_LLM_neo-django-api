@@ -800,8 +800,10 @@ def _start(request):
                 return Response({"error": f"page must be between 1 and {attachment.page_count or 1} of a PDF attachment"},
                                 status=status.HTTP_400_BAD_REQUEST)
         shows_image = attachment.kind == attachments.ChatAttachment.Kind.IMAGE or bool(attachment_page)
-        if shows_image and not is_vlm:
-            return Response({"error": "This model can't read images. Choose Qwen3-VL 4B (BSK).",
+        # P24-2: an image goes to a text model too: the vision model reads it first (EDGE's way). A PDF page is
+        # still shown to the vision model itself.
+        if attachment_page and not is_vlm:
+            return Response({"error": "This model can't read a PDF page as an image. Choose Qwen3-VL 4B (BSK).",
                              "code": "vision_model_required"}, status=status.HTTP_400_BAD_REQUEST)
         if not shows_image and is_vlm:
             return Response({"error": "The vision model reads one page at a time: choose a page of the PDF, "
@@ -849,6 +851,11 @@ def _start(request):
         conversation.asset_id = requested_asset or ""
         conversation.save(update_fields=["asset_id"])
     scope = conversation.asset_id
+    if isinstance(request.data.get("system_prompt"), str):
+        # P24-2: a new conversation's own prompt, set before its first message (later: PATCH the conversation)
+        from .prompt import MAX_CHARS
+        conversation.system_prompt = request.data["system_prompt"].strip()[:MAX_CHARS] or None
+        conversation.save(update_fields=["system_prompt"])
 
     return _Started(conversation=conversation, history=history, user_message=user_message, model_id=model_id,
                     use_rag=use_rag, scope=scope, search_folders=search_folders, attachment=attachment,
@@ -880,12 +887,19 @@ class AnswerContext:
 
 
 def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, search_folders: list,
-                   conversation: Conversation | None = None, search_queries: list[str] | None = None) -> AnswerContext:
+                   conversation: Conversation | None = None, search_queries: list[str] | None = None,
+                   editable: str = "", picture: str = "") -> AnswerContext:
     """The context for one question: attached PDFs as text, the historian window, the planner, the asset's facts
     (safety facts first for a safety question), the document excerpts, the system prompt. Raises ContextError.
 
     `search_queries` (P24-2, the question agent's topics): the documents are also searched once per topic and the
-    excerpts merged in turn, so each topic is represented; the question as asked is always searched too."""
+    excerpts merged in turn, so each topic is represented; the question as asked is always searched too.
+    `editable` (P24-2): the system prompt's editable part (chat/prompt.py); `picture`: what the vision model read in an
+    attached picture — it goes into the prompt and helps the search."""
+    from . import prompt as prompts
+    editable = (editable or prompts.DEFAULT_EDITABLE).strip()
+    if picture:
+        search_queries = [*(search_queries or []), f"{user_message} — seen in the picture: {picture[:600]}"]
     log_id = conversation.id if conversation is not None else "-"
     is_vlm = model_id == settings.VLM_CHAT_MODEL_ID
     total_budget = context_budget_chars(model_id)
@@ -1040,7 +1054,9 @@ def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, 
             rag_block, used = build_rag_context(entries, rag_budget, header="DOCUMENT EXCERPTS:", footer="---",
                                                 question=user_message)
         else:
-            system_prompt, used = build_rag_context(entries, rag_budget, question=user_message)
+            header = "\n\n".join(x for x in (editable, prompts.picture_block(picture),
+                                                "Here is relevant context from the knowledge base:") if x)
+            system_prompt, used = build_rag_context(entries, rag_budget, header=header, question=user_message)
             rag_block = system_prompt
         citations = [to_citation(e) for e in used]
         logger.info(
@@ -1052,14 +1068,18 @@ def answer_context(user_message: str, model_id: str, use_rag: bool, scope: str, 
         )
 
     if asset_ctx:
-        system_prompt = asset_context.system_prompt(asset_ctx, window.text if window else "") + (
+        system_prompt = asset_context.system_prompt(asset_ctx, window.text if window else "", editable, picture) + (
             f"\n\n{rag_block}" if rag_block else "")
         citations = asset_context.citations(asset_ctx) + ([window.citation] if window else []) + citations
         logger.info("asset context conversation=%s asset=%s facts=%d/%d chars=%d historian=%s docs_linked=%d",
                     log_id, scope, len(asset_ctx.facts), asset_ctx.total_facts, len(asset_ctx.text),
                     bool(asset_ctx.historian), len(asset_ctx.doc_keys))
     elif asset_note:
-        system_prompt = asset_note + (f"\n\n{rag_block}" if rag_block else "")
+        system_prompt = f"{editable}\n\n{asset_note}" + (f"\n\n{rag_block}" if rag_block else "")
+    if system_prompt is None and not is_vlm:
+        # No facts and no excerpts: the editable part (and the picture) only.
+        system_prompt = "\n\n".join(x for x in (editable, prompts.picture_block(picture)) if x) + (
+            prompts.PICTURE_RULE if picture else "")
 
     citations = attachment_citations + citations
     return AnswerContext(system_prompt=system_prompt, citations=citations, document_block=document_block,
@@ -1131,6 +1151,25 @@ TEXT_MODELS = (*DGX_MODEL_IDS, "external-gpt", "ollama-qwen3-8b")
 AGENT_HISTORY_CHARS = 1500      # the question agent's look back (EDGE's HISTORY_CHARS)
 
 
+def _latest_picture(conversation: Conversation):
+    """The conversation's most recent image (not a PDF page): a follow-up question is about it."""
+    shown = attachments.latest_image(conversation)
+    if shown and shown[0].kind == attachments.ChatAttachment.Kind.IMAGE:
+        return shown[0]
+    return None
+
+
+def _read_picture(attachment, question: str) -> str:
+    """What the vision model reads in an image, read once and kept on the attachment (EDGE's way)."""
+    if attachment.description:
+        return attachment.description
+    from context_service.service import describe_image
+    reading = describe_image(attachments.file_path(attachment).read_bytes(), question).get("description", "").strip()
+    attachment.description = reading
+    attachment.save(update_fields=["description"])
+    return reading
+
+
 def _agent_history(history: list) -> list[dict]:
     """The last exchanges that fit in AGENT_HISTORY_CHARS, oldest first, starting with a user message."""
     picked, used = [], 0
@@ -1160,7 +1199,34 @@ def _answer_events(started: _Started):
 
     from . import question_agent
 
+    from . import prompt as prompts
+
     conversation = started.conversation
+    editable = prompts.for_conversation(conversation)
+
+    # 0. A picture is read first, by the vision model (EDGE's way): a text model answers with it, the facts and the
+    #    manuals. A follow-up question uses the conversation's latest picture.
+    picture = ""
+    if started.model_id in TEXT_MODELS:
+        current = started.attachment if (started.attachment is not None and started.attachment.kind
+                                         == attachments.ChatAttachment.Kind.IMAGE) else None
+        shown = current or _latest_picture(conversation)
+        if shown is not None:
+            if current is not None and not shown.description:
+                yield {"type": "status", "text": "Reading the picture (about 30 s when the vision model was idle)…"}
+            try:
+                picture = _read_picture(shown, started.user_message)
+            except Exception as exc:
+                if current is not None:          # a new picture that can't be read stops the question
+                    text = str(exc)
+                    kind = "gpu_busy" if "gpu_busy" in text else "gpu_unavailable" if "gpu_unavailable" in text else "picture"
+                    message = ("The vision model is busy with a document job. Try again in a few minutes, or ask "
+                               "without the picture." if kind == "gpu_busy" else
+                               "Pictures can't be read right now: the vision model's PC is not reachable. Ask without "
+                               "the picture." if kind == "gpu_unavailable" else f"The picture could not be read: {text}")
+                    yield {"type": "error", "kind": kind, "message": message, "status": 503}
+                    return
+                picture = ""                     # an older picture that was never read: answer without it
 
     # 1. Never guess between machines; a question that names one machine is about it.
     if not started.scope and not started.is_vlm:
@@ -1190,7 +1256,8 @@ def _answer_events(started: _Started):
             except (asset_context.AssetScopeError, GraphUnavailable):
                 asset_name = ""
         plan = question_agent.prepare(started.model_id, started.user_message, _agent_history(started.history),
-                                      asset_name, asked_before=question_agent.already_asked(last))
+                                      asset_name, asked_before=question_agent.already_asked(last),
+                                      has_picture=bool(picture))
         if plan.action != "search":
             ctx = AnswerContext(system_prompt=None, citations=[plan.shown()], document_block="", use_rag=started.use_rag,
                                 scope=started.scope, is_vlm=False)
@@ -1206,7 +1273,8 @@ def _answer_events(started: _Started):
     try:
         ctx = answer_context(started.user_message, started.model_id, started.use_rag, started.scope,
                              started.search_folders, conversation,
-                             search_queries=plan.queries if plan and plan.used else None)
+                             search_queries=plan.queries if plan and plan.used else None,
+                             editable=editable, picture=picture)
     except ContextError as exc:
         data = exc.response.data if isinstance(exc.response.data, dict) else {}
         yield {"type": "error", "kind": data.get("code") or "context", "message": data.get("error", ""),
@@ -1217,7 +1285,7 @@ def _answer_events(started: _Started):
 
     # 4. Nothing relevant enough, and nothing else to answer from: say where it looked.
     if (plan and ctx.use_rag and not ctx.documents_found and not ctx.facts_found and not ctx.document_block
-            and not ctx.retrieval_failed):
+            and not ctx.retrieval_failed and not picture):
         agent = ctx.citations[-1]
         agent["action"] = "nothing_found"
         text = question_agent.nothing_found(plan, ctx.closest)
@@ -1322,7 +1390,8 @@ def list_conversations(request):
 def conversation_detail(request, pk):
     """GET/PATCH/DELETE /api/conversations/<uuid:pk>/
 
-    PATCH body: {"title": "new name"} — renames the conversation.
+    PATCH body: {"title": "new name"} — renames the conversation; {"system_prompt": "…" | null} — its own editable part
+    of the system prompt (P24-2; null = the standard one).
     """
 
     owner = get_current_user()
@@ -1339,6 +1408,16 @@ def conversation_detail(request, pk):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     if request.method == "PATCH":
+        if "system_prompt" in request.data:
+            # P24-2: this conversation's editable part of the system prompt; null or "" = the standard one.
+            from .prompt import MAX_CHARS
+            value = request.data.get("system_prompt")
+            if value is not None and not isinstance(value, str):
+                return Response({"error": "system_prompt must be text or null"}, status=status.HTTP_400_BAD_REQUEST)
+            conversation.system_prompt = (value or "").strip()[:MAX_CHARS] or None
+            conversation.save(update_fields=["system_prompt"])
+            if "title" not in request.data:
+                return Response(ConversationDetailSerializer(conversation).data)
         title = normalize_title(str(request.data.get("title", "")))
         if not title:
             return Response({"error": "title must not be empty"}, status=status.HTTP_400_BAD_REQUEST)

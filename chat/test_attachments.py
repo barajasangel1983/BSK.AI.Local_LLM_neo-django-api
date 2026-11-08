@@ -117,11 +117,36 @@ class ImageChatTests(AttachmentTestCase):
         self.assertEqual(self.chat("hi", VLM).status_code, 200)
         self.assertEqual(vlm_chat.call_args.args[0][-1], {"role": "user", "content": "hi"})
 
-    def test_image_with_a_text_model_is_refused_before_anything_is_saved(self):
+    @patch("chat.views.requests.post")
+    @patch("context_service.service.describe_image", return_value={"description": "Nameplate: SIEMENS 1LE1, 7.5 kW."})
+    def test_image_with_a_text_model_is_read_first_then_answered_with_the_context(self, describe, post):
+        """P24-2 (EDGE's way): the vision model reads the picture once; the text model answers with it."""
+        post.return_value = _ok_response("A SIMOTICS motor.")
         att = self.upload("plate.png", png(100, 80)).data
         r = self.chat("What is this?", DGX, attachment_id=att["id"])
+        self.assertEqual(r.status_code, 200)
+        system = post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn("PICTURE (what the vision model read in the attached picture):\nNameplate: SIEMENS 1LE1, 7.5 kW.", system)
+        self.assertIn("may contain reading errors", system)
+        self.assertEqual(ChatAttachment.objects.get(id=att["id"]).description, "Nameplate: SIEMENS 1LE1, 7.5 kW.")
+        # A follow-up is about the same picture, which is not read again.
+        self.chat("What power?", DGX, conversation_id=r.data["id"])
+        self.assertEqual(describe.call_count, 1)
+        self.assertIn("Nameplate: SIEMENS 1LE1", post.call_args.kwargs["json"]["messages"][0]["content"])
+
+    def test_a_pdf_page_with_a_text_model_is_refused_before_anything_is_saved(self):
+        att = self.upload("manual.pdf", pdf(3)).data
+        r = self.chat("What is on this page?", DGX, attachment_id=att["id"], page=2)
         self.assertEqual((r.status_code, r.data["code"]), (400, "vision_model_required"))
         self.assertEqual(Conversation.objects.count(), 0)
+
+    @patch("context_service.service.describe_image")
+    def test_a_new_picture_that_cant_be_read_stops_the_question(self, describe):
+        from context_service.service import ContextError as ServiceError
+        describe.side_effect = ServiceError("gpu_busy: the vision model is busy")
+        att = self.upload("plate.png", png(100, 80)).data
+        r = self.chat("What is this?", DGX, attachment_id=att["id"])
+        self.assertEqual((r.status_code, r.data["code"]), (503, "gpu_busy"))
 
     def test_gpu_busy_and_unavailable_are_503_with_a_code(self):
         att = self.upload("plate.png", png(100, 80)).data

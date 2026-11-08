@@ -91,7 +91,7 @@ class FactSheetTests(SimpleTestCase):
         self.assertEqual(len(ctx.facts), ctx.total_facts + 2)   # every fact, plus location and historian status
 
         prompt = asset_context.system_prompt(ctx)
-        self.assertIn("assistant for Extruder EXTR01 (bsk:asset:EXTR01)", prompt)
+        self.assertIn("This conversation is about Extruder EXTR01 (bsk:asset:EXTR01)", prompt)
         self.assertIn("Out of normal range in the last running sample: Die pressure: 104 bar", prompt)
         graph, historian = asset_context.citations(ctx)
         self.assertEqual((graph["kind"], graph["source"], historian["kind"]), ("graph", "Context Graph", "historian"))

@@ -1,7 +1,7 @@
 """Settings → Chat, and speech to text (P15c).
 
     GET  /api/chat/settings/        {speech_enabled, speech_language, speech_api_key_set, speech_available}
-    PUT  /api/chat/settings/        any of {speech_enabled, speech_language, speech_api_key}; the key is
+    PUT  /api/chat/settings/        any of {speech_enabled, speech_language, speech_api_key, system_prompt}; the key is
                                     write-only ("" clears it) and never returned
     POST /api/chat/speech/          multipart "file" (a recording, WebM/Opus), optional "asset_id": {text, language, duration}
     POST /api/chat/speech/test/     {api_key?}: sends half a second of silence with that key (or the saved one)
@@ -20,8 +20,11 @@ ERROR_STATUS = {"off": status.HTTP_409_CONFLICT, "key": status.HTTP_400_BAD_REQU
 
 
 def _json(s: ChatSettings) -> dict:
+    from .prompt import DEFAULT_EDITABLE
     return {"speech_enabled": s.speech_enabled, "speech_language": s.speech_language,
-            "speech_api_key_set": bool(s.speech_api_key), "speech_available": bool(s.speech_enabled and s.speech_api_key)}
+            "speech_api_key_set": bool(s.speech_api_key), "speech_available": bool(s.speech_enabled and s.speech_api_key),
+            # P24-2: the standard editable part of the system prompt ("" = the built-in one, shown as the default)
+            "system_prompt": s.system_prompt, "default_system_prompt": DEFAULT_EDITABLE}
 
 
 @api_view(["GET", "PUT"])
@@ -40,6 +43,11 @@ def chat_settings(request):
             s.speech_language = data["speech_language"]
         if "speech_api_key" in data:
             s.speech_api_key = str(data["speech_api_key"] or "").strip()[:300]
+        if "system_prompt" in data:
+            from .prompt import MAX_CHARS
+            if not isinstance(data["system_prompt"], str):
+                return Response({"error": "system_prompt must be text"}, status=status.HTTP_400_BAD_REQUEST)
+            s.system_prompt = data["system_prompt"].strip()[:MAX_CHARS]
         s.save()
     return Response(_json(s))
 

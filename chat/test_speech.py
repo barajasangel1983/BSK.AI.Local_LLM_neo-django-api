@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
+from chat.prompt import DEFAULT_EDITABLE
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -27,10 +28,11 @@ class SpeechTests(TestCase):
 
     def test_settings_keep_the_key_write_only(self):
         self.assertEqual(self.client.get("/api/chat/settings/").json(),
-                         {"speech_enabled": False, "speech_language": "auto", "speech_api_key_set": False, "speech_available": False})
+                         {"speech_enabled": False, "speech_language": "auto", "speech_api_key_set": False, "speech_available": False,
+                      "system_prompt": "", "default_system_prompt": DEFAULT_EDITABLE})
         r = self.client.put("/api/chat/settings/", {"speech_enabled": True, "speech_language": "es", "speech_api_key": "xai-123"},
                             format="json").json()
-        self.assertEqual(r, {"speech_enabled": True, "speech_language": "es", "speech_api_key_set": True, "speech_available": True})
+        self.assertEqual(r, {"speech_enabled": True, "speech_language": "es", "speech_api_key_set": True, "speech_available": True, "system_prompt": "", "default_system_prompt": DEFAULT_EDITABLE})
         self.assertNotIn("xai-123", str(self.client.get("/api/chat/settings/").content))
         self.assertEqual(self.client.put("/api/chat/settings/", {"speech_language": "fr"}, format="json").status_code, 400)
         self.assertEqual(self.client.put("/api/chat/settings/", {"speech_enabled": "yes"}, format="json").status_code, 400)

@@ -789,13 +789,16 @@ def fact_pages(lines: list[Line], question: str, focus_ids: set[str] | None, nod
 
 # --- prompt --------------------------------------------------------------------
 
-ASSET_PROMPT = """You are Neo, the assistant for {name} ({asset_id}) in the BSKLAB plant.
-
+# P24-2: the editable part (chat/prompt.py: the standard one or a conversation's) comes first; the rest is fixed.
+ASSET_PROMPT = """{editable}
+This conversation is about {name} ({asset_id}) in the BSKLAB plant.
+{picture}
 ASSET FACTS — from the curated Context Graph; treat them as authoritative:
 {facts}
 {historian_note}{window}
 Answer about this asset. Use the asset facts first and cite them as [G]; cite document excerpts as [1], [2], … when they are provided.
-If the facts and excerpts don't contain the answer, say so plainly — do not invent values, limits or procedures.{safety_rule}"""
+If the facts and excerpts don't contain the answer, say so plainly — do not invent values, limits or procedures.
+Values in the facts are the last recorded ones: say their time and the machine state when you use them.{picture_rule}{safety_rule}"""
 
 
 SAFETY_RULE = ("\nWhen a safety notice in the facts applies to the work asked about, give its measures first, as the manual "
@@ -810,13 +813,17 @@ WINDOW_NOTE = ("\n{block}\nThe historian window above is computed from the histo
                "downtime minutes as downtime (changeover, cool down, warm up and flush are other stops).\n")
 
 
-def system_prompt(ctx: AssetContext, window: str = "") -> str:
-    """`window`: the historian window block of a data question (P18a)."""
+def system_prompt(ctx: AssetContext, window: str = "", editable: str = "", picture: str = "") -> str:
+    """`window`: the historian window block of a data question (P18a). `editable`: the editable part (P24-2, default
+    the built-in standard); `picture`: what the vision model read in an attached picture."""
+    from .prompt import DEFAULT_EDITABLE, PICTURE_RULE, picture_block
     note = ""
     if ctx.historian and ctx.historian["out_of_range"]:
         note = "\nOut of normal range in the last running sample: " + "; ".join(ctx.historian["out_of_range"]) + "\n"
-    return ASSET_PROMPT.format(name=ctx.name, asset_id=ctx.asset_id, facts=ctx.text, historian_note=note,
-                               window=WINDOW_NOTE.format(block=window) if window else "",
+    return ASSET_PROMPT.format(editable=(editable or DEFAULT_EDITABLE).strip(), name=ctx.name, asset_id=ctx.asset_id,
+                               picture=f"\n{picture_block(picture)}\n" if picture else "", facts=ctx.text,
+                               historian_note=note, window=WINDOW_NOTE.format(block=window) if window else "",
+                               picture_rule=PICTURE_RULE if picture else "",
                                safety_rule=SAFETY_RULE if settings.CHAT_SAFETY_FACTS else "")
 
 

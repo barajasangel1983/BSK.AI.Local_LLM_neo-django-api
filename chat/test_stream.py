@@ -200,3 +200,37 @@ class EngineFeatureTests(TestCase):
             events = self._ask("hello there")
         # The agent failed: the question was searched as written; nothing found → where it looked.
         self.assertIn("“hello there”", "".join(e["text"] for e in events if e["type"] == "token"))
+
+
+@override_settings(CHAT_HISTORIAN_WINDOWS=False)
+class PromptTests(TestCase):
+    """P24-2: one system prompt — the standard editable part (Settings → Chat), a conversation's own, fixed rules."""
+
+    def setUp(self):
+        self.client = APIClient()
+        patcher = patch("chat.views.generate_title", return_value=("Title", "llm"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _system(self, post, **body):
+        post.return_value = _streamed(_openai("ok"))
+        r = self.client.post("/api/chat/", {"message": "hello", "model": "dgx-qwen38-27b-fp8", "use_rag": False, **body},
+                             format="json")
+        return r, post.call_args.kwargs["json"]["messages"][0]["content"]
+
+    @patch("chat.views.requests.post")
+    def test_standard_then_settings_then_the_conversations_own(self, post):
+        from chat.prompt import DEFAULT_EDITABLE
+        r, system = self._system(post)
+        self.assertEqual(system, DEFAULT_EDITABLE)
+        self.client.put("/api/chat/settings/", {"system_prompt": "You are the plant's assistant. Be brief."}, format="json")
+        r, system = self._system(post, conversation_id=r.data["id"])
+        self.assertEqual(system, "You are the plant's assistant. Be brief.")
+        patched = self.client.patch(f"/api/conversations/{r.data['id']}/", {"system_prompt": "Answer in Spanish."},
+                                    format="json")
+        self.assertEqual(patched.data["system_prompt"], "Answer in Spanish.")
+        r, system = self._system(post, conversation_id=r.data["id"])
+        self.assertEqual(system, "Answer in Spanish.")
+        self.client.patch(f"/api/conversations/{r.data['id']}/", {"system_prompt": None}, format="json")
+        r, system = self._system(post, conversation_id=r.data["id"])
+        self.assertEqual(system, "You are the plant's assistant. Be brief.")
