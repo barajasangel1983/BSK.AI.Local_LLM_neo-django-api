@@ -180,3 +180,23 @@ class AnswerRouteTests(TransactionTestCase):
         got = [json.loads(chunk[6:]) for chunk in r.text.split("\n\n") if chunk.startswith("data: ")]
         self.assertEqual((got[-1]["type"], got[-1]["kind"]), ("error", "bad_request"))
         self.assertEqual(self.post("not json", token).status_code, 400)
+
+
+class MonitorPostsToolTests(TransactionTestCase):
+    """P24-4: EDGE's Home reads the Studio's monitoring posts."""
+
+    def test_posts_newest_first_with_paging(self):
+        from datetime import datetime, timezone
+        from monitor.models import MonitorPost
+        for n in range(3):
+            MonitorPost.objects.create(asset_id="bsk:asset:EXTR01", kind="summary", title=f"Hour {n}", text="ran",
+                                       ts=datetime(2026, 11, 8, n, tzinfo=timezone.utc))
+        def call(args):
+            result = asyncio.run(mcp_server.build_server().call_tool("get_monitor_posts", args))
+            content = result[0] if isinstance(result, tuple) else result
+            return json.loads(content[0].text)
+        first = call({"asset_id": "bsk:asset:EXTR01", "limit": 2})
+        self.assertEqual([p["title"] for p in first["posts"]], ["Hour 2", "Hour 1"])
+        self.assertTrue(first["more"])
+        rest = call({"asset_id": "bsk:asset:EXTR01", "before_id": first["posts"][-1]["id"]})
+        self.assertEqual(([p["title"] for p in rest["posts"]], rest["more"]), (["Hour 0"], False))

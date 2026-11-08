@@ -107,7 +107,7 @@ def ask(request):
 # --- MCP server settings ------------------------------------------------------------------
 
 MCP_TOOLS = ["list_assets", "resolve_entity", "get_entity_context", "get_sources", "search_documents",
-             "assemble_context", "ask", "get_operational_state", "get_signal_history",
+             "assemble_context", "ask", "get_operational_state", "get_signal_history", "get_monitor_posts",
              "list_documents", "get_document", "get_document_page", "get_figure_image", "get_graph",
              "describe_image",
              "get_system_health"]

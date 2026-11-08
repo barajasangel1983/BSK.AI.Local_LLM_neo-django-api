@@ -224,6 +224,15 @@ def build_server() -> FastMCP:
                            bucket_minutes or None)
 
     @mcp.tool()
+    async def get_monitor_posts(asset_id: str, before_id: int = 0, limit: int = 30) -> dict:
+        """The monitoring agent's posts for an asset (P24-4: the Studio's Home feed, the only monitoring agent), newest
+        first: hourly summaries, alerts (a signal out of its normal range for 3 minutes while running), state changes,
+        data gaps and SPC changes. Each post: id, kind, severity, title, text, data (the numbers behind it), ts, model.
+        before_id continues an earlier page; `more` says whether older posts exist."""
+        from monitor import agent
+        return await _call("get_monitor_posts", agent.posts, asset_id, before_id or None, limit)
+
+    @mcp.tool()
     async def list_documents() -> dict:
         """The document library: each document with its pages, whether it is searchable, and its figures."""
         return await _call("list_documents", service.list_documents)
