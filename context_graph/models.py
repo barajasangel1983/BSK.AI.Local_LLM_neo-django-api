@@ -372,3 +372,20 @@ class ReviewBatch(models.Model):
 
     def __str__(self) -> str:
         return f"review batch {self.pk} ({self.status})"
+
+
+class CoverageOverride(models.Model):
+    """P22f: a person's "applicable" / "not applicable" for one part and facet in the coverage view (the defaults
+    are by kind of part, `coverage.NOT_APPLICABLE`). Kept here, not in the graph: a view setting, not a fact."""
+
+    component_id = models.CharField(max_length=255, db_index=True)
+    facet = models.CharField(max_length=20)
+    applicable = models.BooleanField()
+    updated_by = models.CharField(max_length=150, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["component_id", "facet"], name="coverage_override_unique")]
+
+    def __str__(self) -> str:
+        return f"{self.component_id} {self.facet}: {'applicable' if self.applicable else 'n/a'}"

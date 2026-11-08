@@ -207,3 +207,48 @@ def graph_data(request):
         layer=request.query_params.get("layer") or "curated",
         doc_key=request.query_params.get("doc") or None,
     ))
+
+
+# --- coverage (P22f) -------------------------------------------------------------
+
+
+@api_view(["GET"])
+@graph_errors
+def coverage_grid(request):
+    """GET /api/graph/coverage/?asset=<id> — the asset's parts by facet: approved / pending counts and a status."""
+    from . import coverage
+    asset = request.query_params.get("asset") or ""
+    if not asset:
+        return Response({"error": "asset is required"}, status=status.HTTP_400_BAD_REQUEST)
+    return Response(coverage.grid(asset))
+
+
+@api_view(["GET"])
+@graph_errors
+def coverage_cell(request):
+    """GET /api/graph/coverage/cell/?asset=<id>&component=<id>&facet=<facet> — one cell's facts, pending, manuals."""
+    from . import coverage
+    q = request.query_params
+    try:
+        return Response(coverage.cell(q.get("asset") or "", q.get("component") or "", q.get("facet") or ""))
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["POST"])
+def coverage_override(request):
+    """POST /api/graph/coverage/override/ {component_id, facet, applicable: true | false | null (back to default)}"""
+    from . import coverage
+    data = request.data or {}
+    applicable = data.get("applicable")
+    if applicable not in (True, False, None):
+        return Response({"error": "applicable must be true, false or null"}, status=status.HTTP_400_BAD_REQUEST)
+    component = str(data.get("component_id") or "")
+    if not component.startswith("bsk:component:"):
+        return Response({"error": "component_id must be a part (bsk:component:...)"}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        value = coverage.set_applicable(component, str(data.get("facet") or ""), applicable,
+                                        by=getattr(request.user, "username", "") or "")
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({"component_id": component, "facet": data.get("facet"), "override": value})
