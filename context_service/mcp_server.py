@@ -16,6 +16,8 @@ Client contract: frontend repo, claude/MCP_client_brief.md.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import contextvars
 import json
@@ -74,6 +76,18 @@ def _run(tool: str, fn, *args, **kwargs):
 
 async def _call(tool: str, fn, *args, **kwargs):
     return await sync_to_async(_run, thread_sensitive=False)(tool, fn, *args, **kwargs)
+
+
+
+def _iso(value: str):
+    """An ISO 8601 time from a client (UTC when it has no zone)."""
+    from datetime import datetime, timezone
+    from problems.service import TicketError
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        raise TicketError(f"not a time: {value!r} (ISO 8601, e.g. 2026-11-08T14:00:00Z)") from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _health() -> dict:
@@ -231,6 +245,145 @@ def build_server() -> FastMCP:
         before_id continues an earlier page; `more` says whether older posts exist."""
         from monitor import agent
         return await _call("get_monitor_posts", agent.posts, asset_id, before_id or None, limit)
+
+    # --- P29: problem-solving tickets (EDGE fills and approves them; the Studio owns them) ---------------------
+    # `user` is who acts on EDGE: {username, name, role, source}. Only engineers and admins write; the approver is not
+    # the author. A rule that is broken comes back as the tool's error text, to show as is.
+
+    @mcp.tool()
+    async def list_tickets(asset_id: str = "", status: str = "", before_id: int = 0, limit: int = 50) -> dict:
+        """Problem-solving tickets, newest first: id, number, machine, trigger, title, status, window, author, approver.
+        status: "active" (open, draft, submitted, returned), one status, or empty for all. `counts` per status."""
+        from problems import service as problems
+        return await _call("list_tickets", problems.list_tickets, asset_id, status, limit, before_id)
+
+    @mcp.tool()
+    async def get_ticket(ticket_id: int) -> dict:
+        """One ticket: the context (states, alarms, signals, SPC, who was signed in), recommendations, the 5-Why,
+        the knowledge check, history and pictures."""
+        from problems import service as problems
+        return await _call("get_ticket", lambda: problems.ticket_json(problems.get(ticket_id)))
+
+    @mcp.tool()
+    async def open_ticket(asset_id: str, title: str, window_start: str, user: dict, window_end: str = "") -> dict:
+        """Open a ticket by hand (a problem the triggers didn't catch). Times are ISO 8601."""
+        from problems import service as problems
+        def run():
+            start = _iso(window_start)
+            end = _iso(window_end) if window_end else None
+            return problems.ticket_json(problems.open_manual(asset_id, title, start, end, user))
+        return await _call("open_ticket", run)
+
+    @mcp.tool()
+    async def save_ticket(ticket_id: int, fields: dict, user: dict) -> dict:
+        """Save the 5-Why as a draft. fields: notes, problem, whys (list of up to 5), root_cause, containment,
+        actions ([{id?, text, responsible, due_date YYYY-MM-DD, status in_progress|done}]), final_report; only those
+        given change."""
+        from problems import service as problems
+        return await _call("save_ticket", lambda: problems.ticket_json(problems.save(ticket_id, fields, user)))
+
+    @mcp.tool()
+    async def make_ticket_final_version(ticket_id: int, user: dict) -> dict:
+        """The model turns the saved notes and fields into a clean 5-Why and a short report. Returned for the engineer
+        to edit; nothing is saved."""
+        from problems import llm as problems_llm, service as problems
+        def run():
+            problems._writer(user)
+            return problems_llm.structure(problems.get(ticket_id))
+        return await _call("make_ticket_final_version", run)
+
+    @mcp.tool()
+    async def submit_ticket(ticket_id: int, user: dict) -> dict:
+        """Submit for approval by a second engineer; queues the knowledge check."""
+        from problems import service as problems
+        return await _call("submit_ticket", lambda: problems.ticket_json(problems.submit(ticket_id, user)))
+
+    @mcp.tool()
+    async def approve_ticket(ticket_id: int, user: dict, comment: str = "") -> dict:
+        """Approve (not the author). The report then goes into the document library."""
+        from problems import service as problems
+        return await _call("approve_ticket", lambda: problems.ticket_json(problems.approve(ticket_id, user, comment)))
+
+    @mcp.tool()
+    async def return_ticket(ticket_id: int, user: dict, comment: str) -> dict:
+        """Send back to the author with what needs to change."""
+        from problems import service as problems
+        return await _call("return_ticket", lambda: problems.ticket_json(problems.return_ticket(ticket_id, user, comment)))
+
+    @mcp.tool()
+    async def close_ticket(ticket_id: int, user: dict, reason: str) -> dict:
+        """Close without a 5-Why, with a reason (never published)."""
+        from problems import service as problems
+        return await _call("close_ticket", lambda: problems.ticket_json(problems.close(ticket_id, user, reason)))
+
+    @mcp.tool()
+    async def add_ticket_picture(ticket_id: int, image_base64: str, user: dict, filename: str = "picture.jpg",
+                                 caption: str = "", phase: str = "problem") -> dict:
+        """Add a picture (base64 JPEG / PNG / WebP). phase: "problem" (while the 5-Why is written) or "after" (the
+        condition after the fix; also once the report is approved)."""
+        from problems import service as problems
+        def run():
+            try:
+                data = base64.b64decode(image_base64, validate=True)
+            except (binascii.Error, ValueError):
+                raise problems.TicketError("image_base64 is not valid base64") from None
+            return problems.picture_json(problems.add_picture(ticket_id, data, filename, user, caption, phase))
+        return await _call("add_ticket_picture", run)
+
+    @mcp.tool()
+    async def remove_ticket_picture(ticket_id: int, picture_id: int, user: dict) -> dict:
+        """Remove a picture from an open ticket."""
+        from problems import service as problems
+        def run():
+            problems.remove_picture(ticket_id, picture_id, user)
+            return {"removed": picture_id}
+        return await _call("remove_ticket_picture", run)
+
+    @mcp.tool()
+    async def set_ticket_action(ticket_id: int, action_id: str, status: str, user: dict) -> dict:
+        """Mark a corrective action done or in_progress (also after approval, to follow the plan)."""
+        from problems import service as problems
+        return await _call("set_ticket_action",
+                           lambda: problems.ticket_json(problems.set_action_status(ticket_id, action_id, status, user)))
+
+    @mcp.tool()
+    async def validate_ticket_action(ticket_id: int, action_id: str, user: dict) -> dict:
+        """The second engineer validates a done action (not the author). When all are validated the ticket is
+        completed and its library document is replaced with the final report."""
+        from problems import service as problems
+        return await _call("validate_ticket_action",
+                           lambda: problems.ticket_json(problems.validate_action(ticket_id, action_id, user)))
+
+    @mcp.tool()
+    async def get_ticket_report(ticket_id: int) -> dict:
+        """The printable report (HTML with the pictures inside) for "Download report"."""
+        from problems import report, service as problems
+        return await _call("get_ticket_report", lambda: {"html": report.html(problems.get(ticket_id))})
+
+    @mcp.tool()
+    async def get_ticket_picture(ticket_id: int, picture_id: int) -> Image:
+        """A ticket's picture as a JPEG image."""
+        from problems import service as problems
+        return Image(data=await _call("get_ticket_picture", problems.picture_bytes, ticket_id, picture_id), format="jpeg")
+
+    @mcp.tool()
+    async def add_ticket_users(ticket_id: int, users: list[dict], edge: str = "") -> dict:
+        """Who was signed in on this EDGE during the ticket's window: [{username, name, role, signed_in_at,
+        signed_out_at}]. Merged with what other EDGEs sent."""
+        from problems import service as problems
+        return await _call("add_ticket_users", lambda: problems.ticket_json(problems.add_edge_users(ticket_id, users, edge)))
+
+    @mcp.tool()
+    async def run_ticket_check(ticket_id: int) -> dict:
+        """Run the knowledge check now (within a minute), whatever the schedule."""
+        from problems import llm as problems_llm, service as problems
+        return await _call("run_ticket_check", lambda: problems.ticket_json(problems_llm.request_check(problems.get(ticket_id))))
+
+    @mcp.tool()
+    async def get_problem_settings() -> dict:
+        """The triggers' thresholds and the knowledge check's schedule (set in the Studio)."""
+        from problems import service as problems
+        return await _call("get_problem_settings", problems.settings_json)
 
     @mcp.tool()
     async def list_documents() -> dict:
